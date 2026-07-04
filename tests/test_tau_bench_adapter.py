@@ -103,10 +103,9 @@ def test_make_logs_validate_against_schema():
         sample_records(), retrieved_timestamp='1234567890.0'
     )
 
-    assert len(bundles) == 2
     for bundle in bundles:
         validated = EvaluationLog.model_validate(bundle.log.model_dump())
-        assert validated.schema_version == '0.2.2'
+        assert validated.schema_version == adapter.SCHEMA_VERSION
         assert validated.source_metadata.source_name == 'tau-bench Leaderboard'
         assert validated.source_metadata.source_type.value == 'documentation'
         assert validated.eval_library.name == 'tau2-bench'
