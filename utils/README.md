@@ -26,6 +26,7 @@ Each adapter is run with `uv run python -m utils.<name>.adapter`.
 | `terminal_bench_2` | tbench.ai | Fetches Terminal-Bench 2.0 agentic coding benchmark results. |
 | `hle` | Scale SEAL leaderboard | Converts the Scale SEAL Humanity's Last Exam leaderboard into `data/hle/`. Emits per-model accuracy (with 95% CI) and calibration error. |
 | `mmlu_pro` | TIGER-Lab leaderboard CSV | Converts the MMLU-Pro leaderboard (`TIGER-Lab/mmlu_pro_leaderboard_submission`) into `data/mmlu-pro/`. Emits per-model overall + 14 per-subject accuracies. |
+| `open_medical_llm` | Open Medical-LLM Leaderboard (HF: `openlifescienceai/results`) | Converts lm-evaluation-harness medical-QA results into `data/open-medical-llm/`; one log per model with 9 per-benchmark accuracies (MedMCQA, MedQA, PubMedQA, 6 MMLU medical subjects), each pointing at its own dataset repo. |
 
 ### Mercor Evaluation Exports
 
