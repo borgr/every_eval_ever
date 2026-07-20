@@ -3,11 +3,18 @@ tiny local parquet and runs the adapter over it."""
 import argparse
 import json
 
-import pyarrow as pa
-import pyarrow.parquet as pq
+import pytest
 
-from every_eval_ever.validate import validate_file
-from utils.wild import adapter
+pytest.importorskip(
+    'pyarrow',
+    reason='pyarrow not installed; the wild adapter needs it (uv sync --all-extras)',
+)
+
+import pyarrow as pa  # noqa: E402
+import pyarrow.parquet as pq  # noqa: E402
+
+from every_eval_ever.validate import validate_file  # noqa: E402
+from utils.wild import adapter  # noqa: E402
 
 
 def _synth_parquet(path):
