@@ -71,6 +71,10 @@ KNOWN_METRIC_BOUNDS = {
     'rouge2': (0.0, 1.0),
     'rougeL': (0.0, 1.0),
     'rougeLsum': (0.0, 1.0),
-    'ter': (0.0, None),
+    # TER (sacrebleu translation edit rate) is reported on a 0-100 scale, like
+    # `bleu`. It can exceed 100 in pathological cases, but 0-100 is the reported
+    # range; EEE has no unbounded score_type and does not range-check scores, so
+    # a finite nominal bound is used rather than None (None -> invalid record).
+    'ter': (0.0, 100.0),
     'brier_score': (0.0, 1.0),
 }

@@ -1,6 +1,7 @@
 """Adapter for converting lm-evaluation-harness output to every_eval_ever format."""
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -37,6 +38,8 @@ from .utils import (
     MODEL_TYPE_TO_INFERENCE_PLATFORM,
     parse_model_args,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class LMEvalAdapter(BaseEvaluationAdapter):
@@ -251,8 +254,19 @@ class LMEvalAdapter(BaseEvaluationAdapter):
             is_higher_better = higher_is_better.get(metric_name, True)
 
             bounds = KNOWN_METRIC_BOUNDS.get(metric_name)
-            min_score = bounds[0] if bounds else None
-            max_score = bounds[1] if bounds else None
+            if bounds is None or bounds[0] is None or bounds[1] is None:
+                # `continuous` requires numeric min/max and EEE has no unbounded
+                # score_type, so a metric with no finite bound (e.g. perplexity)
+                # cannot be represented. Skip it rather than emit an invalid
+                # record with a null bound.
+                logger.warning(
+                    'lm_eval: skipping metric %r in task %r — no finite bound '
+                    'for continuous score_type',
+                    metric_name,
+                    task_name,
+                )
+                continue
+            min_score, max_score = bounds
 
             description = metric_name
             if filter_name != 'none':
@@ -386,6 +400,14 @@ class LMEvalAdapter(BaseEvaluationAdapter):
         for task_name in tasks:
             task_metadata = {**metadata_args, 'task_name': task_name}
             log = self._transform_single(raw_data, task_metadata)
+            if not log.evaluation_results:
+                # Every metric for this task was skipped (no finite bound); an
+                # EvaluationLog with no results conveys nothing, so drop it.
+                logger.warning(
+                    'lm_eval: skipping task %r — no representable metrics',
+                    task_name,
+                )
+                continue
             results.append(log)
 
         return results

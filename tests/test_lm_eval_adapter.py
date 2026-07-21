@@ -1,3 +1,4 @@
+import json
 import tempfile
 from pathlib import Path
 
@@ -137,6 +138,70 @@ def test_transform_from_file_evaluation_results():
     # Second task: math_rephrased_full with exact_match = 0.0004
     rephrased_results = logs[1].evaluation_results
     assert rephrased_results[0].score_details.score == 0.0004
+
+
+def test_unbounded_metrics_do_not_produce_invalid_records(tmp_path):
+    """Regression: metrics with no finite bound must not build a `continuous`
+    MetricConfig with a null bound.
+
+    `ter` previously had `(0.0, None)` and any metric absent from the bounds
+    table fell through to `None`/`None`; either raises
+    `score_type 'continuous' requires max_score` at MetricConfig construction,
+    crashing the conversion. `ter` now takes a finite 0-100 bound, and a
+    genuinely-unbounded metric (perplexity) is skipped instead of emitted.
+    """
+    raw = {
+        'config': {
+            'model': 'hf',
+            'model_args': 'pretrained=EleutherAI/pythia-160m',
+        },
+        'model_name': 'EleutherAI/pythia-160m',
+        'lm_eval_version': '0.4.0',
+        'results': {
+            'wmt_ter': {
+                'alias': 'wmt_ter',
+                'ter,none': 42.0,
+                'ter_stderr,none': 1.5,
+            },
+            'mixed_task': {
+                'alias': 'mixed_task',
+                'acc,none': 0.5,
+                'perplexity,none': 12.3,
+            },
+            'ppl_only': {
+                'alias': 'ppl_only',
+                'word_perplexity,none': 30.0,
+            },
+        },
+        'higher_is_better': {
+            'wmt_ter': {'ter': False},
+            'mixed_task': {'acc': True, 'perplexity': False},
+            'ppl_only': {'word_perplexity': False},
+        },
+        'configs': {},
+    }
+    path = tmp_path / 'results_synth.json'
+    path.write_text(json.dumps(raw))
+
+    logs = LMEvalAdapter().transform_from_file(path, _make_metadata_args())
+    by_task = {log.evaluation_id.split('/')[0]: log for log in logs}
+
+    # ppl_only's only metric is unbounded -> the whole log is dropped.
+    assert set(by_task) == {'wmt_ter', 'mixed_task'}
+
+    # ter now has a finite 0-100 bound and yields a valid continuous record.
+    ter = by_task['wmt_ter'].evaluation_results
+    assert len(ter) == 1
+    assert ter[0].metric_config.min_score == 0.0
+    assert ter[0].metric_config.max_score == 100.0
+    assert ter[0].metric_config.lower_is_better is True
+    assert ter[0].score_details.score == 42.0
+
+    # perplexity is skipped; the bounded `acc` metric survives.
+    mixed = by_task['mixed_task'].evaluation_results
+    assert len(mixed) == 1
+    assert mixed[0].metric_config.evaluation_description == 'acc'
+    assert mixed[0].metric_config.max_score == 1.0
 
 
 def test_transform_from_file_uncertainty():
