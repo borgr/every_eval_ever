@@ -32,6 +32,7 @@ helm = [
     "crfm-helm>=0.5.14",
     "typer>=0.12,<1.0",
 ]
+paperswithcode = ["pgdumplib>=4.0.0"]
 all = [
     "every-eval-ever[inspect]",
     "every-eval-ever[helm]",
