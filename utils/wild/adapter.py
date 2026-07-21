@@ -108,8 +108,10 @@ INSTANCE_COLUMNS = AGG_COLUMNS + ['item_id', 'conversation', 'target', 'answer',
 # parquet streaming (HF or local), per row group, column-projected
 # --------------------------------------------------------------------------- #
 
-def _shard_handles(parquet: list[str] | None, limit_shards: int | None):
-    """Yield (label, opener) for each parquet source. opener() -> file-like."""
+def _shard_handles(parquet: list[str] | None, limit_shards: int | None,
+                   revision: str | None = None):
+    """Yield (label, opener) for each parquet source. opener() -> file-like.
+    `revision` pins the HF commit for remote reads (see resolve_source_revision)."""
     if parquet:
         sources = parquet
     else:
@@ -125,13 +127,15 @@ def _shard_handles(parquet: list[str] | None, limit_shards: int | None):
         else:        # HuggingFace
             from huggingface_hub import HfFileSystem
             fs = HfFileSystem()
-            yield src, (lambda s=src: fs.open(s, revision=HF_REVISION))
+            rev = revision or HF_REVISION
+            yield src, (lambda s=src: fs.open(s, revision=rev))
 
 
 def iter_batches(parquet: list[str] | None, columns: list[str],
-                 limit_shards: int | None = None) -> Iterator[dict[str, list]]:
+                 limit_shards: int | None = None,
+                 revision: str | None = None) -> Iterator[dict[str, list]]:
     """Yield column-projected row groups as {col: [values]} dicts."""
-    for label, opener in _shard_handles(parquet, limit_shards):
+    for label, opener in _shard_handles(parquet, limit_shards, revision):
         with opener() as fh:
             pf = pq.ParquetFile(fh)
             for rg in range(pf.num_row_groups):
@@ -157,11 +161,12 @@ class Agg:
         self.out_tok += int(out_t or 0)
 
 
-def aggregate(parquet, limit_shards, models: set[str] | None):
+def aggregate(parquet, limit_shards, models: set[str] | None,
+              revision: str | None = None):
     """Return {(model, task): {subtask|None: Agg}}. None key = benchmark overall."""
     groups: dict[tuple[str, str], dict[str | None, Agg]] = defaultdict(
         lambda: defaultdict(Agg))
-    for batch in iter_batches(parquet, AGG_COLUMNS, limit_shards):
+    for batch in iter_batches(parquet, AGG_COLUMNS, limit_shards, revision):
         for model, task, subtask, score, in_t, out_t in zip(
                 batch['model'], batch['task'], batch['subtask'],
                 batch['score'], batch['input_tokens'], batch['output_tokens']):
@@ -232,7 +237,8 @@ def _result(task: str, subtask: str | None, agg: Agg) -> EvaluationResult:
 
 
 def build_log(model: str, task: str, subs: dict[str | None, Agg],
-              eval_ts: str, retrieved_ts: str) -> tuple[EvaluationLog, str, str]:
+              eval_ts: str, retrieved_ts: str,
+              revision: str | None = None) -> tuple[EvaluationLog, str, str]:
     developer = model.split('/')[0] if '/' in model else 'unknown'
     model_slug = model.split('/')[-1]
     sanitized = model.replace('/', '_')
@@ -259,6 +265,7 @@ def build_log(model: str, task: str, subs: dict[str | None, Agg],
             evaluator_relationship=EvaluatorRelationship.third_party,
             additional_details={
                 'dataset_url': HF_DATASET_URL,
+                'dataset_revision': revision or HF_REVISION,  # pinned commit SHA (see run)
                 'paper_url': PAPER_URL,
                 'note': 'Item-level evals run by Kensho with the Inspect AI '
                         'framework (WILD paper).',
@@ -297,38 +304,39 @@ def _prompt_from_conversation(raw: str | None) -> str:
         return str(raw)
 
 
-def _scorer_name(scores_json: str | None) -> str:
-    """The Inspect scorer that produced the item score = the key of the scores
-    JSON (e.g. 'match', 'choice', 'model_graded_qa')."""
+def _primary_scorer(scores_json: str | None, extracted: str) -> tuple[str, str]:
+    """Return (scorer_name, raw_output) read from the SAME scorer, so the two can't
+    point at different scorers. The Inspect `scores` map is keyed by scorer name
+    (e.g. 'match', 'choice', 'model_graded_qa'); WILD emits a single scorer per item.
+    If several ever appear we take the first key deterministically and read *its*
+    `answer` — rather than naming one scorer (first key) while reading another's
+    output (first value with an `answer`). The model's full generation lives in
+    `scores.<scorer>.answer`; fall back to the extracted `answer` if absent."""
     if scores_json:
         try:
-            keys = list(json.loads(scores_json).keys())
-            if keys:
-                return str(keys[0])
-        except (ValueError, TypeError, AttributeError):
+            scores = json.loads(scores_json)
+            if scores:
+                name = str(next(iter(scores)))          # the scorer we attribute to
+                val = scores[name]
+                if isinstance(val, dict) and val.get('answer'):
+                    return name, str(val['answer'])     # output from the SAME scorer
+                return name, str(extracted or '')
+        except (ValueError, TypeError, AttributeError, KeyError):
             pass
-    return 'unknown'
-
-
-def _raw_output(scores_json: str | None, extracted: str) -> str:
-    """The model's full generation lives in the scorer output (`scores.<scorer>.answer`);
-    fall back to the extracted `answer` if absent."""
-    if scores_json:
-        try:
-            for scorer in json.loads(scores_json).values():
-                if isinstance(scorer, dict) and scorer.get('answer'):
-                    return str(scorer['answer'])
-        except (ValueError, TypeError, AttributeError):
-            pass
-    return str(extracted or '')
+    return 'unknown', str(extracted or '')
 
 
 def make_instance(row: dict, evaluation_id: str, model: str,
                   multi_subtask: bool) -> InstanceLevelEvaluationLog:
     task = row['task']
     subtask = row['subtask'] if row['subtask'] not in (None, '') else '_'
-    # attach to the leaf result when the benchmark is split by subtask, else the
-    # single overall result (matches build_log's dedup so the FK always resolves).
+    # Attach to the FINEST-GRAIN result: the leaf subtask when the benchmark is split
+    # (>1 subtask), else the lone overall (matches build_log's dedup so the FK always
+    # resolves). We deliberately do NOT also emit instances for the coarser overall
+    # result of a multi-subtask benchmark: every item belongs to exactly one subtask,
+    # so the overall's per-item set is just the union of the leaves' — re-emitting it
+    # would duplicate every row for no new information. Consumers reconstruct the
+    # overall from the leaf instances.
     if multi_subtask:
         name, rid = f'wild.{task}.{subtask}', f'{task}::{subtask}'
     else:
@@ -336,7 +344,7 @@ def make_instance(row: dict, evaluation_id: str, model: str,
     score = float(row['score'] or 0)
     in_t, out_t = int(row['input_tokens'] or 0), int(row['output_tokens'] or 0)
     extracted = str(row.get('answer') or '')
-    scorer = _scorer_name(row.get('scores'))
+    scorer, raw_out = _primary_scorer(row.get('scores'), extracted)
     prompt = _prompt_from_conversation(row.get('conversation'))
     reference = [str(row.get('target') or '')]
     sample_hash = hashlib.sha256((prompt + '\n' + '\n'.join(reference)).encode('utf-8')).hexdigest()
@@ -350,7 +358,7 @@ def make_instance(row: dict, evaluation_id: str, model: str,
         sample_hash=sample_hash,
         interaction_type=InteractionType.single_turn,
         input=Input(raw=prompt, reference=reference),
-        output=Output(raw=[_raw_output(row.get('scores'), extracted)]),
+        output=Output(raw=[raw_out]),
         answer_attribution=[AnswerAttributionItem(
             turn_idx=0, source='output.raw',
             extracted_value=extracted,
@@ -364,11 +372,12 @@ def make_instance(row: dict, evaluation_id: str, model: str,
 
 
 def write_instances(parquet, limit_shards, models, agg_paths: dict, eval_ids: dict,
-                    multi: set, max_instances: int | None) -> dict[tuple[str, str], int]:
+                    multi: set, max_instances: int | None,
+                    revision: str | None = None) -> dict[tuple[str, str], int]:
     """Stream item rows into per-(model,task) `<stem>_samples.jsonl`. Returns counts."""
     counts: dict[tuple[str, str], int] = defaultdict(int)
     written = 0
-    for batch in iter_batches(parquet, INSTANCE_COLUMNS, limit_shards):
+    for batch in iter_batches(parquet, INSTANCE_COLUMNS, limit_shards, revision):
         # group this row-group's rows by (model, task) to bound open handles
         buckets: dict[tuple[str, str], list[str]] = defaultdict(list)
         n = len(batch['model'])
@@ -401,39 +410,66 @@ def write_instances(parquet, limit_shards, models, agg_paths: dict, eval_ids: di
 # driver
 # --------------------------------------------------------------------------- #
 
-def resolve_eval_timestamp(override: str | None) -> str:
-    """When the evaluation was RUN. We don't have per-run times, so use the WILD
-    dataset's HF lastModified as a stable proxy (override with --evaluation-timestamp)."""
-    if override:
-        return str(override)
+def resolve_source_revision(override: str | None,
+                            parquet: list[str] | None) -> tuple[str | None, str | None]:
+    """Pin a concrete commit for remote runs so reruns are reproducible even if a
+    later HF lookup hiccups, and read the same snapshot in both passes (aggregate +
+    instances). Returns (revision, commit_timestamp). Local `--parquet` runs need no
+    revision. Warns loudly rather than silently degrading to a mutable ref."""
+    if parquet:                       # local files: no remote revision to pin
+        return None, None
     try:
         from huggingface_hub import HfApi
-        info = HfApi().dataset_info(HF_REPO_ID)
+        info = HfApi().dataset_info(HF_REPO_ID, revision=override or HF_REVISION)
+        commit_ts = None
         if info.lastModified:
             dt = info.lastModified
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
-            return repr(dt.timestamp())
-    except Exception:  # noqa: BLE001 - fall back to now
-        pass
+            commit_ts = repr(dt.timestamp())
+        return info.sha, commit_ts    # info.sha is the concrete commit SHA
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARNING: could not resolve {HF_REPO_ID}@{override or HF_REVISION} "
+              f"({exc!r}); falling back to the MUTABLE '{HF_REVISION}' ref — reruns "
+              f"may read different data and are NOT guaranteed idempotent.")
+        return override or HF_REVISION, None
+
+
+def resolve_eval_timestamp(override: str | None,
+                           commit_ts: str | None = None) -> str:
+    """When the evaluation was RUN. Prefer an explicit override, then the pinned
+    commit's date (a stable, idempotent proxy). Only fall back to now() as a last
+    resort — and warn, since it makes evaluation_id non-idempotent across runs."""
+    if override:
+        return str(override)
+    if commit_ts:
+        return commit_ts
+    print("WARNING: no evaluation timestamp (neither --evaluation-timestamp nor a "
+          "resolved commit date); using now() — evaluation_id will change every run. "
+          "Pass --evaluation-timestamp or --revision for an idempotent id.")
     return str(time.time())
 
 
 def run(args: argparse.Namespace) -> int:
     models = set(args.models) if args.models else None
+    # Pin ONE dataset revision up front and reuse it for both passes + provenance,
+    # so aggregate and instances read the same snapshot and reruns stay idempotent.
+    revision, commit_ts = resolve_source_revision(args.revision, args.parquet)
     # retrieved = when this record was created (now); evaluation = when WILD ran it.
-    eval_ts = resolve_eval_timestamp(args.evaluation_timestamp)
+    eval_ts = resolve_eval_timestamp(args.evaluation_timestamp, commit_ts)
     retrieved_ts = str(args.retrieved_timestamp) if args.retrieved_timestamp else str(time.time())
-    print(f'evaluation_timestamp = {eval_ts} | retrieved_timestamp = {retrieved_ts}')
+    print(f'dataset_revision = {revision} | evaluation_timestamp = {eval_ts} '
+          f'| retrieved_timestamp = {retrieved_ts}')
 
-    groups = aggregate(args.parquet, args.limit_shards, models)
+    groups = aggregate(args.parquet, args.limit_shards, models, revision)
     print(f'aggregated {len(groups)} (model, benchmark) groups')
 
     agg_paths: dict[tuple[str, str], Path] = {}
     eval_ids: dict[tuple[str, str], str] = {}
     logs: dict[tuple[str, str], EvaluationLog] = {}
     for (model, task), subs in groups.items():
-        log, developer, model_slug = build_log(model, task, subs, eval_ts, retrieved_ts)
+        log, developer, model_slug = build_log(model, task, subs, eval_ts,
+                                               retrieved_ts, revision)
         path = save_evaluation_log(log, args.output_dir, developer, model_slug)
         agg_paths[(model, task)] = path
         eval_ids[(model, task)] = log.evaluation_id
@@ -444,7 +480,8 @@ def run(args: argparse.Namespace) -> int:
         multi = {k for k, subs in groups.items()
                  if len([s for s in subs if s is not None]) > 1}
         counts = write_instances(args.parquet, args.limit_shards, models,
-                                 agg_paths, eval_ids, multi, args.max_instances)
+                                 agg_paths, eval_ids, multi, args.max_instances,
+                                 revision)
         for key, count in counts.items():
             if not count:
                 continue
@@ -479,7 +516,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--retrieved-timestamp', default=None,
                    help='Override the record-creation epoch (default: now).')
     p.add_argument('--evaluation-timestamp', default=None,
-                   help='Override when the eval ran (default: HF dataset lastModified).')
+                   help='Override when the eval ran (default: the pinned commit date).')
+    p.add_argument('--revision', default=None,
+                   help='Pin a specific kensho/WILD-raw commit SHA/tag for reproducible '
+                        'reruns (default: resolve the current main commit and pin that).')
     return p.parse_args()
 
 

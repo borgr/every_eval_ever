@@ -2,12 +2,13 @@
 tiny local parquet and runs the adapter over it."""
 import argparse
 import json
+import math
 
 import pytest
 
 pytest.importorskip(
     'pyarrow',
-    reason='pyarrow not installed; the wild adapter needs it (uv sync --all-extras)',
+    reason='pyarrow not installed; the wild adapter needs it (uv sync --extra wild)',
 )
 
 import pyarrow as pa  # noqa: E402
@@ -37,7 +38,8 @@ def _synth_parquet(path):
 def _args(parquet, out, **kw):
     base = dict(parquet=[str(parquet)], output_dir=out, limit_shards=None,
                 models=None, include_instances=False, max_instances=None,
-                retrieved_timestamp="1700000000.0", evaluation_timestamp="1780000000.0")
+                retrieved_timestamp="1700000000.0", evaluation_timestamp="1780000000.0",
+                revision=None)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -60,6 +62,10 @@ def test_aggregates(tmp_path):
     assert overall["metric_config"]["score_type"] == "continuous"
     assert (overall["metric_config"]["min_score"], overall["metric_config"]["max_score"]) == (0.0, 1.0)
     assert abs(overall["score_details"]["score"] - 2 / 3) < 1e-9
+    # analytic proportion SE = sqrt(p(1-p)/n), p=2/3 over n=6 items — regression guard
+    unc = overall["score_details"]["uncertainty"]
+    assert abs(unc["standard_error"]["value"] - math.sqrt((2 / 3) * (1 / 3) / 6)) < 1e-9
+    assert unc["num_samples"] == 6
     assert log["source_metadata"]["source_type"] == "evaluation_run"
     assert log["model_info"]["id"] == "openai/gpt-x"
     assert log["evaluation_id"] == "wild/openai_gpt-x/mmlu/1780000000.0"  # keyed on eval time

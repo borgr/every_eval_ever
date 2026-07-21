@@ -82,7 +82,9 @@ uv run python -m utils.wild.adapter --parquet data-000*.parquet --output-dir /tm
   `wild.<task>` result (no duplicate leaf); multi-subtask benchmarks emit the
   overall + one `wild.<task>.<subtask>` per subtask (`metric_parameters` marks
   overall vs subtask; `micro` pooling).
-- Requires `pyarrow` (parquet reads).
+- Requires `pyarrow` (parquet reads), declared as the `wild` extra — install it
+  first with `uv sync --extra wild` (or `uv sync --all-extras`); a fresh env without
+  it fails at import.
 
 ## Benchmark canonicalization (eval-card-registry follow-up)
 

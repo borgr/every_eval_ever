@@ -32,9 +32,11 @@ helm = [
     "crfm-helm>=0.5.14",
     "typer>=0.12,<1.0",
 ]
+wild = ["pyarrow>=14.0"]  # utils/wild reads WILD-raw parquet via pyarrow
 all = [
     "every-eval-ever[inspect]",
     "every-eval-ever[helm]",
+    "every-eval-ever[wild]",
 ]
 
 [project.scripts]
