@@ -250,6 +250,20 @@ def build_log(model: str, task: str, subs: dict[str | None, Agg],
     if len(real_subs) > 1:
         for sub in real_subs:
             results.append(_result(task, sub, subs[sub]))
+    # Provenance: only claim a dataset_revision for REMOTE reads (a pinned commit).
+    # For local --parquet runs `revision` is None (resolve_source_revision) — we do
+    # NOT know which WILD-raw revision the file came from, so stamping 'main' would be
+    # a FALSE remote-provenance claim. Record a local marker instead.
+    source_details = {
+        'dataset_url': HF_DATASET_URL,
+        'paper_url': PAPER_URL,
+        'note': 'Item-level evals run by Kensho with the Inspect AI framework (WILD paper).',
+    }
+    if revision:
+        source_details['dataset_revision'] = revision
+    else:
+        source_details['dataset_source'] = (
+            'local parquet file(s); source WILD-raw revision unknown (not stamped)')
     log = EvaluationLog(
         schema_version=SCHEMA_VERSION,
         # id keyed on the (stable) evaluation time, so reruns are idempotent;
@@ -263,13 +277,7 @@ def build_log(model: str, task: str, subs: dict[str | None, Agg],
             source_organization_name=SOURCE_ORGANIZATION,
             source_organization_url=HF_DATASET_URL,
             evaluator_relationship=EvaluatorRelationship.third_party,
-            additional_details={
-                'dataset_url': HF_DATASET_URL,
-                'dataset_revision': revision or HF_REVISION,  # pinned commit SHA (see run)
-                'paper_url': PAPER_URL,
-                'note': 'Item-level evals run by Kensho with the Inspect AI '
-                        'framework (WILD paper).',
-            },
+            additional_details=source_details,
         ),
         eval_library=EvalLibrary(
             name='inspect_ai', version='unknown',
@@ -288,42 +296,68 @@ def build_log(model: str, task: str, subs: dict[str | None, Agg],
 # instance-level (--include-instances)
 # --------------------------------------------------------------------------- #
 
-def _prompt_from_conversation(raw: str | None) -> str:
-    """The input prompt = the user (and system) turns only. The `conversation`
-    column also carries the assistant response, which must NOT go in input.raw
-    (that would leak the answer and break cross-model sample hashing) — it's the
-    model output and lives in output.raw."""
+def _sample_hash(raw: str, reference: list[str]) -> str:
+    """Canonical cross-adapter sample hash — MUST match the skill recipe
+    (templates/instance_sidecar._sample_hash / utils/openeval): sha256 over canonical
+    JSON of {"raw", "reference"}. A bespoke string concatenation (the earlier
+    `raw + '\\n' + '\\n'.join(reference)`) silently fails to join with other adapters'
+    instances for the same item, defeating the cross-adapter sample_hash key."""
+    payload = json.dumps({'raw': raw, 'reference': reference},
+                         sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+
+def _split_conversation(raw: str | None) -> tuple[str, list[str]]:
+    """Split the `conversation` column into (prompt, generation_turns):
+    - prompt = the user + system turns only -> input.raw. Model-INDEPENDENT and
+      answer-FREE, so it hashes identically across models (cross-model join).
+    - generation_turns = the assistant turn content(s) -> output.raw. This is the
+      model's FULL generation; it must NOT go in input.raw (answer leak), and it is
+      distinct from the scorer's parsed answer (see _primary_scorer)."""
     if not raw:
-        return ''
+        return '', []
     try:
         msgs = json.loads(raw)
-        parts = [m.get('content', '') for m in msgs
-                 if m.get('role') in ('user', 'system') and m.get('content')]
-        return '\n\n'.join(parts) if parts else ''
-    except (ValueError, TypeError, AttributeError):
-        return str(raw)
+    except (ValueError, TypeError):
+        return str(raw), []
+    if not isinstance(msgs, list):
+        return str(raw), []
+    prompt_parts: list[str] = []
+    gen_parts: list[str] = []
+    for m in msgs:
+        if not isinstance(m, dict):
+            continue
+        content = m.get('content')
+        if not content:
+            continue
+        text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+        role = m.get('role')
+        if role in ('user', 'system'):
+            prompt_parts.append(text)
+        elif role == 'assistant':
+            gen_parts.append(text)
+    return '\n\n'.join(prompt_parts), gen_parts
 
 
-def _primary_scorer(scores_json: str | None, extracted: str) -> tuple[str, str]:
-    """Return (scorer_name, raw_output) read from the SAME scorer, so the two can't
-    point at different scorers. The Inspect `scores` map is keyed by scorer name
-    (e.g. 'match', 'choice', 'model_graded_qa'); WILD emits a single scorer per item.
-    If several ever appear we take the first key deterministically and read *its*
-    `answer` — rather than naming one scorer (first key) while reading another's
-    output (first value with an `answer`). The model's full generation lives in
-    `scores.<scorer>.answer`; fall back to the extracted `answer` if absent."""
+def _primary_scorer(scores_json: str | None) -> tuple[str, str]:
+    """Return (scorer_name, scored_answer) from the SAME scorer entry, so the name
+    and value can't point at different scorers. The Inspect `scores` map is keyed by
+    scorer name (e.g. 'match', 'choice', 'model_graded_qa'); WILD emits a single
+    scorer per item — if several ever appear we take the first key deterministically.
+    `scored_answer` is the scorer's EXTRACTED/parsed answer (Inspect's `answer`
+    field), NOT the model's full generation (that is the assistant turn in
+    `conversation`; see _split_conversation and output.raw)."""
     if scores_json:
         try:
             scores = json.loads(scores_json)
             if scores:
                 name = str(next(iter(scores)))          # the scorer we attribute to
                 val = scores[name]
-                if isinstance(val, dict) and val.get('answer'):
-                    return name, str(val['answer'])     # output from the SAME scorer
-                return name, str(extracted or '')
+                ans = val.get('answer') if isinstance(val, dict) else None
+                return name, (str(ans) if ans else '')
         except (ValueError, TypeError, AttributeError, KeyError):
             pass
-    return 'unknown', str(extracted or '')
+    return 'unknown', ''
 
 
 def make_instance(row: dict, evaluation_id: str, model: str,
@@ -343,11 +377,17 @@ def make_instance(row: dict, evaluation_id: str, model: str,
         name, rid = f'wild.{task}', task
     score = float(row['score'] or 0)
     in_t, out_t = int(row['input_tokens'] or 0), int(row['output_tokens'] or 0)
-    extracted = str(row.get('answer') or '')
-    scorer, raw_out = _primary_scorer(row.get('scores'), extracted)
-    prompt = _prompt_from_conversation(row.get('conversation'))
+    scorer, scored_answer = _primary_scorer(row.get('scores'))
+    # extracted (parsed) answer -> answer_attribution: prefer the `answer` column,
+    # fall back to the scorer's own parsed answer.
+    extracted = str(row.get('answer') or '') or scored_answer
+    prompt, generation = _split_conversation(row.get('conversation'))
     reference = [str(row.get('target') or '')]
-    sample_hash = hashlib.sha256((prompt + '\n' + '\n'.join(reference)).encode('utf-8')).hexdigest()
+    # output.raw = the model's FULL generation (assistant turn[s]) — NOT the parsed
+    # answer. Fall back to the extracted answer only if the row carries no assistant
+    # turn, so output.raw is never empty for a scored item.
+    output_raw = generation if generation else ([extracted] if extracted else [])
+    sample_hash = _sample_hash(prompt, reference)
     return InstanceLevelEvaluationLog(
         schema_version=SCHEMA_VERSION,
         evaluation_id=evaluation_id,
@@ -358,7 +398,7 @@ def make_instance(row: dict, evaluation_id: str, model: str,
         sample_hash=sample_hash,
         interaction_type=InteractionType.single_turn,
         input=Input(raw=prompt, reference=reference),
-        output=Output(raw=[raw_out]),
+        output=Output(raw=output_raw),
         answer_attribution=[AnswerAttributionItem(
             turn_idx=0, source='output.raw',
             extracted_value=extracted,

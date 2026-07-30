@@ -1,6 +1,7 @@
 """Tests for the WILD-raw adapter (utils/wild/adapter.py). No network — builds a
 tiny local parquet and runs the adapter over it."""
 import argparse
+import hashlib
 import json
 import math
 
@@ -19,12 +20,17 @@ from utils.wild import adapter  # noqa: E402
 
 
 def _synth_parquet(path):
-    convo = json.dumps([{"role": "user", "content": "What is 2+2?"}])
     rows = []
     for model in ["openai/gpt-x", "01-ai/Yi-1.5-34B-Chat"]:
         for subtask in ["algebra", "logic"]:
             for i in range(3):
                 score = 1 if i % 2 == 0 else 0
+                # the assistant turn is the model's FULL generation (chain-of-thought);
+                # it deliberately DIFFERS from the extracted `answer` ("4"/"5") and the
+                # scorer's parsed answer so tests can prove output.raw != extracted_value.
+                gen = f"Step by step: two plus two is four. Final answer: {'4' if score else '5'}."
+                convo = json.dumps([{"role": "user", "content": "What is 2+2?"},
+                                    {"role": "assistant", "content": gen}])
                 rows.append(dict(
                     model=model, task="mmlu", subtask=subtask,
                     item_id=f"{model[:3]}{subtask[:2]}{i}", score=score,
@@ -97,7 +103,7 @@ def test_single_subtask_dedup(tmp_path):
     inst = json.loads(next(out.rglob("*_samples.jsonl")).read_text().splitlines()[0])
     assert inst["evaluation_result_id"] == "arc_challenge"          # FK resolves to overall
     assert inst["input"]["raw"] == "Q?"                              # answer NOT leaked in
-    assert inst["output"]["raw"] == ["ANSWER: C"]                    # generation from scorer
+    assert inst["output"]["raw"] == ["ANSWER: C"]                    # full generation = assistant turn
     assert inst["answer_attribution"][0]["extraction_method"] == "choice"  # real scorer
     assert "sample_hash" in inst
     # source_data for arc_challenge -> the AI2 ARC dataset
@@ -124,6 +130,40 @@ def test_instances(tmp_path):
     assert inst["evaluation"]["is_correct"] in (True, False)
     assert inst["token_usage"]["total_tokens"] == inst["token_usage"]["input_tokens"] + inst["token_usage"]["output_tokens"]
     assert inst["evaluation_name"].startswith("wild.mmlu.")
-    # output.raw is the full generation from the scorer; extracted answer is attribution
-    assert inst["output"]["raw"] == ["the answer is 4"]
-    assert inst["answer_attribution"][0]["extracted_value"] in ("4", "5")
+    # output.raw is the model's FULL generation (assistant turn), NOT the parsed answer
+    full = inst["output"]["raw"]
+    assert len(full) == 1 and full[0].startswith("Step by step")
+    ev = inst["answer_attribution"][0]["extracted_value"]
+    assert ev in ("4", "5")
+    assert ev != full[0]                              # generation != extracted answer (regression guard)
+    # sample_hash uses the canonical cross-adapter recipe over (input.raw, reference)
+    assert inst["sample_hash"] == adapter._sample_hash(inst["input"]["raw"], inst["input"]["reference"])
+
+
+def test_sample_hash_is_canonical():
+    # locks the recipe to the skill's templates/instance_sidecar._sample_hash
+    expected = hashlib.sha256(
+        json.dumps({"raw": "Q?", "reference": ["C"]}, sort_keys=True,
+                   separators=(",", ":")).encode("utf-8")).hexdigest()
+    assert adapter._sample_hash("Q?", ["C"]) == expected
+
+
+def test_split_conversation_separates_prompt_and_generation():
+    convo = json.dumps([{"role": "system", "content": "sys"},
+                        {"role": "user", "content": "Q?"},
+                        {"role": "assistant", "content": "the full model answer"}])
+    prompt, generation = adapter._split_conversation(convo)
+    assert prompt == "sys\n\nQ?"                       # user + system only, no assistant
+    assert generation == ["the full model answer"]     # assistant turn -> output.raw
+
+
+def test_local_run_provenance_no_false_revision(tmp_path):
+    # a local --parquet run must NOT stamp dataset_revision='main' (false remote provenance)
+    pqt = tmp_path / "w.parquet"
+    _synth_parquet(pqt)
+    out = tmp_path / "out"
+    adapter.run(_args(pqt, out))
+    log = json.loads(next((out / "openai" / "gpt-x").glob("*.json")).read_text())
+    ad = log["source_metadata"]["additional_details"]
+    assert "dataset_revision" not in ad                # unknown for a local file
+    assert "local" in ad.get("dataset_source", "").lower()
