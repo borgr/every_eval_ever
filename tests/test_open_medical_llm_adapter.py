@@ -45,8 +45,9 @@ def test_make_log_is_valid_and_mapped():
     assert med.score_details.uncertainty.standard_error.value == 0.012
     anat = next(r for r in v.evaluation_results if r.evaluation_name.endswith(".mmlu_anatomy"))
     assert anat.score_details.uncertainty is None
-    # evaluation_id keyed on the eval time (stable), not `now`
-    assert v.evaluation_id == "open-medical-llm-leaderboard/acme_med-x/1714521600"
+    # evaluation_id keyed on the eval time (stable), not `now`; sub-second precision
+    # is preserved so same-second runs stay distinct (filename fraction .123 -> .123000)
+    assert v.evaluation_id == "open-medical-llm-leaderboard/acme_med-x/1714521600.123000"
     assert v.retrieved_timestamp == "1700000000.0"
 
 
@@ -74,3 +75,71 @@ def test_latest_per_model_skips_baselines_and_picks_latest():
     chosen, baselines = adapter.latest_per_model(paths)
     assert chosen == {"acme/med-x": "acme/med-x/results_2024-06-01T00:00:00.json"}
     assert baselines == ["GPT-4/results_2024-03-01T00:00:00.json"]
+
+
+def test_resolution_decoupled_from_evaluation_id():
+    # A registry-canonical id that DIFFERS from the source path must become
+    # model_info.id (the join key) WITHOUT moving evaluation_id (keyed on the raw
+    # repo, so re-ingest stays idempotent even if the draft is later re-mapped).
+    built = adapter.make_log(
+        "acme/med-x", _results_obj(),
+        "acme/med-x/results_2024-05-01 00:00:00.123.json", "1700000000.0",
+        model_id="acme/OpenBioLLM-med-x",
+        resolution_details={"model_id_resolution": "registry",
+                            "model_id_resolution_strategy": "fuzzy_stem",
+                            "model_id_resolution_confidence": 0.72,
+                            "model_id_created_new": True,
+                            "model_id_review_status": "draft"},
+    )
+    log = built[0]
+    assert log.model_info.id == "acme/OpenBioLLM-med-x"        # resolved canonical -> join key
+    assert log.evaluation_id == "open-medical-llm-leaderboard/acme_med-x/1714521600.123000"  # RAW slug
+    ad = log.model_info.additional_details
+    assert ad["source_model_repo"] == "acme/med-x"            # raw->canonical mapping recorded
+    assert ad["model_id_created_new"] == "true"               # provenance stringified
+    assert ad["model_id_review_status"] == "draft"
+
+
+def test_resolve_model_id_offline_no_network():
+    # opt-out path must not touch the network and must fall back to the path id
+    mid, prov = adapter.resolve_model_id("acme/med-x", enabled=False)
+    assert mid == "acme/med-x"
+    assert prov == {"model_id_resolution": "offline"}
+
+
+def test_needs_registry_review_flags_unverified():
+    assert adapter._needs_registry_review({"model_id_resolution": "registry",
+                                           "model_id_review_status": "reviewed",
+                                           "model_id_resolution_confidence": 1.0}) is False
+    assert adapter._needs_registry_review({"model_id_created_new": True}) is True
+    assert adapter._needs_registry_review({"model_id_resolution": "unreachable"}) is True
+    assert adapter._needs_registry_review({"model_id_review_status": "draft"}) is True
+    assert adapter._needs_registry_review({"model_id_resolution_confidence": 0.5}) is True
+
+
+def test_fractional_timestamp_distinguishes_same_second():
+    # two runs of the same model in the same whole second -> distinct evaluation_id
+    a = adapter.make_log("acme/med-x", _results_obj(),
+                         "acme/med-x/results_2024-05-01 00:00:00.111.json", "1700000000.0")[0]
+    b = adapter.make_log("acme/med-x", _results_obj(),
+                         "acme/med-x/results_2024-05-01 00:00:00.222.json", "1700000000.0")[0]
+    assert a.evaluation_id != b.evaluation_id
+
+
+def test_config_path_divergence_flagged():
+    obj = _results_obj()
+    obj["config"]["model_name"] = "acme/MedX-typo"   # config disagrees with the repo path
+    log = adapter.make_log("acme/med-x", obj,
+                           "acme/med-x/results_2024-05-01 00:00:00.json", "1700000000.0")[0]
+    ad = log.model_info.additional_details
+    assert ad["config_model_name"] == "acme/MedX-typo"
+    assert ad["name_path_divergence"] == "true"
+    assert log.model_info.id == "acme/med-x"          # path-mode id follows the repo, not config
+
+
+def test_next_link_parses_rel_next():
+    h = ('<https://huggingface.co/api/datasets/x/tree/main?recursive=true&cursor=ABC>; rel="next", '
+         '<https://huggingface.co/api/datasets/x/tree/main>; rel="first"')
+    assert adapter._next_link(h).endswith("cursor=ABC")
+    assert adapter._next_link(None) is None
+    assert adapter._next_link('<https://x>; rel="prev"') is None
