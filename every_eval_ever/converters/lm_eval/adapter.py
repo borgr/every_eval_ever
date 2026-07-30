@@ -48,10 +48,23 @@ class LMEvalAdapter(BaseEvaluationAdapter):
         # Stores per-log metadata so callers can find sample files after transform.
         # Keyed by evaluation_id -> {"parent_dir": str, "task_name": str}
         self._eval_metadata = {}
+        # (task_name, metric_name) pairs dropped for lack of known bounds, so a
+        # caller can report the loss instead of it being silent. Accumulates over
+        # the adapter's lifetime (one instance per convert run); see get_skipped_metrics.
+        self._skipped_metrics: List[tuple] = []
 
     def get_eval_metadata(self, evaluation_id: str) -> Dict[str, Any]:
         """Return stored metadata for a given evaluation_id."""
         return self._eval_metadata.get(evaluation_id, {})
+
+    def get_skipped_metrics(self) -> List[tuple]:
+        """(task_name, metric_name) pairs skipped for lack of known bounds.
+
+        Each entry is a metric that was silently dropped from the output because
+        KNOWN_METRIC_BOUNDS had no range for it (a continuous MetricConfig needs
+        finite/typed min+max). Callers surface this so the drop is visible.
+        """
+        return list(self._skipped_metrics)
 
     @property
     def metadata(self) -> AdapterMetadata:
@@ -257,6 +270,7 @@ class LMEvalAdapter(BaseEvaluationAdapter):
                 # min/max, so this would be invalid. Skip rather than emit a bad
                 # record. To include the metric, add it to KNOWN_METRIC_BOUNDS
                 # (use float('inf') for an unbounded side).
+                self._skipped_metrics.append((task_name, metric_name))
                 warnings.warn(
                     f'lm_eval: skipping metric {metric_name!r} on task '
                     f'{task_name!r} -- no known bounds in KNOWN_METRIC_BOUNDS',

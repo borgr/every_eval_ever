@@ -225,3 +225,44 @@ def test_convert_helm_directory_mode_reuses_generated_uuids_for_aggregate_file(
         '5cd3f6ca-2fd0-4f88-8f19-9d53089641df',
         '2e4f2dc0-9882-4a6f-8dd9-fcb3f8b007fb',
     ]
+
+
+def _make_lm_eval_args(log_path: Path, output_dir: Path) -> Namespace:
+    return Namespace(
+        log_path=str(log_path),
+        output_dir=str(output_dir),
+        source_organization_name='TestOrg',
+        evaluator_relationship='third_party',
+        source_organization_url=None,
+        source_organization_logo_url=None,
+        eval_library_name='lm_eval',
+        eval_library_version='unknown',
+        include_samples=False,
+        inference_engine=None,
+        inference_engine_version=None,
+    )
+
+
+def test_convert_lm_eval_reports_skipped_metrics_in_summary(tmp_path, capsys):
+    import json
+
+    # One task with a known metric (acc -> emitted) and an unknown-bounds metric
+    # (mystery_metric -> skipped for lack of KNOWN_METRIC_BOUNDS).
+    raw = {
+        'results': {'t': {'acc,none': 0.5, 'mystery_metric,none': 3.0}},
+        'configs': {'t': {}},
+        'higher_is_better': {'t': {'acc': True, 'mystery_metric': True}},
+        'n-samples': {'t': {}},
+        'config': {'model': 'hf', 'model_args': 'pretrained=org/model'},
+    }
+    log_path = tmp_path / 'results.json'
+    log_path.write_text(json.dumps(raw), encoding='utf-8')
+
+    rc = cli._cmd_convert_lm_eval(_make_lm_eval_args(log_path, tmp_path / 'out'))
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    # Success count stays on stdout; the loss is reported (not silent) on stderr.
+    assert 'Converted 1 evaluation log(s).' in captured.out
+    assert 'Skipped 1 metric result(s)' in captured.err
+    assert 'mystery_metric' in captured.err

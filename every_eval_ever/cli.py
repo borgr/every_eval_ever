@@ -105,6 +105,24 @@ def _cmd_convert_lm_eval(args: argparse.Namespace) -> int:
         print(_write_log(log, output_dir, eval_uuid=eval_uuid))
 
     print(f'Converted {len(logs)} evaluation log(s).')
+
+    # Skips are otherwise only a stderr warning per metric; report the tally here
+    # so the loss is visible in the run's summary rather than silent (some metrics
+    # are dropped for lack of known bounds; a log can end up with no results).
+    skipped = adapter.get_skipped_metrics()
+    if skipped:
+        names = ', '.join(sorted({metric for _, metric in skipped}))
+        print(
+            f'Skipped {len(skipped)} metric result(s) with no known bounds '
+            f'({names}); add them to KNOWN_METRIC_BOUNDS to include.',
+            file=sys.stderr,
+        )
+    empty = sum(1 for log in logs if not log.evaluation_results)
+    if empty:
+        print(
+            f'{empty} of {len(logs)} log(s) have no results after skips.',
+            file=sys.stderr,
+        )
     return 0
 
 

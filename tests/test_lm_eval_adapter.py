@@ -322,3 +322,5 @@ def test_ter_is_unbounded_infinity_and_unknown_metric_skipped():
     # a metric with no known bounds is skipped (not emitted with null bounds)
     assert 'mystery_metric' not in descs
     assert any('mystery_metric' in str(c.message) for c in caught)
+    # the skip is recorded so a caller can report the loss (not just warn)
+    assert adapter.get_skipped_metrics() == [('t', 'mystery_metric')]
