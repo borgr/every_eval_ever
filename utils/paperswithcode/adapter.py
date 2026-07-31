@@ -1183,41 +1183,106 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
+# --- metric-family triage table --------------------------------------------
+# A NEW metric name that does not resolve is either (a) a member of a recurring
+# standard family whose bounds/direction follow from the family definition -- a
+# 60-second registry add -- or (b) a bespoke composite that needs a read of its
+# defining paper. This table lets the unresolved report SORT the two so the
+# maintainer knows which is which at a glance. It is the same family taxonomy
+# used to seed the 108 recurring metrics; see METRIC_MAINTENANCE.md.
+#
+# IMPORTANT: these patterns are a *triage hint*, not an auto-registration rule.
+# Name inference is unsafe for bounds (e.g. PIE-Bench reports LPIPS x10^3, so a
+# name-based [0,1] would be wrong; a "BD-Rate (PSNR ...)" is a signed rate, not a
+# PSNR). Always confirm bounds against the definition/paper before registering,
+# and let the observed-range cross-check (see METRIC_MAINTENANCE.md) catch a
+# family bound the dump data contradicts. Order matters: the FIRST match wins, so
+# specific families (bd, pose-error) precede generic ones (psnr, rate).
+_FAMILY_TABLE: tuple[tuple[str, str, str], ...] = (
+    # (family, suggested bound/direction, regex tried against the metric name)
+    ('bd',         'null..null, lower better (signed %)',    r'\bbd[-\s]?rate\b|bjontegaard'),
+    ('pose-error', '[0, inf), lower better (mm)',            r'\b(?:pa-|n-|b-|f-|fb-|lh-|rh-)?mp?[jv]pe\b|\bmpvpe\b|\bn?m[jv]e\b|\bmrpe\b|\bpve\b|\btepe\b|end-?point\s*error'),
+    ('mos',        '[1, 5], higher better',                  r'\bmos\b|dnsmos|plcmos|utmos|visqol|nisqa'),
+    ('pesq',       '[-0.5, 4.5], higher better',             r'\bpesq\b'),
+    ('stoi',       '[0, 1], higher better',                  r'\be?stoi\b'),
+    ('mcd',        '[0, inf), lower better',                 r'\bmcd\b|mel[-\s]?cepstral'),
+    ('psnr',       '[0, inf), higher better (dB)',           r'\bpsnr\b'),
+    ('bitrate',    '[0, inf), lower better',                 r'\bb(?:pp|psp)\b|bits?[-\s]?per'),
+    ('spec-loss',  '[0, inf), lower better',                 r'\b(?:mel|stft|f0)[-\s]?(?:loss|rmse|dist|distance|l1)\b|spectral\s*(?:loss|convergence)'),
+    ('gen-dist',   '[0, inf), lower better',                 r'\br?f[iv]d\b|\bkid\b|\bfvd\b|inception\s*distance'),
+    ('dist-error', '[0, inf), lower better',                 r'\b(?:r?mse|mae|l1|l2)\b|\bmean\s*(?:squared|absolute)\s*error'),
+    ('rate',       '[0, 1], higher better (percent boards rescaled)',
+                                                             r'\bacc(?:uracy)?\b|\bf1\b|\bap\d*\b|\bm?ap\b|\bau[rp]?[oc]c?\b|\bauc\b|\brecall\b|\bprecision\b|\biou\b|\br@?\d|\br\d@|success\s*rate|\bols\b|\bpro\b|\bem\b'),
+)
+_FAMILY_PATTERNS = tuple((fam, hint, re.compile(rx, re.I)) for fam, hint, rx in _FAMILY_TABLE)
+
+
+def classify_metric_family(name: str) -> tuple[str, str] | None:
+    """Return (family, bound_hint) for a metric name that looks like a recurring
+    standard family, else None (bespoke -> needs a paper read). First match wins.
+    Advisory only: bounds must be confirmed before registering (see the note on
+    _FAMILY_TABLE and METRIC_MAINTENANCE.md)."""
+    for fam, hint, rx in _FAMILY_PATTERNS:
+        if rx.search(name):
+            return fam, hint
+    return None
+
+
 def _report_unresolved(
     unresolved: dict[str, set[str]],
     reasons: dict[str, tuple[str, tuple[str, ...]]] | None = None,
 ) -> str:
     reasons = reasons or {}
-    lines = []
-    ambiguous_any = False
+    recurring: list[str] = []   # look like a known family -> quick registry add
+    bespoke: list[str] = []     # need a paper read -> auto-handled meanwhile
+    ambiguous: list[str] = []
     for name, ds in sorted(unresolved.items()):
         why, candidates = reasons.get(name, ('unknown', ()))
         if why.startswith('ambiguous'):
-            ambiguous_any = True
-            lines.append(
+            ambiguous.append(
                 f'  - {name!r} (on {sorted(ds)}) — AMBIGUOUS: matches '
                 f'{list(candidates)}'
             )
+            continue
+        fam = classify_metric_family(name)
+        if fam is not None:
+            recurring.append(f'  - {name!r} (on {sorted(ds)}) — family {fam[0]}: {fam[1]}')
         else:
-            lines.append(f'  - {name!r} (on {sorted(ds)})')
-    msg = (
+            bespoke.append(f'  - {name!r} (on {sorted(ds)})')
+
+    blocks = [
         f'{len(unresolved)} metric(s) do not resolve in the registry snapshot '
-        f'({SNAPSHOT_PATH.name}):\n'
-        + '\n'.join(lines)
-        + '\n\nAdd them to the eval-card-registry (see its `registry-entity-aliases` '
-        'skill) with paper-defined min/max/direction, refresh the snapshot '
-        '(refresh_metric_snapshot.py), and re-run — or pass --allow-unresolved to '
-        'emit them now with observed-range bounds (labelled bound_source).'
-    )
-    if ambiguous_any:
-        msg += (
-            '\n\nAMBIGUOUS metric(s) match more than one canonical id — a '
-            'duplicate alias/display_name in the registry, not a missing entry. '
-            'Fix the collision in seed/metrics.yaml (remove or uniquify the '
-            'offending alias) and refresh the snapshot; --allow-unresolved will '
-            'otherwise emit them with observed-range bounds and NO canonical id.'
+        f'({SNAPSHOT_PATH.name}). Triage below; to register, edit '
+        'eval-card-registry seed/metrics.yaml (see its `registry-entity-aliases` '
+        'skill) and refresh the snapshot. Full runbook: METRIC_MAINTENANCE.md.'
+    ]
+    if recurring:
+        blocks.append(
+            f'RECURRING — look like a standard family ({len(recurring)}): register in '
+            'eval-card-registry seed/metrics.yaml with the family bound/direction '
+            'shown (CONFIRM it against the definition first), then refresh the '
+            'snapshot (refresh_metric_snapshot.py) and re-run:\n'
+            + '\n'.join(recurring)
         )
-    return msg
+    if bespoke:
+        blocks.append(
+            f'BESPOKE — no family match, need a read of the defining paper ({len(bespoke)}): '
+            'open each metric\'s paper (paper_url is kept in the source rows / prior '
+            'output), deduce the bound; if the paper is not enough, register '
+            'name-only with null bounds (or leave unresolved). --allow-unresolved '
+            'emits them now with observed-range bounds (labelled bound_source) so '
+            'data keeps flowing while you work through them:\n'
+            + '\n'.join(bespoke)
+        )
+    if ambiguous:
+        blocks.append(
+            f'AMBIGUOUS — match more than one canonical id ({len(ambiguous)}): a '
+            'duplicate alias/display_name in the registry, NOT a missing entry. Fix '
+            'the collision in seed/metrics.yaml (remove or uniquify the offending '
+            'alias) and refresh the snapshot:\n'
+            + '\n'.join(ambiguous)
+        )
+    return '\n\n'.join(blocks)
 
 
 def _summarize_class(title: str, items: dict[str, set[str]]) -> str:
