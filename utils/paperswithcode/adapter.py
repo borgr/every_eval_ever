@@ -2,7 +2,7 @@
 """Convert Papers with Code evaluation results into Every Eval Ever records.
 
 Data source:
-- HF bucket ``nielsr/paperswithcode-backups`` -> nightly PostgreSQL custom-format
+- HF bucket ``huggingface/paperswithcode-backups`` -> nightly PostgreSQL custom-format
   dumps under ``postgres/*.dump`` (pg_dump ``-Fc``). Read with ``pgdumplib``
   (pure-python; no PostgreSQL server needed).
 
@@ -38,10 +38,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
-import time
+import shutil
+import statistics
+import sys
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -58,8 +62,6 @@ from every_eval_ever.eval_types import (
     SourceDataPrivate,
     SourceDataUrl,
     SourceMetadata,
-    StandardError,
-    Uncertainty,
 )
 from every_eval_ever.helpers import (
     SCHEMA_VERSION,
@@ -70,7 +72,7 @@ from every_eval_ever.helpers import (
 
 SRC = 'paperswithcode'
 PWC_SITE = 'https://paperswithcode.com'
-DEFAULT_BUCKET = 'nielsr/paperswithcode-backups'
+DEFAULT_BUCKET = 'huggingface/paperswithcode-backups'
 DEFAULT_OUTPUT_DIR = 'data/paperswithcode'
 
 # Tables loaded in full to build lookups. ``papers`` is streamed separately and
@@ -146,42 +148,50 @@ def snake(value: Any, fallback: str = 'unknown') -> str:
 def _to_float(text: str) -> float | None:
     """Parse a numeric string tolerating '%' and European decimal commas.
 
-    PwC stores metric values as free text: '95.2', '95,2' (decimal comma),
-    '1,234.5' (thousands sep), '30%'. A naive ``replace(',', '')`` corrupts
-    '97,3' into 973, so the comma is only stripped when it is clearly a
-    thousands separator.
+    PwC stores metric values as free text: '95.2', '95,2'/'0,991'/'97,345'
+    (decimal comma), '1,234.5'/'1,234,567' (thousands separator), '30%'. The old
+    rule only treated 1-2 digits after a comma as a decimal, so '0,991' became
+    991 and '97,345' became 97345 -- precisions that are routine for eval metrics.
+    A *single* comma is now read as a decimal separator (a bare thousands-grouped
+    metric score is vanishingly rare); a comma alongside a '.', or several commas,
+    is a thousands separator and stripped. Non-finite inputs ('NaN', 'Infinity',
+    'inf') are rejected -- a score must be a finite real number, not a bound.
     """
     s = str(text).strip().rstrip('%').strip()
     if not s:
         return None
-    if ',' in s and '.' in s:
-        s = s.replace(',', '')  # thousands separator: 1,234.5 -> 1234.5
+    if (',' in s and '.' in s) or s.count(',') > 1:
+        s = s.replace(',', '')   # thousands: 1,234.5 -> 1234.5 ; 1,234,567 -> 1234567
     elif ',' in s:
-        if re.fullmatch(r'-?\d+,\d{1,2}', s):
-            s = s.replace(',', '.')  # decimal comma: 97,3 -> 97.3
-        else:
-            s = s.replace(',', '')  # thousands: 1,234 -> 1234
+        s = s.replace(',', '.')  # decimal comma: 97,3 -> 97.3 ; 0,991 -> 0.991
     try:
-        return float(s)
+        val = float(s)
     except ValueError:
         return None
+    return val if math.isfinite(val) else None
 
 
-def parse_metric_value(raw: Any) -> tuple[float | None, float | None]:
-    """Return (score, standard_error). Handles 'mean +/- sd' uncertainty."""
+def parse_metric_value(raw: Any) -> tuple[float | None, str | None]:
+    """Return (score, uncertainty_text).
+
+    A 'mean +/- sd' value yields the numeric mean plus the raw right-hand token
+    as *text*. PwC's '±' does not identify the spread as a standard error, a
+    standard deviation, or a CI half-width, so the caller keeps it verbatim rather
+    than coercing it into a typed Uncertainty (every_eval_ever#209 review).
+    """
     if raw is None:
         return None, None
     s = str(raw).strip()
     if not s:
         return None, None
-    std_err = None
+    unc_text: str | None = None
     for sep in ('±', '+/-', '+-'):
         if sep in s:
             left, _, right = s.partition(sep)
             s = left.strip()
-            std_err = _to_float(right)
+            unc_text = right.strip() or None
             break
-    return _to_float(s), std_err
+    return _to_float(s), unc_text
 
 
 def dedupe(items: Iterable[Any]) -> list[Any]:
@@ -288,32 +298,81 @@ def _finite_bounds(lo: float, hi: float) -> tuple[float, float]:
 
 
 def reconcile_scale(
-    score: float, std_err: float | None, lo: float, hi: float, resolved: bool
-) -> tuple[float, float | None, dict[str, Any]]:
+    score: float,
+    lo: float,
+    hi: float,
+    resolved: bool,
+    group_repr: float | None = None,
+) -> tuple[float, dict[str, Any]]:
     """Rescale a source value onto the canonical [lo, hi] scale.
 
-    PwC reports proportion metrics (canonical [0,1]) as percent (0-100); this maps
-    the score (and its std_err, same units) back to the canonical scale so a score
-    is never outside its own bounds. Only the unambiguous percent->proportion case
-    is rescaled; a value that still won't fit is left as-is and flagged rather than
-    silently divided by a guessed factor.
+    PwC reports proportion metrics (canonical [0,1]) sometimes as percent (0-100),
+    inconsistently even within one leaderboard. The reporting scale is a property
+    of the whole (metric, dataset) group, so we decide it ONCE from a robust
+    representative of that group -- its median (``group_repr``) -- rather than from
+    each score in isolation. Per-score inference is fragile both ways: it would
+    rescale a lone in-range value sitting in an otherwise-percent board (a ``1.0``
+    that means 1%), and would silently "fix" a lone out-of-range value in an
+    otherwise-proportion board (a mis-entered ``95``) instead of flagging it. With
+    no group context supplied, ``group_repr`` falls back to the score itself (the
+    original per-score behaviour, still correct for a singleton group).
+
+    Only the unambiguous percent->proportion case (canonical ``hi <= 1`` with the
+    group centred in ``(hi, 100]``) is rescaled. A representative above 100, or a
+    score still outside the canonical range after applying the group scale, is
+    flagged (``scale_anomaly``) and left as-is rather than divided by a guessed
+    factor (every_eval_ever#209 review, Q2/Erotemic).
     """
     detail: dict[str, Any] = {}
-    if not resolved or lo <= score <= hi:
-        return score, std_err, detail
-    if 0.0 <= hi <= 1.0 and hi < score <= 100.0:
-        detail['canonical_rescale_factor'] = 100.0
-        score = score / 100.0
-        if std_err is not None:
-            std_err = std_err / 100.0
-    else:
-        detail['scale_anomaly'] = 'true'  # outside canonical range, not rescaled
-    return score, std_err, detail
+    if not resolved:
+        return score, detail
+    ref = group_repr if group_repr is not None else score
+    if math.isfinite(hi) and hi <= 1.0 and ref > hi:
+        if ref <= 100.0:
+            score = score / 100.0
+            detail['canonical_rescale_factor'] = 100.0
+            detail['rescale_basis'] = (
+                'group_median' if group_repr is not None else 'single_score'
+            )
+        else:
+            # group centred too high to be percent -> scale is unknown, don't guess
+            detail['scale_anomaly'] = 'group_representative_above_percent'
+    if math.isfinite(lo) and math.isfinite(hi) and not (lo <= score <= hi):
+        detail.setdefault('scale_anomaly', 'score_outside_canonical_range')
+    # Reproducibility: whenever a scale DECISION was made (rescale or anomaly),
+    # record the representative it was based on, so the decision can be re-derived
+    # and audited across dumps (every_eval_ever#209 review, Q2/Erotemic). The
+    # no-op path (nothing decided) stays an empty detail.
+    if detail:
+        detail['scale_group_repr'] = ref
+    return score, detail
 
 
 def _normalize_metric_key(name: Any) -> str:
     """Mirror the registry's `normalized` matcher: drop case + all separators."""
     return re.sub(r'[^a-z0-9]', '', str(name).lower())
+
+
+def _metadata_kind_confidence(meta: Any) -> tuple[str | None, str | None]:
+    """Pull (kind, confidence) out of a registry metric's `metadata` field.
+
+    The seed stores it as a JSON *string* (e.g. '{"kind": "real", "confidence":
+    "high"}'); the snapshot may keep it as that string or as a parsed object.
+    Best-effort: a malformed/absent value yields (None, None), never raises.
+    """
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except (ValueError, TypeError):
+            return None, None
+    if not isinstance(meta, dict):
+        return None, None
+    kind = meta.get('kind')
+    confidence = meta.get('confidence')
+    return (
+        str(kind) if kind is not None else None,
+        str(confidence) if confidence is not None else None,
+    )
 
 
 @dataclass(frozen=True)
@@ -347,20 +406,86 @@ class MetricResolver:
     ) -> None:
         data = json.loads(Path(snapshot_path).read_text(encoding='utf-8'))
         self._by_id = {m['id']: m for m in data['metrics']}
-        self._index: dict[str, str] = {}
+        # The exact registry commit these bounds came from (surfaced per metric so
+        # a downstream consumer can re-check a value if the registry moves).
+        self.registry_revision = (data.get('_meta') or {}).get('registry_revision')
+        # Two indices, EXACT-first. A spelling (id/display_name/alias) maps to the
+        # set of canonical ids that use it. Exact (case-insensitive) match wins;
+        # only if that misses do we fall back to the normalized key (case +
+        # separators dropped). A key that maps to >1 id is an unresolvable
+        # COLLISION -- we refuse to silently pick one (the old `setdefault` index
+        # let the first-seen spelling win, so 'CLIP-IQA'/'CLIPIQA+' could steal
+        # each other's id). (every_eval_ever#209 review, mrshu)
+        self._exact: dict[str, set[str]] = defaultdict(set)
+        self._norm: dict[str, set[str]] = defaultdict(set)
         for m in data['metrics']:
-            keys = [m['id'], m.get('display_name'), *(m.get('aliases') or [])]
-            for k in keys:
-                if k:
-                    self._index.setdefault(_normalize_metric_key(k), m['id'])
+            for sp in (m['id'], m.get('display_name'), *(m.get('aliases') or [])):
+                if sp:
+                    self._exact[str(sp).strip().casefold()].add(m['id'])
+                    self._norm[_normalize_metric_key(sp)].add(m['id'])
         self.pwc_directions = pwc_directions or {}
         # raw metric name -> set of dataset slugs it was seen on (for the report)
         self.unresolved: dict[str, set[str]] = {}
+        # raw metric name -> (why, candidate_ids): 'unknown' (not in registry) vs
+        # 'ambiguous_*' (a collision we would not guess through)
+        self.unresolved_reason: dict[str, tuple[str, tuple[str, ...]]] = {}
         # metric name -> count of results emitted with an unbounded (inf) bound
         self.unbounded_emitted: dict[str, int] = {}
+        # metric name -> set of dataset slugs emitted with a direction that could
+        # be resolved from NEITHER the registry NOR the PwC source (an imperfection
+        # the strict gate refuses; see _direction). (every_eval_ever#209, Ero #? G2)
+        self.direction_unknown: dict[str, set[str]] = {}
+        # metric name -> set of dataset slugs where a score could not be reconciled
+        # onto the canonical scale (scale_anomaly). Filled by build_results from
+        # reconcile_scale's detail; the strict gate refuses these too.
+        self.scale_anomalies: dict[str, set[str]] = {}
 
-    def _lookup(self, metric_name: str) -> dict[str, Any] | None:
-        return self._by_id.get(self._index.get(_normalize_metric_key(metric_name)))
+    def _direction(
+        self, registry_dir: bool | None, metric_name: str
+    ) -> tuple[bool, str]:
+        """Resolve ``lower_is_better`` by a source-priority chain.
+
+        The registry deliberately leaves ``lower_is_better`` ``null`` for metrics
+        whose direction is a property of the *use*, not the metric (refusal rate;
+        the source's own malformed ``.mean``/``.score`` labels) -- its documented
+        intent is "direction stays per-row". So a ``null`` registry direction is
+        NOT coerced to ``False`` (which silently asserts higher-is-better); it
+        falls back to PwC's own per-metric ``direction`` (the ``metrics`` table),
+        and only if THAT is also absent is the direction genuinely unknown. The
+        schema requires a bool, so an unknown direction is emitted as ``False``
+        (the common default) but always tagged so it is never *silently* wrong --
+        the strict gate fails on it; best-effort keeps it flagged.
+        Returns ``(lower_is_better, source)`` with source in
+        {``registry``, ``pwc_source``, ``unknown``}.
+        """
+        if registry_dir is not None:
+            return bool(registry_dir), 'registry'
+        pwc = self.pwc_directions.get(metric_name)
+        if pwc == 'lower_is_better':
+            return True, 'pwc_source'
+        if pwc is not None:  # any other non-null PwC value == higher_is_better
+            return False, 'pwc_source'
+        return False, 'unknown'
+
+    def _match(self, metric_name: str) -> tuple[str | None, str, tuple[str, ...]]:
+        """Return (canonical_id, match_tier, candidate_ids).
+
+        canonical_id is None when the name is unresolvable -- either 'unknown'
+        (no candidate) or an 'ambiguous_*' collision (>1 candidate). Exact match
+        is tried before the lossy normalized match so distinct-but-similar names
+        ('CLIP-IQA' vs 'CLIPIQA+') resolve to their own ids.
+        """
+        exact = self._exact.get(str(metric_name).strip().casefold())
+        if exact:
+            if len(exact) == 1:
+                return next(iter(exact)), 'exact', ()
+            return None, 'ambiguous_exact', tuple(sorted(exact))
+        nrm = self._norm.get(_normalize_metric_key(metric_name))
+        if nrm:
+            if len(nrm) == 1:
+                return next(iter(nrm)), 'normalized', ()
+            return None, 'ambiguous_normalized', tuple(sorted(nrm))
+        return None, 'unknown', ()
 
     def resolve(
         self,
@@ -369,13 +494,27 @@ class MetricResolver:
         dataset_slug: str | None = None,
     ) -> ResolvedMetric:
         obs_min, obs_max = obs_range
-        entry = self._lookup(metric_name)
-        if entry is not None:
+        canonical_id, tier, candidates = self._match(metric_name)
+        if canonical_id is not None:
+            entry = self._by_id[canonical_id]
             score_type = entry.get('score_type') or 'continuous'
             detail: dict[str, Any] = {
                 'bound_source': 'registry',
                 'canonical_metric_id': entry['id'],
+                'match_tier': tier,
+                'bound_registry_revision': self.registry_revision,
             }
+            # Surface the canonical entry's vetting status/confidence rather than
+            # hard-rejecting un-reviewed metrics: EEE should not be held hostage
+            # to the registry's review queue, but consumers must be able to see
+            # that a bound is still `draft`. (every_eval_ever#209 review, Ero #2)
+            if entry.get('review_status'):
+                detail['canonical_review_status'] = entry.get('review_status')
+            kind, confidence = _metadata_kind_confidence(entry.get('metadata'))
+            if kind:
+                detail['canonical_metric_kind_flag'] = kind
+            if confidence:
+                detail['canonical_confidence'] = confidence
             lo, hi = entry.get('min_score'), entry.get('max_score')
             # null bound in the registry == unbounded -> +/-inf (every_eval_ever#207
             # serializes these as the JSON string "Infinity"/"-Infinity").
@@ -389,35 +528,75 @@ class MetricResolver:
                 self.unbounded_emitted[metric_name] = (
                     self.unbounded_emitted.get(metric_name, 0) + 1
                 )
+            lib, dir_source = self._direction(
+                entry.get('lower_is_better'), metric_name
+            )
+            detail['direction_source'] = dir_source
+            if dir_source == 'unknown':
+                self.direction_unknown.setdefault(metric_name, set())
+                if dataset_slug:
+                    self.direction_unknown[metric_name].add(dataset_slug)
             return ResolvedMetric(
                 metric_id=entry['id'],
                 metric_kind=entry['id'],
-                lower_is_better=bool(entry.get('lower_is_better')),
+                lower_is_better=lib,
                 score_type=score_type,
                 min_score=float(lo),
                 max_score=float(hi),
                 resolved=True,
                 detail=detail,
             )
-        # unresolved -> record for the fail-closed report; return an observed proxy
+        # Unresolved: an unknown metric OR an ambiguous collision. Both fail closed
+        # by default and are salvageable with --allow-unresolved (observed-range
+        # bounds), so a collision is handled by the SAME gate as any un-vetted
+        # metric -- no separate flag.
         self.unresolved.setdefault(metric_name, set())
         if dataset_slug:
             self.unresolved[metric_name].add(dataset_slug)
+        self.unresolved_reason[metric_name] = (tier, candidates)
         lo, hi = _finite_bounds(min(0.0, obs_min), obs_max)
-        direction = self.pwc_directions.get(metric_name)
+        lib, dir_source = self._direction(None, metric_name)
+        detail = {
+            'bound_source': 'observed_unresolved',
+            'match_tier': tier,
+            'pwc_metric_direction': self.pwc_directions.get(metric_name),
+            'direction_source': dir_source,
+        }
+        # NB: an unresolved metric is already caught by the unresolved gate, so its
+        # unknown direction is not *also* tracked in direction_unknown (no double
+        # count); the direction_source flag is still recorded for transparency.
+        if candidates:
+            detail['collision_candidates'] = list(candidates)
         return ResolvedMetric(
             metric_id=f'{SRC}.{snake(metric_name)}',
             metric_kind=snake(metric_name),
-            lower_is_better=(direction == 'lower_is_better'),
+            lower_is_better=lib,
             score_type='continuous',
             min_score=lo,
             max_score=hi,
             resolved=False,
-            detail={
-                'bound_source': 'observed_unresolved',
-                'pwc_metric_direction': direction,
-            },
+            detail=detail,
         )
+
+
+# PwC's free-text `scale` declarations that map to a real measurement unit. A
+# range declaration such as '0-1' or 'unbounded' is NOT a unit -- mapping it into
+# metric_unit (as the old `meta.get('scale') or None` did) leaks "0-1"/"unbounded"
+# into a field meant for units like proportion/percent/points. Unknown/range-only
+# scales leave metric_unit unset; the raw scale is preserved in additional_details
+# so nothing is lost (every_eval_ever#209 review, Ero #7).
+_SCALE_TO_UNIT = {
+    '0-1': 'proportion',
+    '0-100': 'percent',
+    'percent': 'percent',
+    '%': 'percent',
+}
+
+
+def _metric_unit_from_scale(scale: Any) -> str | None:
+    if not scale:
+        return None
+    return _SCALE_TO_UNIT.get(str(scale).strip().lower())
 
 
 def build_metric_config(
@@ -432,9 +611,9 @@ def build_metric_config(
         metric_id=resolved.metric_id,
         metric_name=metric_name,
         metric_kind=resolved.metric_kind,
-        # metric_unit left unset unless PwC declares a scale -- inferring it from
-        # the value range mislabels physical-unit metrics (e.g. PSNR in dB).
-        metric_unit=meta.get('scale') or None,
+        # A unit only when PwC's scale maps to a real one; a range/"unbounded"
+        # declaration is preserved raw in additional_details, not forced here.
+        metric_unit=_metric_unit_from_scale(meta.get('scale')),
         lower_is_better=resolved.lower_is_better,
         score_type=ScoreType(resolved.score_type),
         min_score=resolved.min_score,
@@ -445,6 +624,7 @@ def build_metric_config(
                 'observed_min': obs_range[0],
                 'observed_max': obs_range[1],
                 'pwc_metric_full_name': meta.get('full_name'),
+                'pwc_scale': meta.get('scale'),
             }
         ),
     )
@@ -454,25 +634,26 @@ def score_details(
     ev: dict[str, Any],
     raw_value: Any,
     score: float,
-    std_err: float | None,
+    uncertainty_text: str | None,
     dataset: dict[str, Any],
     paper: dict[str, Any] | None,
     scale_detail: dict[str, Any] | None = None,
 ) -> ScoreDetails:
-    unc = None
-    if std_err is not None:
-        unc = Uncertainty(
-            standard_error=StandardError(value=std_err, method='reported')
-        )
     paper = paper or {}
     arxiv_id = paper.get('arxiv_id')
     return ScoreDetails(
         score=score,
-        uncertainty=unc,
+        # PwC's '±' spread does not declare itself a standard error, standard
+        # deviation, or CI half-width, so we do NOT assert a typed Uncertainty
+        # (which would misrepresent it). The reported spread is kept verbatim in
+        # `reported_uncertainty` (and within `raw_value`) for downstream
+        # interpretation (every_eval_ever#209 review, Ero #5).
+        uncertainty=None,
         details=stringify_details(
             {
                 **(scale_detail or {}),
                 'raw_value': raw_value,
+                'reported_uncertainty': uncertainty_text,
                 'pwc_evaluation_id': ev.get('id'),
                 'best_rank': ev.get('best_rank'),
                 'best_metric': ev.get('best_metric'),
@@ -487,6 +668,7 @@ def score_details(
                 if arxiv_id
                 else None,
                 'paper_title': paper.get('title'),
+                'paper_source_url': paper.get('source_url'),
             }
         ),
     )
@@ -511,6 +693,7 @@ def build_results(
     metric_ranges: dict[str, tuple[float, float]],
     metric_meta: dict[str, dict[str, Any]],
     paper: dict[str, Any] | None,
+    group_medians: dict[tuple[Any, str], float] | None = None,
 ) -> list[EvaluationResult]:
     """Fan one evaluation row out to one EvaluationResult per jsonb metric."""
     try:
@@ -520,6 +703,7 @@ def build_results(
     if not isinstance(metrics, dict) or not metrics:
         return []
 
+    group_medians = group_medians or {}
     ds_slug = dataset.get('slug') or slugify(dataset.get('name'))
     task_slug = (task or {}).get('slug') or 'unknown-task'
     eval_name = f'{SRC}.{snake(task_slug)}.{snake(ds_slug)}'
@@ -528,14 +712,23 @@ def build_results(
 
     results: list[EvaluationResult] = []
     for mname, raw in metrics.items():
-        score, std_err = parse_metric_value(raw)
+        score, unc_text = parse_metric_value(raw)
         if score is None:
             continue
         obs_range = metric_ranges.get(mname, (score, score))
         resolved = resolver.resolve(mname, obs_range, ds_slug)
-        score, std_err, scale_detail = reconcile_scale(
-            score, std_err, resolved.min_score, resolved.max_score, resolved.resolved
+        # The reporting scale is decided once per (dataset, metric) leaderboard
+        # from its median, not from this single score (see reconcile_scale).
+        group_repr = group_medians.get((ev.get('dataset_id'), mname))
+        score, scale_detail = reconcile_scale(
+            score,
+            resolved.min_score,
+            resolved.max_score,
+            resolved.resolved,
+            group_repr,
         )
+        if 'scale_anomaly' in scale_detail:
+            resolver.scale_anomalies.setdefault(mname, set()).add(ds_slug)
         results.append(
             EvaluationResult(
                 evaluation_result_id=f'{SRC}.{ev.get("id")}.{snake(mname)}',
@@ -546,14 +739,34 @@ def build_results(
                     mname, resolved, obs_range, metric_meta.get(mname)
                 ),
                 score_details=score_details(
-                    ev, raw, score, std_err, dataset, paper, scale_detail
+                    ev, raw, score, unc_text, dataset, paper, scale_detail
                 ),
             )
         )
     return results
 
 
-def build_source_metadata(dump_version: str) -> SourceMetadata:
+def build_source_metadata(
+    dump_version: str,
+    source_bucket: str | None = None,
+    dump_file: str | None = None,
+) -> SourceMetadata:
+    # Provenance reflects the ACTUAL source of this run: the HF bucket only when
+    # the dump was fetched from one, plus the dump file name. The previous version
+    # hardcoded the default bucket even for `--dump` (local) or custom-bucket runs,
+    # asserting a provenance that did not hold (every_eval_ever#209 review, mrshu).
+    details: dict[str, Any] = {
+        'source_role': 'aggregator',
+        'dump_version': dump_version,
+        'note': (
+            'Scores aggregated by Papers with Code from papers and external '
+            'leaderboards; not re-run by this adapter.'
+        ),
+    }
+    if source_bucket:
+        details['source_bucket'] = source_bucket
+    if dump_file:
+        details['source_dump_file'] = dump_file
     return SourceMetadata(
         source_name='Papers with Code',
         source_type='documentation',
@@ -562,15 +775,7 @@ def build_source_metadata(dump_version: str) -> SourceMetadata:
         # A leaderboard aggregating reported numbers is third_party wrt the model
         # developer, even when a score was self-reported to it (see fields.md).
         evaluator_relationship=EvaluatorRelationship.third_party,
-        additional_details={
-            'source_role': 'aggregator',
-            'source_bucket': DEFAULT_BUCKET,
-            'dump_version': dump_version,
-            'note': (
-                'Scores aggregated by Papers with Code from papers and external '
-                'leaderboards; not re-run by this adapter.'
-            ),
-        },
+        additional_details=stringify_details(details),
     )
 
 
@@ -609,6 +814,9 @@ def build_logs(
     papers_by_id: dict[Any, dict[str, Any]],
     dump_version: str,
     retrieved_ts: str,
+    source_bucket: str | None = None,
+    dump_file: str | None = None,
+    group_medians: dict[tuple[Any, str], float] | None = None,
 ) -> list[LogBundle]:
     """Group evaluation rows by canonical model id into one log per model."""
     groups: dict[str, list[EvaluationResult]] = defaultdict(list)
@@ -623,7 +831,14 @@ def build_logs(
         task = tasks_by_id.get(ev.get('task_id'))
         paper = papers_by_id.get(ev.get('paper_id'))
         results = build_results(
-            ev, dataset, task, resolver, metric_ranges, metric_meta, paper
+            ev,
+            dataset,
+            task,
+            resolver,
+            metric_ranges,
+            metric_meta,
+            paper,
+            group_medians,
         )
         if not results:
             continue
@@ -656,7 +871,9 @@ def build_logs(
             # STABLE anchor: model id + dump version -> idempotent per dump, never `now`.
             evaluation_id=f'{SRC}/{model_id.replace("/", "_")}/{dump_version}',
             retrieved_timestamp=retrieved_ts,
-            source_metadata=build_source_metadata(dump_version),
+            source_metadata=build_source_metadata(
+                dump_version, source_bucket, dump_file
+            ),
             eval_library=EvalLibrary(
                 name='unknown',
                 version='unknown',
@@ -726,24 +943,42 @@ def scan_evaluations(
     dump,
     dataset_ids: set[Any] | None,
     limit: int | None,
-) -> tuple[list[dict[str, Any]], dict[str, tuple[float, float]]]:
-    """Single pass over ``evaluations``: accumulate per-metric observed ranges
-    over the WHOLE dump (stable bounds, slice-independent) while collecting the
-    filtered rows to emit."""
-    ranges: dict[str, list[float]] = defaultdict(lambda: [float('inf'), float('-inf')])
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, tuple[float, float]],
+    dict[tuple[Any, str], float],
+]:
+    """Single pass over ``evaluations``. Accumulate, over the WHOLE dump,
+    per-metric observed ranges (stable, slice-independent bounds for the
+    unresolved fallback) AND, per (dataset, metric) leaderboard within the
+    selected slice, the median value used to infer that group's reporting scale
+    (see ``reconcile_scale``). The group median ignores ``--limit`` -- the limit
+    caps how many rows are EMITTED, not the scale evidence for a leaderboard."""
+    ranges: dict[str, list[float]] = defaultdict(
+        lambda: [float('inf'), float('-inf')]
+    )
+    group_values: dict[tuple[Any, str], list[float]] = defaultdict(list)
     selected: list[dict[str, Any]] = []
     for ev in table_rows(dump, 'evaluations'):
-        for name, val in _iter_metric_values(ev.get('metrics')):
+        vals = list(_iter_metric_values(ev.get('metrics')))
+        for name, val in vals:
             r = ranges[name]
             r[0] = min(r[0], val)
             r[1] = max(r[1], val)
         if dataset_ids is not None and ev.get('dataset_id') not in dataset_ids:
             continue
+        for name, val in vals:
+            group_values[(ev.get('dataset_id'), name)].append(val)
         if limit is not None and len(selected) >= limit:
             continue
         selected.append(ev)
     metric_ranges = {k: (lo, hi) for k, (lo, hi) in ranges.items()}
-    return selected, metric_ranges
+    group_medians = {
+        key: statistics.median(vals)
+        for key, vals in group_values.items()
+        if vals
+    }
+    return selected, metric_ranges, group_medians
 
 
 def read_papers_subset(dump, paper_ids: set[Any]) -> dict[Any, dict[str, Any]]:
@@ -771,30 +1006,67 @@ def dump_version_from_path(dump_path: str | Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def latest_dump_remote_path(bucket: str) -> str:
+# The HF *bucket* API (`list_bucket_tree` / `download_bucket_files`) only exists
+# in `huggingface_hub>=1.0`, but this repo pins `huggingface-hub>=0.36,<1.0` and
+# we deliberately do NOT raise that pin: every EEE consumer would inherit a 1.x
+# requirement just so *this one adapter* can auto-download its source. The bucket
+# API is therefore treated as an optional, feature-gated capability — the core
+# `--dump` path (a dump already on disk) needs only `pgdumplib` and has no such
+# requirement. `_require_bucket_api()` imports lazily and fails with an actionable
+# message ONLY when auto-download is actually triggered in an environment that
+# can't do it. See the adapter README ("Data source") and #209 review (Ero #1).
+def _require_bucket_api():
+    """Return an ``HfApi``, or exit with a clear remedy if the bucket API is absent.
+
+    The two bucket methods land together in ``huggingface_hub>=1.0``; feature-
+    detecting ``list_bucket_tree`` is more robust than parsing a version string
+    (and lets the test suite substitute a fake ``HfApi``).
+    """
     from huggingface_hub import HfApi
 
-    api = HfApi()
+    if not hasattr(HfApi, 'list_bucket_tree'):
+        try:
+            from importlib.metadata import version
+
+            installed = version('huggingface_hub')
+        except Exception:
+            installed = 'unknown'
+        raise SystemExit(
+            'auto-download from the HF bucket needs huggingface_hub>=1.0 for '
+            f'the bucket API, but {installed} is installed. Either install a '
+            "1.x build here (`pip install 'huggingface_hub>=1.0'`), or pass "
+            '--dump <path> to convert a dump already on disk (that path needs '
+            'only pgdumplib, no bucket API).'
+        )
+    return HfApi()
+
+
+def latest_dump_remote_path(bucket: str, prefix: str = 'postgres') -> str:
+    api = _require_bucket_api()
+    # The dumps live under `postgres/` in the bucket; list that subtree
+    # RECURSIVELY. A non-recursive top-level listing returns the `postgres` dir
+    # entry (not the nested `.dump` files) and silently finds nothing.
     dumps = [
         f.path
-        for f in api.list_bucket_tree(bucket)
+        for f in api.list_bucket_tree(bucket, prefix=prefix, recursive=True)
         if getattr(f, 'path', '').endswith('.dump')
     ]
     if not dumps:
-        raise SystemExit(f'no .dump files found in bucket {bucket}')
+        raise SystemExit(
+            f'no .dump files found under {prefix!r} in bucket {bucket}'
+        )
     return sorted(dumps)[-1]
 
 
 def download_dump(bucket: str, remote_path: str, dest_dir: Path) -> Path:
-    from huggingface_hub import HfApi
-
+    api = _require_bucket_api()
     dest_dir.mkdir(parents=True, exist_ok=True)
     local = dest_dir / Path(remote_path).name
     if local.exists():
         print(f'reusing cached dump {local}')
         return local
     print(f'downloading {bucket}:{remote_path} -> {local}')
-    HfApi().download_bucket_files(
+    api.download_bucket_files(
         bucket, [(remote_path, str(local))], raise_on_missing_files=True
     )
     return local
@@ -803,6 +1075,41 @@ def download_dump(bucket: str, remote_path: str, dest_dir: Path) -> Path:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+
+def retrieved_ts_from_dump(dump_version: str) -> str:
+    """Deterministic Unix-epoch ``retrieved_timestamp`` derived from the dump date.
+
+    ``dump_version`` is the dump's ``YYYYMMDD...`` stamp. Pinning the retrieved
+    timestamp to the dump — rather than ``time.time()`` at conversion time — makes
+    a re-run over the SAME dump byte-identical, so regenerating the datastore does
+    not churn every record's timestamp (every_eval_ever#209 review, Erotemic #3).
+    Falls back to the raw version string if it does not start with a parseable
+    date. The schema constrains ``retrieved_timestamp`` only to a string
+    documented as Unix epoch, so a date-derived epoch is valid.
+    """
+    try:
+        dt = datetime.strptime(str(dump_version)[:8], '%Y%m%d')
+    except (ValueError, TypeError):
+        return str(dump_version)
+    return str(dt.replace(tzinfo=timezone.utc).timestamp())
+
+
+def replace_output_dir(output_dir: str | Path) -> int:
+    """Wipe ``output_dir`` so a re-run REPLACES rather than accumulates records.
+
+    ``save_evaluation_log`` names each file by a fresh ``uuid4``, so re-running
+    the adapter into a non-empty dir piles up duplicate records that differ only
+    by filename (every_eval_ever#209 review, Erotemic #3). Removing the tree first
+    makes the output a pure function of the input dump. Returns the number of
+    ``*.json`` records removed (0 if the dir does not exist).
+    """
+    output_dir = Path(output_dir)
+    if not output_dir.exists():
+        return 0
+    n = sum(1 for _ in output_dir.rglob('*.json'))
+    shutil.rmtree(output_dir)
+    return n
 
 
 def parse_args() -> argparse.Namespace:
@@ -851,9 +1158,21 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         '--allow-unresolved',
         action='store_true',
-        help='Emit metrics that do not resolve in the registry snapshot using '
-        'observed-range bounds (labelled). Without this the run FAILS CLOSED on '
-        'any unresolved metric so CI never ships un-vetted bounds.',
+        help='Narrow relaxation: tolerate ONLY unresolved/ambiguous metrics '
+        '(emit with observed-range bounds, labelled), while STILL failing on '
+        'other imperfections (unknown direction, scale anomaly). Without it the '
+        'run fails closed on unresolved metrics so CI never ships un-vetted bounds.',
+    )
+    ap.add_argument(
+        '--best-effort',
+        action='store_true',
+        help='Emit as much data as possible: every imperfection (unresolved '
+        'metric, unknown direction, scale anomaly) is written WITH a flag and the '
+        'run exits 0. The default is strict -- ANY imperfection aborts the run '
+        'non-zero, giving CI a clean-or-fail signal. Use --best-effort for '
+        'exploratory runs or to keep collecting data while fixes are batched; use '
+        'the strict default when a run must be perfect (e.g. the commit that fixes '
+        'things). Imperfections are always reported regardless of mode.',
     )
     ap.add_argument(
         '--output-dir',
@@ -864,11 +1183,24 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def _report_unresolved(unresolved: dict[str, set[str]]) -> str:
-    lines = [
-        f'  - {name!r} (on {sorted(ds)})' for name, ds in sorted(unresolved.items())
-    ]
-    return (
+def _report_unresolved(
+    unresolved: dict[str, set[str]],
+    reasons: dict[str, tuple[str, tuple[str, ...]]] | None = None,
+) -> str:
+    reasons = reasons or {}
+    lines = []
+    ambiguous_any = False
+    for name, ds in sorted(unresolved.items()):
+        why, candidates = reasons.get(name, ('unknown', ()))
+        if why.startswith('ambiguous'):
+            ambiguous_any = True
+            lines.append(
+                f'  - {name!r} (on {sorted(ds)}) — AMBIGUOUS: matches '
+                f'{list(candidates)}'
+            )
+        else:
+            lines.append(f'  - {name!r} (on {sorted(ds)})')
+    msg = (
         f'{len(unresolved)} metric(s) do not resolve in the registry snapshot '
         f'({SNAPSHOT_PATH.name}):\n'
         + '\n'.join(lines)
@@ -877,17 +1209,64 @@ def _report_unresolved(unresolved: dict[str, set[str]]) -> str:
         '(refresh_metric_snapshot.py), and re-run — or pass --allow-unresolved to '
         'emit them now with observed-range bounds (labelled bound_source).'
     )
+    if ambiguous_any:
+        msg += (
+            '\n\nAMBIGUOUS metric(s) match more than one canonical id — a '
+            'duplicate alias/display_name in the registry, not a missing entry. '
+            'Fix the collision in seed/metrics.yaml (remove or uniquify the '
+            'offending alias) and refresh the snapshot; --allow-unresolved will '
+            'otherwise emit them with observed-range bounds and NO canonical id.'
+        )
+    return msg
+
+
+def _summarize_class(title: str, items: dict[str, set[str]]) -> str:
+    lines = [f'  - {name!r} (on {sorted(ds)})' for name, ds in sorted(items.items())]
+    return f'{len(items)} {title}:\n' + '\n'.join(lines)
+
+
+def _imperfection_report(resolver: MetricResolver) -> str:
+    """Human-readable summary of every imperfection in a run, across all classes,
+    printed regardless of run mode (the "noisy" reporting the modes never turn
+    off). Empty string when the run was perfect."""
+    blocks = []
+    if resolver.unresolved:
+        blocks.append(
+            _report_unresolved(resolver.unresolved, resolver.unresolved_reason)
+        )
+    if resolver.direction_unknown:
+        blocks.append(
+            _summarize_class(
+                'metric(s) emitted with UNKNOWN direction (no registry direction '
+                'and no PwC source direction; lower_is_better defaulted to False, '
+                'flagged direction_source=unknown)',
+                resolver.direction_unknown,
+            )
+        )
+    if resolver.scale_anomalies:
+        blocks.append(
+            _summarize_class(
+                'metric(s) with a SCALE ANOMALY (a score outside the canonical '
+                'range after the group rescale; kept + flagged scale_anomaly, '
+                'never rewritten)',
+                resolver.scale_anomalies,
+            )
+        )
+    return '\n\n'.join(blocks)
 
 
 def run(args: argparse.Namespace) -> int:
     if args.dump is not None:
         dump_path = args.dump
+        source_bucket: str | None = None  # local dump -> no bucket provenance claim
     else:
         remote = args.remote_path or latest_dump_remote_path(args.bucket)
         dump_path = download_dump(args.bucket, remote, args.raw_dir)
+        source_bucket = args.bucket
 
     dump_version = dump_version_from_path(dump_path)
-    retrieved_ts = str(time.time())
+    dump_file = Path(dump_path).name
+    retrieved_ts = retrieved_ts_from_dump(dump_version)
 
     print(f'loading dump {dump_path} ...')
     dump = load_dump(dump_path)
@@ -914,8 +1293,19 @@ def run(args: argparse.Namespace) -> int:
         }
         if missing:
             print(f'warning: dataset slug(s) not found: {sorted(missing)}')
+        # An EXPLICIT selection that matches nothing is a user error (e.g. a
+        # typo'd slug), not an empty-but-successful run: fail loudly rather than
+        # writing zero records and exiting 0. A partial match keeps the warning
+        # above and proceeds. (every_eval_ever#209 review, mrshu CLI)
+        if args.dataset_slugs and not dataset_ids:
+            raise SystemExit(
+                'ERROR: none of the requested --dataset-slug value(s) matched a '
+                f'dataset in the dump: {sorted(slugs)}'
+            )
 
-    selected, metric_ranges = scan_evaluations(dump, dataset_ids, args.limit)
+    selected, metric_ranges, group_medians = scan_evaluations(
+        dump, dataset_ids, args.limit
+    )
     print(f'selected {len(selected)} evaluation row(s)')
 
     paper_ids = {ev.get('paper_id') for ev in selected if ev.get('paper_id')}
@@ -932,11 +1322,52 @@ def run(args: argparse.Namespace) -> int:
         papers_by_id,
         dump_version,
         retrieved_ts,
+        source_bucket=source_bucket,
+        dump_file=dump_file,
+        group_medians=group_medians,
     )
 
-    # Fail closed: never write un-vetted bounds unless explicitly allowed.
+    # --- Imperfection gate -------------------------------------------------
+    # Two run modes, one report. The report ("noisy" output) is ALWAYS printed
+    # when anything was imperfect, in either mode — modes decide whether to
+    # ABORT, never whether to speak. Do this BEFORE wiping the output dir so an
+    # aborted run leaves any prior output intact.
+    report = _imperfection_report(resolver)
+    if report:
+        print(report, file=sys.stderr)
+    # Which imperfection classes are fatal in strict (default) mode. Unresolved
+    # is separately relaxable via --allow-unresolved (the narrow escape hatch);
+    # direction_unknown and scale_anomaly are only waived by --best-effort.
+    fatal = []
     if resolver.unresolved and not args.allow_unresolved:
-        raise SystemExit('ERROR: ' + _report_unresolved(resolver.unresolved))
+        fatal.append(f'{len(resolver.unresolved)} unresolved metric(s)')
+    if resolver.direction_unknown:
+        fatal.append(
+            f'{len(resolver.direction_unknown)} metric(s) with unknown direction'
+        )
+    if resolver.scale_anomalies:
+        fatal.append(
+            f'{len(resolver.scale_anomalies)} metric(s) with a scale anomaly'
+        )
+    if fatal and not args.best_effort:
+        raise SystemExit(
+            'ERROR: strict mode aborted — ' + '; '.join(fatal) + '. Fix these, '
+            'or re-run with --best-effort to emit everything anyway (each '
+            'imperfection stays flagged in the output), or --allow-unresolved '
+            'to tolerate only the unresolved class. See the report above.'
+        )
+    if fatal and args.best_effort:
+        print(
+            'best-effort: emitting despite ' + '; '.join(fatal)
+            + ' (all flagged in the output).',
+            file=sys.stderr,
+        )
+
+    # Replace, don't accumulate: uuid4 filenames mean a re-run would otherwise pile
+    # up duplicate records. Wipe only once we know we're going to write.
+    removed = replace_output_dir(args.output_dir)
+    if removed:
+        print(f'replaced output dir: removed {removed} stale record(s)')
 
     for bundle in bundles:
         save_evaluation_log(

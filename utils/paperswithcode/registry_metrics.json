@@ -2,7 +2,8 @@
   "_meta": {
     "source": "eval-card-registry seed/metrics.yaml",
     "note": "Vendored snapshot of canonical metric entries. Regenerate with refresh_metric_snapshot.py. Do not edit by hand.",
-    "count": 208
+    "count": 225,
+    "registry_revision": "fea26a84209387776ad8d0a8527bc114939696cf"
   },
   "metrics": [
     {
@@ -16,7 +17,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "ast-accuracy",
@@ -27,7 +30,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "exact-match",
@@ -39,7 +44,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "f1",
@@ -52,7 +59,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "pass-at-1",
@@ -63,7 +72,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "mean-win-rate",
@@ -74,7 +85,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "score",
@@ -85,7 +98,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": null,
-      "max_score": null
+      "max_score": null,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "bleu-4",
@@ -96,7 +111,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "cot-correct",
@@ -108,7 +125,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "win-rate",
@@ -121,7 +140,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 100.0
+      "max_score": 100.0,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "harmlessness",
@@ -130,7 +151,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "pass-at-8",
@@ -141,7 +164,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "cost-per-task",
@@ -153,7 +178,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "elo",
@@ -165,7 +192,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": null,
-      "max_score": null
+      "max_score": null,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "avg-attempts",
@@ -177,7 +206,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 1.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "mean-response-time",
@@ -188,7 +219,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "mean-score",
@@ -199,7 +232,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": null,
-      "max_score": null
+      "max_score": null,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "p95-latency",
@@ -211,7 +246,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "mean-latency",
@@ -223,7 +260,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "latency-stddev",
@@ -235,7 +274,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "total-cost",
@@ -247,7 +288,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "rank",
@@ -260,7 +303,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 1.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "refusal-rate",
@@ -271,7 +316,9 @@
       "score_type": "continuous",
       "lower_is_better": null,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "cvebench.mean",
@@ -280,7 +327,9 @@
       "score_type": "continuous",
       "lower_is_better": null,
       "min_score": null,
-      "max_score": null
+      "max_score": null,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "cyse2-vulnerability-exploit.mean",
@@ -289,7 +338,9 @@
       "score_type": "continuous",
       "lower_is_better": null,
       "min_score": null,
-      "max_score": null
+      "max_score": null,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "swebench-verified-mini-mariushobbhahn.mean",
@@ -298,7 +349,9 @@
       "score_type": "continuous",
       "lower_is_better": null,
       "min_score": null,
-      "max_score": null
+      "max_score": null,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "codegolf.score",
@@ -307,7 +360,9 @@
       "score_type": "continuous",
       "lower_is_better": null,
       "min_score": null,
-      "max_score": null
+      "max_score": null,
+      "review_status": "reviewed",
+      "metadata": "{}"
     },
     {
       "id": "psnr",
@@ -316,7 +371,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{}"
     },
     {
       "id": "ssim",
@@ -325,7 +382,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{}"
     },
     {
       "id": "lpips",
@@ -334,7 +393,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{}"
     },
     {
       "id": "abs-rel",
@@ -343,7 +404,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{}"
     },
     {
       "id": "delta1",
@@ -352,19 +415,22 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{}"
     },
     {
       "id": "overall-chamfer",
       "display_name": "Overall (Chamfer)",
       "aliases": [
-        "Overall (Chamfer)",
-        "Chamfer Distance"
+        "Overall (Chamfer)"
       ],
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{}"
     },
     {
       "id": "auc-5",
@@ -375,7 +441,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{}"
     },
     {
       "id": "anls",
@@ -386,7 +454,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "musiq",
@@ -397,7 +467,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 100.0
+      "max_score": 100.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "rtfx",
@@ -408,7 +480,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "fps",
@@ -419,7 +493,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "maniqa",
@@ -430,7 +506,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "ap50",
@@ -441,7 +519,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "normalized-score",
@@ -452,7 +532,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": null,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"low\"}"
     },
     {
       "id": "crps",
@@ -463,7 +545,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "clipiqa-plus",
@@ -474,7 +558,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "dists",
@@ -485,7 +571,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "mteb-score",
@@ -496,7 +584,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 100.0
+      "max_score": 100.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"high\"}"
     },
     {
       "id": "mmteb-score",
@@ -507,7 +597,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 100.0
+      "max_score": 100.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"high\"}"
     },
     {
       "id": "j-and-f",
@@ -518,7 +610,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "speaker-similarity",
@@ -529,7 +623,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": -1.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "gradient-error",
@@ -540,7 +636,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "return",
@@ -551,7 +649,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": null,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "calvin-avg-seq-length",
@@ -562,7 +662,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 5.0
+      "max_score": 5.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"high\"}"
     },
     {
       "id": "niqe",
@@ -573,7 +675,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "truthfulqa-mc2",
@@ -584,7 +688,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"high\"}"
     },
     {
       "id": "median-human-normalized-score",
@@ -595,7 +701,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": null,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "correlation",
@@ -606,7 +714,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": -1.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "pointmap-accuracy",
@@ -617,7 +727,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "recall-at-5",
@@ -629,7 +741,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "log-loss",
@@ -641,7 +755,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "counting-precision",
@@ -652,7 +768,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "xcomet-xl",
@@ -663,7 +781,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "mlgm",
@@ -674,7 +794,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"medium\"}"
     },
     {
       "id": "sad",
@@ -685,7 +807,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "rpe-rotation",
@@ -696,7 +820,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "correspondence-recall",
@@ -707,7 +833,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "clip-score",
@@ -718,18 +846,23 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "chamfer-distance",
       "display_name": "CD",
       "aliases": [
-        "CD"
+        "CD",
+        "Chamfer Distance"
       ],
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "vqascore",
@@ -740,7 +873,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"low\"}"
     },
     {
       "id": "vpq",
@@ -751,7 +886,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "soda",
@@ -762,7 +899,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "nds",
@@ -773,7 +912,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"high\"}"
     },
     {
       "id": "radle-cwi",
@@ -784,7 +925,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 2000.0
+      "max_score": 2000.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"high\"}"
     },
     {
       "id": "completeness",
@@ -795,7 +938,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"low\"}"
     },
     {
       "id": "edit-distance",
@@ -806,7 +951,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "pccn",
@@ -817,7 +964,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"low\"}"
     },
     {
       "id": "hota",
@@ -828,7 +977,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "gedit-overall",
@@ -839,7 +990,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 10.0
+      "max_score": 10.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"medium\"}"
     },
     {
       "id": "hpsv3",
@@ -850,7 +1003,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": null,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "v-star-mam",
@@ -861,7 +1016,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 100.0
+      "max_score": 100.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"high\"}"
     },
     {
       "id": "ate",
@@ -872,7 +1029,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "tm-score",
@@ -883,7 +1042,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "clip-r-precision",
@@ -894,7 +1055,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "nrqm",
@@ -905,7 +1068,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 10.0
+      "max_score": 10.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "llm-score",
@@ -916,7 +1081,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": null,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"low\"}"
     },
     {
       "id": "target-area-coverage",
@@ -927,7 +1094,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"high\"}"
     },
     {
       "id": "recall-at-1",
@@ -939,7 +1108,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "tar-at-far",
@@ -950,7 +1121,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "clip-iqa",
@@ -961,7 +1134,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "multimodality",
@@ -972,7 +1147,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "diversity",
@@ -983,7 +1160,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "mpjpe",
@@ -994,7 +1173,261 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
+    },
+    {
+      "id": "p-mpjpe",
+      "display_name": "P-MPJPE",
+      "aliases": [
+        "P-MPJPE",
+        "PA-MPJPE",
+        "PMPJPE",
+        "MPJPE-PA"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": true,
+      "min_score": 0.0,
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
+    },
+    {
+      "id": "mpvpe",
+      "display_name": "MPVPE",
+      "aliases": [
+        "MPVPE",
+        "MVE",
+        "PVE",
+        "MPVE",
+        "Mean Vertex Error",
+        "Per-Vertex Error"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": true,
+      "min_score": 0.0,
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
+    },
+    {
+      "id": "pa-pve",
+      "display_name": "PA-PVE",
+      "aliases": [
+        "PA-PVE"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": true,
+      "min_score": 0.0,
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
+    },
+    {
+      "id": "pck",
+      "display_name": "PCK",
+      "aliases": [
+        "PCK"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": false,
+      "min_score": 0.0,
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
+    },
+    {
+      "id": "3dpck",
+      "display_name": "3DPCK",
+      "aliases": [
+        "3DPCK",
+        "3D-PCK",
+        "PCK3D"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": false,
+      "min_score": 0.0,
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
+    },
+    {
+      "id": "geodesic-error",
+      "display_name": "Geodesic Error (degrees)",
+      "aliases": [
+        "Geodesic Error (degrees)",
+        "Geodesic Error"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": true,
+      "min_score": 0.0,
+      "max_score": 180.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
+    },
+    {
+      "id": "epe",
+      "display_name": "EPE",
+      "aliases": [
+        "EPE",
+        "Average End-Point Error",
+        "AEPE",
+        "Avg EPE"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": true,
+      "min_score": 0.0,
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
+    },
+    {
+      "id": "tepe",
+      "display_name": "TEPE",
+      "aliases": [
+        "TEPE",
+        "Temporal EPE"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": true,
+      "min_score": 0.0,
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
+    },
+    {
+      "id": "fl-all",
+      "display_name": "Fl-all",
+      "aliases": [
+        "Fl-all",
+        "F1-all",
+        "Fl"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": true,
+      "min_score": 0.0,
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
+    },
+    {
+      "id": "d1-all",
+      "display_name": "D1-all",
+      "aliases": [
+        "D1-all",
+        "D1",
+        "Overall D1"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": true,
+      "min_score": 0.0,
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
+    },
+    {
+      "id": "bad-1.0",
+      "display_name": "Bad 1.0",
+      "aliases": [
+        "Bad 1.0",
+        "BP-1"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": true,
+      "min_score": 0.0,
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
+    },
+    {
+      "id": "bad-2.0",
+      "display_name": "Bad 2.0",
+      "aliases": [
+        "Bad 2.0",
+        "BP-2"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": true,
+      "min_score": 0.0,
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
+    },
+    {
+      "id": "n-mpjpe",
+      "display_name": "N-MPJPE",
+      "aliases": [
+        "N-MPJPE",
+        "NMPJPE",
+        "Normalized MPJPE"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": true,
+      "min_score": 0.0,
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
+    },
+    {
+      "id": "n-pve",
+      "display_name": "N-PVE",
+      "aliases": [
+        "N-PVE",
+        "NPVE",
+        "Normalized PVE",
+        "N-MPVPE"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": true,
+      "min_score": 0.0,
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
+    },
+    {
+      "id": "add",
+      "display_name": "ADD (mm)",
+      "aliases": [
+        "ADD (mm)",
+        "ADD"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": true,
+      "min_score": 0.0,
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
+    },
+    {
+      "id": "rotation-mae",
+      "display_name": "Rotation MAE (degrees)",
+      "aliases": [
+        "Rotation MAE (degrees)",
+        "Rotation MAE",
+        "Rotation Error (degrees)"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": true,
+      "min_score": 0.0,
+      "max_score": 180.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
+    },
+    {
+      "id": "translation-mae",
+      "display_name": "Translation MAE (mm)",
+      "aliases": [
+        "Translation MAE (mm)",
+        "Translation MAE",
+        "Translation Error (mm)"
+      ],
+      "score_type": "continuous",
+      "lower_is_better": true,
+      "min_score": 0.0,
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "warping-error",
@@ -1005,7 +1438,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "paired-accuracy",
@@ -1016,7 +1451,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "overall",
@@ -1027,7 +1464,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"low\"}"
     },
     {
       "id": "rra-at-15",
@@ -1038,7 +1477,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "hr-at-10",
@@ -1049,7 +1490,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "gap",
@@ -1060,7 +1503,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "rpe-translation",
@@ -1071,7 +1516,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "mce",
@@ -1082,7 +1529,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "image-reward",
@@ -1093,7 +1542,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": null,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "perceptual-index",
@@ -1104,7 +1555,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "ods",
@@ -1115,7 +1568,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "grits",
@@ -1126,7 +1581,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "utmos",
@@ -1137,7 +1594,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 1.0,
-      "max_score": 5.0
+      "max_score": 5.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "judge-score-1-10",
@@ -1148,7 +1607,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 1.0,
-      "max_score": 10.0
+      "max_score": 10.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "r-precision-top-3",
@@ -1159,7 +1620,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "normal-consistency",
@@ -1170,7 +1633,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "hits-at-10",
@@ -1181,7 +1646,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "nmn",
@@ -1192,7 +1659,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "imgedit-score",
@@ -1203,7 +1672,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 1.0,
-      "max_score": 5.0
+      "max_score": 5.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"high\"}"
     },
     {
       "id": "mean-recall",
@@ -1214,7 +1685,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "mmota",
@@ -1225,7 +1698,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": null,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "brisque",
@@ -1236,7 +1711,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": 100.0
+      "max_score": 100.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "gpt4o-judge-score",
@@ -1247,7 +1724,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"low\"}"
     },
     {
       "id": "maa-at-30",
@@ -1258,7 +1737,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "maa-at-10px",
@@ -1269,7 +1750,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "mean-normalized-performance",
@@ -1280,7 +1763,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"low\"}"
     },
     {
       "id": "rta-at-15",
@@ -1291,7 +1776,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "human-normalized-score",
@@ -1302,7 +1789,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": null,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "dominance",
@@ -1313,7 +1802,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": null,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"low\"}"
     },
     {
       "id": "word-accuracy",
@@ -1324,7 +1815,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "panoptic-quality",
@@ -1335,7 +1828,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "mota",
@@ -1346,7 +1841,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": null,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "normalized-precision",
@@ -1357,7 +1854,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "teds",
@@ -1368,7 +1867,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "average-overlap",
@@ -1379,7 +1880,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "radgraph-f1",
@@ -1390,7 +1893,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "fastervqa",
@@ -1401,7 +1906,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"low\"}"
     },
     {
       "id": "xcomet-xxl",
@@ -1412,7 +1919,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "acc-at-0-25",
@@ -1423,7 +1932,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "average",
@@ -1434,7 +1945,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"low\"}"
     },
     {
       "id": "dover",
@@ -1445,7 +1958,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"low\"}"
     },
     {
       "id": "ap-large",
@@ -1456,7 +1971,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "multi-binary-accuracy",
@@ -1467,7 +1984,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "localization-recall",
@@ -1489,7 +2008,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\", \"note\": \"pose recall at various distance/angle thresholds; threshold+scene in the raw alias\"}"
     },
     {
       "id": "mae",
@@ -1501,7 +2022,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "map",
@@ -1513,7 +2036,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "mrr",
@@ -1524,7 +2049,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "success-rate",
@@ -1535,7 +2062,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "auc",
@@ -1546,7 +2075,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "recall",
@@ -1557,7 +2088,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "miou",
@@ -1568,7 +2101,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "bleu",
@@ -1579,7 +2114,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "wer",
@@ -1590,7 +2127,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "mase",
@@ -1601,7 +2140,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "geneval-score",
@@ -1612,7 +2153,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"high\"}"
     },
     {
       "id": "mdpbench-overall",
@@ -1623,7 +2166,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"medium\"}"
     },
     {
       "id": "mdpbench-non-latin",
@@ -1634,7 +2179,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"medium\"}"
     },
     {
       "id": "matthews-correlation",
@@ -1645,7 +2192,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": -1.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "dpg-bench-score",
@@ -1656,7 +2205,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"high\"}"
     },
     {
       "id": "rouge-1",
@@ -1667,7 +2218,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "pose-auc-at-30",
@@ -1678,7 +2231,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "precision",
@@ -1689,7 +2244,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "line-accuracy",
@@ -1703,7 +2260,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "waics",
@@ -1721,7 +2280,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "pose-auc-at-20",
@@ -1732,7 +2293,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "mrr-at-20",
@@ -1743,7 +2306,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "bpc",
@@ -1754,7 +2319,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "chrf-plus-plus",
@@ -1765,7 +2332,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "iou",
@@ -1776,7 +2345,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "comet",
@@ -1787,7 +2358,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "cometkiwi",
@@ -1798,7 +2371,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "cer",
@@ -1809,7 +2384,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "hits-at-100",
@@ -1820,7 +2397,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "bleu-1",
@@ -1831,7 +2410,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "bleu-3",
@@ -1842,7 +2423,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "bleurt",
@@ -1853,7 +2436,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "omnicontext-score",
@@ -1864,7 +2449,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 10.0
+      "max_score": 10.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"high\"}"
     },
     {
       "id": "f1-at-0-25",
@@ -1875,7 +2462,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "rouge-l",
@@ -1886,7 +2475,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "mdpbench-latin",
@@ -1897,7 +2488,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"medium\"}"
     },
     {
       "id": "perplexity",
@@ -1908,7 +2501,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 1.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "ndcg-at-10",
@@ -1919,7 +2514,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "ndcg-at-20",
@@ -1930,7 +2527,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "rouge-2",
@@ -1941,7 +2540,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "geometric-auc-at-10",
@@ -1952,7 +2553,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "inception-score",
@@ -1963,7 +2566,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 1.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "geometric-auc-at-3",
@@ -1974,7 +2579,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"low\"}"
     },
     {
       "id": "precision-at-20",
@@ -1985,7 +2592,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "wise-score",
@@ -1996,7 +2605,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"medium\"}"
     },
     {
       "id": "top-5-accuracy",
@@ -2007,7 +2618,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "success-rate-0-5",
@@ -2018,7 +2631,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "dockq-success-rate",
@@ -2029,7 +2644,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "fvd",
@@ -2040,7 +2657,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "ice-bench-overall",
@@ -2051,7 +2670,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"low\"}"
     },
     {
       "id": "geometric-auc-at-1",
@@ -2062,7 +2683,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"low\"}"
     },
     {
       "id": "mdpbench-private",
@@ -2073,7 +2696,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 100.0
+      "max_score": 100.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"low\"}"
     },
     {
       "id": "ndcg-at-5",
@@ -2084,7 +2709,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "score-0-10",
@@ -2095,7 +2722,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"low\"}"
     },
     {
       "id": "recall-at-20",
@@ -2106,7 +2735,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "glue-score",
@@ -2118,7 +2749,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 100.0
+      "max_score": 100.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"high\"}"
     },
     {
       "id": "oneig-overall-score",
@@ -2129,7 +2762,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"medium\"}"
     },
     {
       "id": "ocrbench-v2-english-score",
@@ -2140,7 +2775,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 100.0
+      "max_score": 100.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"medium\"}"
     },
     {
       "id": "ocrbench-v2-chinese-score",
@@ -2151,7 +2788,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 100.0
+      "max_score": 100.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"medium\"}"
     },
     {
       "id": "ap-rare",
@@ -2162,7 +2801,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "maph",
@@ -2173,7 +2814,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "success-rate-at-0-75",
@@ -2184,7 +2827,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "recall-at-10",
@@ -2195,7 +2840,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "top-5-localization-error",
@@ -2206,7 +2853,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "hits-at-50",
@@ -2217,7 +2866,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "bleu-2",
@@ -2228,7 +2879,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "comet-22",
@@ -2239,7 +2892,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "mega-bench-macro-score",
@@ -2250,7 +2905,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"dataset_specific\", \"confidence\": \"medium\"}"
     },
     {
       "id": "map-at-10",
@@ -2261,7 +2918,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
     {
       "id": "normalized-edit-similarity",
@@ -2276,7 +2935,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": 1.0
+      "max_score": 1.0,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\", \"note\": \"family-merged; threshold/subset in the raw alias\"}"
     },
     {
       "id": "mse",
@@ -2287,7 +2948,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "cider",
@@ -2298,7 +2961,9 @@
       "score_type": "continuous",
       "lower_is_better": false,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "rmse",
@@ -2309,7 +2974,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
     {
       "id": "fid",
@@ -2320,7 +2987,9 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": null
+      "max_score": null,
+      "review_status": "draft",
+      "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     }
   ]
 }

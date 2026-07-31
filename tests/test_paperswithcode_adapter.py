@@ -178,11 +178,20 @@ def test_parse_metric_value_edge_cases():
     assert adapter.parse_metric_value('30%') == (30.0, None)
     # European decimal comma, not thousands separator
     assert adapter.parse_metric_value('97,3') == (97.3, None)
-    # thousands separator
+    # >2 digits after the comma are still a decimal comma (regression: the old
+    # rule only accepted 1-2 digits and mangled these into integers)
+    assert adapter.parse_metric_value('0,991') == (0.991, None)
+    assert adapter.parse_metric_value('97,345') == (97.345, None)
+    # thousands separator: comma alongside a '.', or several commas
     assert adapter.parse_metric_value('1,234.5') == (1234.5, None)
-    # uncertainty
-    score, se = adapter.parse_metric_value('33.7 ± 0.82')
-    assert score == 33.7 and se == 0.82
+    assert adapter.parse_metric_value('1,234,567') == (1234567.0, None)
+    # non-finite values are rejected -- a score is a finite real, not a bound
+    assert adapter.parse_metric_value('NaN') == (None, None)
+    assert adapter.parse_metric_value('Infinity') == (None, None)
+    assert adapter.parse_metric_value('-inf') == (None, None)
+    # '±' spread is kept as raw TEXT (its type -- SE/SD/CI -- is unknown), not a float
+    score, unc = adapter.parse_metric_value('33.7 ± 0.82')
+    assert score == 33.7 and unc == '0.82'
     assert adapter.parse_metric_value('n/a') == (None, None)
 
 
@@ -297,19 +306,78 @@ def test_resolver_keeps_canonical_bounds():
 
 def test_reconcile_scale_percent_to_proportion():
     # PwC percent score rescaled onto canonical [0,1]
-    score, se, detail = adapter.reconcile_scale(97.3, None, 0.0, 1.0, resolved=True)
+    score, detail = adapter.reconcile_scale(97.3, 0.0, 1.0, resolved=True)
     assert score == 0.973 and detail['canonical_rescale_factor'] == 100.0
-    # std_err rescales with the score (same units)
-    _, se2, _ = adapter.reconcile_scale(50.0, 2.0, 0.0, 1.0, resolved=True)
-    assert se2 == 0.02
     # already on the canonical scale -> untouched
-    assert adapter.reconcile_scale(0.87, None, 0.0, 1.0, resolved=True) == (
-        0.87, None, {},
-    )
+    assert adapter.reconcile_scale(0.87, 0.0, 1.0, resolved=True) == (0.87, {})
     # unresolved metrics are never rescaled (bounds are observed, same scale)
-    assert adapter.reconcile_scale(97.3, None, 0.0, 100.0, resolved=False) == (
-        97.3, None, {},
+    assert adapter.reconcile_scale(97.3, 0.0, 100.0, resolved=False) == (97.3, {})
+
+
+def test_group_median_decides_scale_not_per_score():
+    # A percent leaderboard (median ~90): a lone in-range value 1.0 is rescaled to
+    # match the group (1% -> 0.01) -- per-score inference would have left it at 1.0.
+    score, detail = adapter.reconcile_scale(1.0, 0.0, 1.0, True, group_repr=90.0)
+    assert score == 0.01
+    assert detail['canonical_rescale_factor'] == 100.0
+    assert detail['rescale_basis'] == 'group_median'
+    # A proportion leaderboard (median 0.9): a lone out-of-range 95 is FLAGGED and
+    # kept, NOT silently divided -- per-score would have "fixed" it to 0.95.
+    score, detail = adapter.reconcile_scale(95.0, 0.0, 1.0, True, group_repr=0.9)
+    assert score == 95.0
+    assert 'canonical_rescale_factor' not in detail
+    assert detail['scale_anomaly'] == 'score_outside_canonical_range'
+
+
+def test_group_representative_above_percent_not_rescaled():
+    # A group centred above 100 cannot be percent -> unknown scale: flag, keep.
+    score, detail = adapter.reconcile_scale(500.0, 0.0, 1.0, True, group_repr=480.0)
+    assert score == 500.0
+    assert detail['scale_anomaly'] == 'group_representative_above_percent'
+
+
+def test_group_scale_applied_consistently_in_build():
+    evals = [
+        {
+            'id': 'a',
+            'task_id': '10',
+            'dataset_id': '218',
+            'model_name': 'ModelA',
+            'metrics': json.dumps({'Accuracy': '95'}),
+            'created_at': '2026-07-01 00:00:00+00',
+            'is_open': 't',
+        },
+        {
+            'id': 'b',
+            'task_id': '10',
+            'dataset_id': '218',
+            'model_name': 'ModelB',
+            'metrics': json.dumps({'Accuracy': '1.0'}),
+            'created_at': '2026-07-01 00:00:00+00',
+            'is_open': 't',
+        },
+    ]
+    # This (dataset 218, Accuracy) leaderboard is percent (median 48) -> the WHOLE
+    # group is divided by 100, so ModelB's '1.0' becomes 0.01. Per-score inference
+    # would have left 1.0 in place, silently inconsistent with the rest of the board.
+    group_medians = {('218', 'Accuracy'): 48.0}
+    bundles = adapter.build_logs(
+        evals,
+        _datasets(),
+        _tasks(),
+        _make_resolver(),
+        _metric_ranges(),
+        _metric_meta(),
+        _papers(),
+        DUMP_VERSION,
+        RETRIEVED_TS,
+        group_medians=group_medians,
     )
+    by_model = {b.log.model_info.name: b for b in bundles}
+    a = by_model['ModelA'].log.evaluation_results[0].score_details
+    b = by_model['ModelB'].log.evaluation_results[0].score_details
+    assert a.score == 0.95 and b.score == 0.01
+    assert b.details['rescale_basis'] == 'group_median'
 
 
 def test_resolver_unbounded_canonical_emits_inf():
@@ -351,3 +419,166 @@ def test_fail_closed_report_names_metrics_and_next_step():
     msg = adapter._report_unresolved(resolver.unresolved)
     assert 'CustomZMetric' in msg and 'registry-entity-aliases' in msg
     assert '--allow-unresolved' in msg
+
+
+# --- exact-first matching / name collisions (every_eval_ever#209, mrshu) -------
+
+
+def test_similar_names_resolve_to_their_own_id_exact_first():
+    r = _make_resolver()
+    # 'CLIP-IQA' and 'CLIPIQA+' both normalize to 'clipiqa' -- the old normalized
+    # index let whichever was seen first win. Exact (case-insensitive) match wins,
+    # so each spelling now resolves to ITS canonical id.
+    clip = r.resolve('CLIP-IQA', (0.0, 1.0))
+    assert clip.resolved and clip.metric_id == 'clip-iqa'
+    assert clip.detail['match_tier'] == 'exact'
+    plus = r.resolve('CLIPIQA+', (0.0, 1.0))
+    assert plus.resolved and plus.metric_id == 'clipiqa-plus'
+    assert plus.detail['match_tier'] == 'exact'
+
+
+def test_ambiguous_normalized_name_fails_closed():
+    r = _make_resolver()
+    # A bare 'clipiqa' matches neither spelling exactly and collides on the
+    # normalized key -> unresolved (fail closed), never a silent guess.
+    m = r.resolve('clipiqa', (0.1, 0.9), dataset_slug='some-iqa-bench')
+    assert m.resolved is False
+    assert m.detail['match_tier'] == 'ambiguous_normalized'
+    assert set(m.detail['collision_candidates']) == {'clip-iqa', 'clipiqa-plus'}
+    assert r.unresolved_reason['clipiqa'][0] == 'ambiguous_normalized'
+    # the fail-closed report calls the collision out (distinct from 'unknown')
+    msg = adapter._report_unresolved(r.unresolved, r.unresolved_reason)
+    assert 'AMBIGUOUS' in msg and 'clipiqa' in msg
+
+
+def test_chamfer_distance_resolves_after_alias_fix():
+    r = _make_resolver()
+    # Registry #50 moved the 'Chamfer Distance' alias off 'overall-chamfer' (its
+    # bad owner) onto 'chamfer-distance'. It now resolves there, unambiguously.
+    m = r.resolve('Chamfer Distance', (0.0, 5.0))
+    assert m.resolved and m.metric_id == 'chamfer-distance'
+    assert m.detail['match_tier'] == 'exact'
+
+
+def test_registry_hit_surfaces_review_status_and_revision():
+    r = _make_resolver()
+    m = r.resolve('CLIP-IQA', (0.0, 1.0))  # a draft metric in the snapshot
+    assert m.detail['canonical_review_status'] == 'draft'
+    assert m.detail['canonical_confidence'] == 'high'
+    assert m.detail['canonical_metric_kind_flag'] == 'real'
+    # the exact registry commit the bound came from travels with every hit
+    assert m.detail['bound_registry_revision'] == r.registry_revision
+    assert r.registry_revision  # snapshot records a revision
+
+
+def test_snapshot_has_no_exact_spelling_collisions():
+    """Invariant the exact-first matcher relies on: no casefolded spelling
+    (id/display_name/alias) maps to more than one canonical id in the snapshot."""
+    data = json.loads(adapter.SNAPSHOT_PATH.read_text(encoding='utf-8'))
+    seen: dict[str, set[str]] = {}
+    for m in data['metrics']:
+        for sp in (m['id'], m.get('display_name'), *(m.get('aliases') or [])):
+            if sp:
+                seen.setdefault(str(sp).strip().casefold(), set()).add(m['id'])
+    collisions = {k: sorted(v) for k, v in seen.items() if len(v) > 1}
+    assert not collisions, f'exact-spelling collisions in snapshot: {collisions}'
+
+
+# --- idempotency: pinned timestamp + folder replace (Erotemic #3) --------------
+
+
+def test_retrieved_ts_from_dump_is_deterministic():
+    ts = adapter.retrieved_ts_from_dump('20260716')
+    # same dump date -> same epoch, every run (not time.time())
+    assert ts == adapter.retrieved_ts_from_dump('20260716_031511')
+    assert float(ts) > 0
+    # an un-parseable version falls back to the raw string rather than raising
+    assert adapter.retrieved_ts_from_dump('weird-version') == 'weird-version'
+
+
+def test_replace_output_dir_removes_stale_records(tmp_path):
+    out = tmp_path / 'out'
+    (out / 'dev' / 'model').mkdir(parents=True)
+    (out / 'dev' / 'model' / 'a.json').write_text('{}')
+    (out / 'dev' / 'model' / 'b.json').write_text('{}')
+    removed = adapter.replace_output_dir(out)
+    assert removed == 2
+    assert not out.exists()
+    # absent dir is a no-op returning 0
+    assert adapter.replace_output_dir(tmp_path / 'missing') == 0
+
+
+# --- metric_unit, uncertainty, provenance, bucket listing ----------------------
+
+
+def test_metric_unit_maps_scale_to_unit_or_unset():
+    assert adapter._metric_unit_from_scale('0-1') == 'proportion'
+    assert adapter._metric_unit_from_scale('0-100') == 'percent'
+    assert adapter._metric_unit_from_scale('%') == 'percent'
+    # a range/unbounded declaration is NOT a unit -> unset (not the literal string)
+    assert adapter._metric_unit_from_scale('unbounded') is None
+    assert adapter._metric_unit_from_scale(None) is None
+
+
+def test_metric_unit_and_raw_scale_in_build():
+    cfgs = {
+        r.metric_config.metric_name: r.metric_config
+        for b in _build()
+        for r in b.log.evaluation_results
+    }
+    # '0-1' scale -> a real unit; 'unbounded' -> no unit, but raw scale preserved
+    assert cfgs['delta1'].metric_unit == 'proportion'
+    assert cfgs['PSNR'].metric_unit is None
+    assert cfgs['PSNR'].additional_details.get('pwc_scale') == 'unbounded'
+
+
+def test_reported_uncertainty_kept_as_text_not_typed_se():
+    sd = adapter.score_details(
+        {'id': '1'}, '33.7 ± 0.82', 33.7, '0.82', {}, None
+    )
+    # the '±' spread is untyped in the source, so no typed Uncertainty is asserted
+    assert sd.uncertainty is None
+    assert sd.details['reported_uncertainty'] == '0.82'
+    # no spread -> the key is simply absent (not an empty/None value)
+    sd2 = adapter.score_details({'id': '2'}, '0.5', 0.5, None, {}, None)
+    assert sd2.uncertainty is None
+    assert 'reported_uncertainty' not in sd2.details
+
+
+def test_source_metadata_provenance_reflects_source():
+    # local --dump: no bucket provenance claim, records the dump file name
+    local = adapter.build_source_metadata(
+        '20260716', source_bucket=None, dump_file='pwc_20260716.dump'
+    )
+    assert 'source_bucket' not in local.additional_details
+    assert local.additional_details['source_dump_file'] == 'pwc_20260716.dump'
+    # downloaded from a bucket: records the exact bucket it came from
+    remote = adapter.build_source_metadata(
+        '20260716', source_bucket='some/other-bucket', dump_file='x.dump'
+    )
+    assert remote.additional_details['source_bucket'] == 'some/other-bucket'
+
+
+def test_latest_dump_remote_path_lists_postgres_recursively(monkeypatch):
+    seen = {}
+
+    class _Entry:
+        def __init__(self, path):
+            self.path = path
+
+    class _FakeApi:
+        def list_bucket_tree(self, bucket, prefix=None, recursive=False):
+            seen['prefix'] = prefix
+            seen['recursive'] = recursive
+            return [
+                _Entry('postgres'),  # the dir entry itself -> ignored (no .dump)
+                _Entry('postgres/paperswithcode_hf_20260715_010101.dump'),
+                _Entry('postgres/paperswithcode_hf_20260716_031511.dump'),
+                _Entry('README.md'),
+            ]
+
+    monkeypatch.setattr('huggingface_hub.HfApi', _FakeApi)
+    got = adapter.latest_dump_remote_path('huggingface/paperswithcode-backups')
+    # nested files are found (recursive) and the newest is chosen
+    assert got == 'postgres/paperswithcode_hf_20260716_031511.dump'
+    assert seen == {'prefix': 'postgres', 'recursive': True}
