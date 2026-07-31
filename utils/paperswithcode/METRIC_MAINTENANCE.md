@@ -93,10 +93,15 @@ see [every_eval_ever#207]). `null`/`null` = signed & unbounded.
 
 **`rate` and the percent question.** Register `rate` metrics as **[0, 1]**. Many
 leaderboards report them as percent (0–100); the adapter reconciles that *per
-`(metric, dataset)` group* from the group median and rescales percent → proportion
-automatically (`reconcile_scale`). You do **not** register a second [0,100]
-version. The only time you register a `> 1` max (e.g. `[0, 100]`) is a metric that
-is *intrinsically* on that scale and never a proportion (see §6).
+`(metric, dataset)` group* and rescales percent → proportion automatically
+(`analyze_group` + `reconcile_scale`, §6). You do **not** register a second
+[0,100] version. The only time you register a `> 1` max (e.g. `[0, 100]`) is a
+metric that is *intrinsically* on that scale and never a proportion — i.e. a
+metric whose real values legitimately exceed 1 (a bad-pixel percentage that runs
+0–3%, an intrinsic-percent score). If you register such a metric as `[0, 1]` by
+mistake, the adapter will not silently squash it: it flags the whole board
+`group_scale_mismatch` (§6, outcome *anomaly*), which is your signal to
+re-register it on its natural scale.
 
 ### Entry template
 
@@ -239,10 +244,44 @@ Confirmed from the existing registry + adapter behavior:
 - correlations / cosines → **[-1, 1]**
 - aesthetic predictors → **[0, 10]**; angular error → **[0, 180]**
 
-Reminder: the adapter only auto-rescales percent→proportion when the canonical
-`max <= 1`. If you register a `max > 1`, values are range-checked **as-is** (no
-rescale) and anything outside is flagged `scale_anomaly` — so pick the max that
-matches the scale the dump actually reports for that metric.
+### How the adapter maps reported values onto your canonical scale
+
+The canonical **target** scale is whatever you register here (min/max). The
+adapter never guesses it. What it *does* infer, once per `(metric, dataset)`
+leaderboard, is how that board's numbers map onto your scale. It works in
+**log10** space with mass-aware gates (`analyze_group`), because a raw
+high/low ratio stops being informative on a big board — a 3 000-row leaderboard
+*will* contain both small and large values. Three outcomes:
+
+- **uniform** — one reporting scale for the whole board. If it already matches
+  canonical, values pass through untouched. If the board's robust centre is out
+  of range but a single `×100` / `÷100` brings (nearly) all of it in, the WHOLE
+  group is rescaled (`rescale_basis=group_uniform`) — a technical rescale, e.g.
+  an all-percent board for a `[0,1]` metric.
+- **mixed** — two scales genuinely coexist: two log-separated clusters, **each**
+  clearing the mass floor `max(3, 5% of N)`, split by an empty ~0.75-decade
+  valley. Each cluster gets its own factor (`rescale_basis=group_mixed`).
+- **anomaly** — a *substantial minority* (≥ the mass floor) is out of range with
+  no single consistent rescale and no clean valley. That is **not** a per-row
+  typo; it means the metric's **registered scale is probably wrong**. The whole
+  group is flagged `group_scale_mismatch`, values kept **raw**. This is your
+  cue to re-register the metric on its natural scale (§4.3) — the adapter
+  refuses to silently squash a genuine 0–3% metric into 0–0.03.
+
+A **lone** out-of-range value *below* the mass floor, uniquely fixable by
+`×100`/`÷100` (impossible under the declared range, one factor lands it in), is
+fixed **per-row** (`rescale_basis=per_row`) — the value is corrected, the raw is
+always kept in `score_details.raw_value`, and it is flagged. Everything else
+outside range with no unique factor stays `scale_anomaly` (kept raw, flagged).
+
+**Fatal vs informational.** `scale_anomaly` (incl. `group_scale_mismatch`) is a
+strict-mode imperfection — a `--best-effort` run emits it flagged. Successful
+`group_uniform`/`group_mixed`/`per_row` reconciliations are **informational
+only** (reported, never fatal): they are the data being scaled the right way.
+
+So: pick the max that matches the scale the metric is *intrinsically* on. If you
+get it wrong, you won't corrupt data — you'll get a `group_scale_mismatch` flag
+pointing you back here.
 
 ---
 

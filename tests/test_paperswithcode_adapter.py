@@ -304,36 +304,73 @@ def test_resolver_keeps_canonical_bounds():
     assert (m.min_score, m.max_score) == (0.0, 1.0)
 
 
-def test_reconcile_scale_percent_to_proportion():
-    # PwC percent score rescaled onto canonical [0,1]
+def test_reconcile_scale_no_group_fixes_impossible_value():
+    # No group context (a singleton board): a value impossible under the declared
+    # range, uniquely resolved by /100, IS fixed (kept raw upstream, flagged).
     score, detail = adapter.reconcile_scale(97.3, 0.0, 1.0, resolved=True)
-    assert score == 0.973 and detail['canonical_rescale_factor'] == 100.0
-    # already on the canonical scale -> untouched
+    assert score == 0.973
+    assert detail['canonical_rescale_factor'] == 0.01
+    assert detail['rescale_basis'] == 'per_row'
+    # already on the canonical scale -> untouched, no flag
     assert adapter.reconcile_scale(0.87, 0.0, 1.0, resolved=True) == (0.87, {})
     # unresolved metrics are never rescaled (bounds are observed, same scale)
     assert adapter.reconcile_scale(97.3, 0.0, 100.0, resolved=False) == (97.3, {})
-
-
-def test_group_median_decides_scale_not_per_score():
-    # A percent leaderboard (median ~90): a lone in-range value 1.0 is rescaled to
-    # match the group (1% -> 0.01) -- per-score inference would have left it at 1.0.
-    score, detail = adapter.reconcile_scale(1.0, 0.0, 1.0, True, group_repr=90.0)
-    assert score == 0.01
-    assert detail['canonical_rescale_factor'] == 100.0
-    assert detail['rescale_basis'] == 'group_median'
-    # A proportion leaderboard (median 0.9): a lone out-of-range 95 is FLAGGED and
-    # kept, NOT silently divided -- per-score would have "fixed" it to 0.95.
-    score, detail = adapter.reconcile_scale(95.0, 0.0, 1.0, True, group_repr=0.9)
-    assert score == 95.0
-    assert 'canonical_rescale_factor' not in detail
+    # no unique factor (500 fits neither /100 nor x100 into [0,1]) -> flag, keep raw
+    score, detail = adapter.reconcile_scale(500.0, 0.0, 1.0, resolved=True)
+    assert score == 500.0
     assert detail['scale_anomaly'] == 'score_outside_canonical_range'
 
 
-def test_group_representative_above_percent_not_rescaled():
-    # A group centred above 100 cannot be percent -> unknown scale: flag, keep.
-    score, detail = adapter.reconcile_scale(500.0, 0.0, 1.0, True, group_repr=480.0)
-    assert score == 500.0
-    assert detail['scale_anomaly'] == 'group_representative_above_percent'
+def test_analyze_group_clean_and_uniform_percent():
+    # a clean proportion board -> no rescale, no flag
+    gs = adapter.analyze_group([0.8, 0.85, 0.9, 0.95], 0.0, 1.0)
+    assert gs.mode == 'uniform' and gs.factor == 1.0
+    # a whole percent board for a [0,1] metric -> uniform /100 (technical rescale)
+    gs = adapter.analyze_group([80.0, 85.0, 90.0, 48.0], 0.0, 1.0)
+    assert gs.mode == 'uniform' and gs.factor == 0.01
+    # a lone in-range 1.0 follows the board's known scale (1% -> 0.01)
+    score, detail = adapter.reconcile_scale(1.0, 0.0, 1.0, True, gs)
+    assert score == 0.01 and detail['rescale_basis'] == 'group_uniform'
+
+
+def test_analyze_group_lone_stray_is_fixed_per_row():
+    # 11 fractions + one percent (80.39): the lone stray is below the mass floor,
+    # so the board stays as-is and the stray is fixed per-row (kept raw, flagged).
+    vals = [0.83, 0.85, 0.87, 0.87, 0.88, 0.89, 0.91, 0.91, 0.92, 0.94, 80.39]
+    gs = adapter.analyze_group(vals, 0.0, 1.0)
+    assert gs.mode == 'uniform' and gs.factor == 1.0
+    assert adapter.reconcile_scale(0.89, 0.0, 1.0, True, gs) == (0.89, {})
+    s_fix, d_fix = adapter.reconcile_scale(80.39, 0.0, 1.0, True, gs)
+    assert round(s_fix, 4) == 0.8039 and d_fix['rescale_basis'] == 'per_row'
+
+
+def test_analyze_group_systematic_mismatch_is_flagged_not_fixed():
+    # A [0,1]-registered metric whose board smoothly straddles 1.0 (bad-pixel %):
+    # a substantial minority is out of range with no clean valley -> the SCALE is
+    # wrong, not the rows. Flag the whole group; never squash the values.
+    vals = [0.22, 0.26, 0.28, 0.35, 0.7, 0.72, 0.98, 0.99,
+            1.02, 1.14, 1.19, 1.83, 2.44, 2.79]
+    gs = adapter.analyze_group(vals, 0.0, 1.0)
+    assert gs.mode == 'anomaly' and gs.reason == 'group_scale_mismatch'
+    s, d = adapter.reconcile_scale(2.79, 0.0, 1.0, True, gs)
+    assert s == 2.79 and d['scale_anomaly'] == 'group_scale_mismatch'
+    # once re-registered on its natural scale ([0,100]), the same board is clean
+    gs2 = adapter.analyze_group(vals, 0.0, 100.0)
+    assert gs2.mode == 'uniform' and gs2.factor == 1.0
+    assert adapter.reconcile_scale(2.79, 0.0, 100.0, True, gs2) == (2.79, {})
+
+
+def test_analyze_group_true_mixture_rescales_per_cluster():
+    # Two real clusters (proportions ~0.9 and percents ~90), each above the mass
+    # floor, separated by a ~2-decade valley -> per-cluster rescale.
+    props = [0.80, 0.82, 0.85, 0.88, 0.90]
+    pcts = [78.0, 84.0, 88.0, 90.0, 93.0]
+    gs = adapter.analyze_group(props + pcts, 0.0, 1.0)
+    assert gs.mode == 'mixed'
+    # low cluster is already canonical -> kept as-is; high cluster -> /100
+    assert adapter.reconcile_scale(0.85, 0.0, 1.0, True, gs) == (0.85, {})
+    hi_s, hi_d = adapter.reconcile_scale(90.0, 0.0, 1.0, True, gs)
+    assert hi_s == 0.9 and hi_d['rescale_basis'] == 'group_mixed'
 
 
 def test_group_scale_applied_consistently_in_build():
@@ -357,27 +394,30 @@ def test_group_scale_applied_consistently_in_build():
             'is_open': 't',
         },
     ]
-    # This (dataset 218, Accuracy) leaderboard is percent (median 48) -> the WHOLE
+    # This (dataset 218, Accuracy) leaderboard is percent (centre 48) -> the WHOLE
     # group is divided by 100, so ModelB's '1.0' becomes 0.01. Per-score inference
     # would have left 1.0 in place, silently inconsistent with the rest of the board.
-    group_medians = {('218', 'Accuracy'): 48.0}
+    resolver = _make_resolver()
+    group_scales = adapter.build_group_scales(
+        {('218', 'Accuracy'): [95.0, 1.0]}, resolver
+    )
     bundles = adapter.build_logs(
         evals,
         _datasets(),
         _tasks(),
-        _make_resolver(),
+        resolver,
         _metric_ranges(),
         _metric_meta(),
         _papers(),
         DUMP_VERSION,
         RETRIEVED_TS,
-        group_medians=group_medians,
+        group_scales=group_scales,
     )
     by_model = {b.log.model_info.name: b for b in bundles}
     a = by_model['ModelA'].log.evaluation_results[0].score_details
     b = by_model['ModelB'].log.evaluation_results[0].score_details
-    assert a.score == 0.95 and b.score == 0.01
-    assert b.details['rescale_basis'] == 'group_median'
+    assert round(a.score, 10) == 0.95 and round(b.score, 10) == 0.01
+    assert b.details['rescale_basis'] == 'group_uniform'
 
 
 def test_resolver_unbounded_canonical_emits_inf():
@@ -401,7 +441,10 @@ def test_accuracy_rescaled_to_canonical_in_build():
     for r in accs:
         assert r.metric_config.max_score == 1.0
         assert 0.0 <= r.score_details.score <= 1.0
-        assert r.score_details.details.get('canonical_rescale_factor') == '100.0'
+        # singleton board (one Accuracy row) with a value impossible under [0,1]:
+        # fixed per-row by /100 (multiplier 0.01), raw kept in raw_value.
+        assert r.score_details.details.get('canonical_rescale_factor') == '0.01'
+        assert r.score_details.details.get('rescale_basis') == 'per_row'
 
 
 def test_resolver_unresolved_is_recorded_and_falls_back():

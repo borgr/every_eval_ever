@@ -297,54 +297,248 @@ def _finite_bounds(lo: float, hi: float) -> tuple[float, float]:
     return lo, hi
 
 
+# ---------------------------------------------------------------------------
+# Scale reconciliation
+#
+# PwC reports the same metric on different scales across (and occasionally
+# within) leaderboards -- most often a proportion metric (canonical [0,1])
+# written as a percent (0-100). The canonical *target* scale is a property of
+# the metric, taken ONCE from the registry bounds (min/max); it is never
+# inferred here. What IS inferred, per (dataset, metric) leaderboard, is how the
+# reported numbers map ONTO that target scale. Three outcomes, decided in
+# log10 space with mass-aware gates (adapted from robust outlier / density
+# clustering practice -- see METRIC_MAINTENANCE.md sec 6 and every_eval_ever#209):
+#
+#   uniform  -- one reporting scale for the whole board. If it already matches
+#               the canonical scale, values pass through; otherwise ONE factor
+#               (x100 / /100) is applied to the WHOLE group (a technical
+#               rescale for presentation). A handful of stragglers below the
+#               mass floor are fixed per-row against the canonical range.
+#   mixed    -- two scales genuinely coexist on the board: two log-separated
+#               clusters, EACH with real mass (>= the floor), split by an empty
+#               ~decade-wide valley. Each cluster gets its own factor.
+#   anomaly  -- a substantial minority (>= the floor) falls outside the
+#               canonical range with no single consistent rescale and no clean
+#               valley. That is not a per-row typo, it signals the metric's
+#               registered scale is wrong; the whole group is FLAGGED
+#               (group_scale_mismatch) and left raw for a maintainer to
+#               re-register on its natural scale (METRIC_MAINTENANCE.md sec 4.3).
+#
+# Raw values are always retained (score_details.raw_value); every non-identity
+# decision is flagged. A per-row fix is applied only when the value is
+# impossible under the metric's own declared range AND a single power-of-100
+# factor uniquely resolves it -- "fix when we are sure it is inconsistent,
+# flag otherwise".
+# ---------------------------------------------------------------------------
+
+# The only rescales we ever apply: identity, percent->proportion (x1/100), and
+# proportion->percent (x100). A value maps to canonical by multiplying by one.
+_RESCALE_FACTORS: tuple[float, ...] = (1.0, 0.01, 100.0)
+# Minimum empty valley (in log10 decades) between two clusters before a board is
+# called genuinely two-scaled -- ~3/4 of an order of magnitude with NO value in
+# it. A smooth heavy tail has no such gap; a percent/proportion mix (a full x100
+# == 2 decades apart) clears it easily. This gap, not a raw ratio, is what stays
+# reliable as N grows (a 3k-row board WILL contain both small and large values).
+_LOG_GAP_MIN = 0.75
+# ...and the two cluster medians must themselves be ~an order of magnitude apart.
+_LOG_CLUSTER_SEP_MIN = 1.3
+# A single non-identity factor is the board's uniform scale only if it places
+# (nearly) this fraction of values in range while identity fails on the centre.
+_UNIFORM_FIT_MIN = 0.9
+# Relative tolerance for "out of range enough to matter" -- keeps rounding noise
+# at a boundary (a 1.001 on a [0,1] board) from being treated as a scale error.
+_SCALE_REL_TOL = 1e-3
+
+
+def _range_abstol(bound: float) -> float:
+    return max(abs(bound) * _SCALE_REL_TOL, 1e-9)
+
+
+def _in_canonical_range(v: float, lo: float, hi: float) -> bool:
+    """True if v is within [lo, hi] (inclusive, small tolerance). An infinite
+    bound is open on that side (so unbounded error metrics never go 'out')."""
+    if math.isfinite(lo) and v < lo - _range_abstol(lo):
+        return False
+    if math.isfinite(hi) and v > hi + _range_abstol(hi):
+        return False
+    return True
+
+
+def _unique_nonidentity_factor(v: float, lo: float, hi: float) -> float | None:
+    """The single x100 // /100 factor that brings an out-of-range v into range,
+    or None if none does or the choice is ambiguous (>1 works). Uniqueness is
+    the 'we are sure' bar for a per-row fix."""
+    fits = [f for f in (0.01, 100.0) if _in_canonical_range(v * f, lo, hi)]
+    return fits[0] if len(fits) == 1 else None
+
+
+def _mass_floor(n: int) -> int:
+    """Minimum size for a value cluster to count as a real second scale rather
+    than stray noise: max(3, 5% of N) (an HDBSCAN-style min_cluster_size floor).
+    A lone off-scale value never clears it."""
+    return max(3, math.ceil(0.05 * n))
+
+
+def _best_factor(cluster: list[float], lo: float, hi: float) -> float | None:
+    """The factor placing the most of a cluster in range (identity wins ties);
+    None if none place any in range."""
+    best_f, best_fit = None, -1
+    for f in _RESCALE_FACTORS:
+        fit = sum(_in_canonical_range(v * f, lo, hi) for v in cluster)
+        if fit > best_fit or (fit == best_fit and f == 1.0):
+            best_f, best_fit = f, fit
+    return best_f if best_fit and best_fit > 0 else None
+
+
+@dataclass(frozen=True)
+class GroupScale:
+    """How one (dataset, metric) leaderboard maps onto the canonical scale.
+
+    mode:
+      'uniform' -- multiply the whole group by ``factor`` (1.0 == already
+                   canonical); out-of-range stragglers below the mass floor may
+                   be fixed per-row.
+      'mixed'   -- two log-separated clusters; a value uses ``high_factor`` when
+                   log10(value) > ``split_log`` else ``low_factor``.
+      'anomaly' -- systematic scale mismatch; do NOT rescale, flag the group.
+    """
+
+    mode: str
+    n: int
+    factor: float = 1.0
+    split_log: float = 0.0
+    low_factor: float = 1.0
+    high_factor: float = 1.0
+    reason: str | None = None
+
+    @property
+    def allow_row_fix(self) -> bool:
+        return self.mode in ('uniform', 'mixed')
+
+
+def _detect_mixture(
+    values: list[float], lo: float, hi: float, floor: int
+) -> GroupScale | None:
+    """Two genuinely-different scales on one board: an empty ~decade valley in
+    log10 space separating two clusters that each clear the mass floor."""
+    pos = sorted(v for v in values if v > 0)
+    if len(pos) < 2 * floor:
+        return None
+    logs = [math.log10(v) for v in pos]
+    gap, k = max((logs[i + 1] - logs[i], i) for i in range(len(logs) - 1))
+    low, high = pos[: k + 1], pos[k + 1 :]
+    if gap < _LOG_GAP_MIN or min(len(low), len(high)) < floor:
+        return None
+    low_logs = [math.log10(v) for v in low]
+    high_logs = [math.log10(v) for v in high]
+    if statistics.median(high_logs) - statistics.median(low_logs) < _LOG_CLUSTER_SEP_MIN:
+        return None
+    low_f, high_f = _best_factor(low, lo, hi), _best_factor(high, lo, hi)
+    if low_f is None or high_f is None or low_f == high_f:
+        return None  # not resolvable as two distinct canonical scales
+    return GroupScale(
+        mode='mixed',
+        n=len(values),
+        split_log=(logs[k] + logs[k + 1]) / 2.0,
+        low_factor=low_f,
+        high_factor=high_f,
+    )
+
+
+def analyze_group(values: list[float], lo: float, hi: float) -> GroupScale:
+    """Classify a leaderboard's reporting scale relative to canonical [lo, hi]."""
+    n = len(values)
+    out = [v for v in values if not _in_canonical_range(v, lo, hi)]
+    if not out:
+        # Everything already sits in range: a clean board, an unbounded error
+        # metric, or a metric correctly registered on its natural scale.
+        return GroupScale(mode='uniform', n=n, factor=1.0)
+
+    floor = _mass_floor(n)
+
+    # (1) Genuinely mixed -- checked first so an all-one-scale board is not
+    # mistaken for a rescale (dividing anything small by 100 trivially "fits").
+    mixed = _detect_mixture(values, lo, hi, floor)
+    if mixed is not None:
+        return mixed
+
+    # (2) Uniform off-scale: the whole board reported on one wrong scale. The
+    # robust centre itself must be out of range at identity but rescued by a
+    # single factor (a factor that merely fits small values is not enough).
+    center = statistics.median(values)
+    if not _in_canonical_range(center, lo, hi):
+        best = [
+            f
+            for f in (0.01, 100.0)
+            if _in_canonical_range(center * f, lo, hi)
+            and sum(_in_canonical_range(v * f, lo, hi) for v in values) / n
+            >= _UNIFORM_FIT_MIN
+        ]
+        if len(best) == 1:
+            return GroupScale(mode='uniform', n=n, factor=best[0])
+
+    # (3) A few strays below the mass floor, each uniquely fixable -> keep the
+    # board as-is and let the per-row fix handle them.
+    if len(out) < floor and all(
+        _unique_nonidentity_factor(v, lo, hi) is not None for v in out
+    ):
+        return GroupScale(mode='uniform', n=n, factor=1.0)
+
+    # (4) A substantial minority is off-scale with no consistent rescale: the
+    # registered scale is likely wrong. Flag the group, touch nothing.
+    return GroupScale(mode='anomaly', n=n, reason='group_scale_mismatch')
+
+
 def reconcile_scale(
     score: float,
     lo: float,
     hi: float,
     resolved: bool,
-    group_repr: float | None = None,
+    group_scale: GroupScale | None = None,
 ) -> tuple[float, dict[str, Any]]:
-    """Rescale a source value onto the canonical [lo, hi] scale.
-
-    PwC reports proportion metrics (canonical [0,1]) sometimes as percent (0-100),
-    inconsistently even within one leaderboard. The reporting scale is a property
-    of the whole (metric, dataset) group, so we decide it ONCE from a robust
-    representative of that group -- its median (``group_repr``) -- rather than from
-    each score in isolation. Per-score inference is fragile both ways: it would
-    rescale a lone in-range value sitting in an otherwise-percent board (a ``1.0``
-    that means 1%), and would silently "fix" a lone out-of-range value in an
-    otherwise-proportion board (a mis-entered ``95``) instead of flagging it. With
-    no group context supplied, ``group_repr`` falls back to the score itself (the
-    original per-score behaviour, still correct for a singleton group).
-
-    Only the unambiguous percent->proportion case (canonical ``hi <= 1`` with the
-    group centred in ``(hi, 100]``) is rescaled. A representative above 100, or a
-    score still outside the canonical range after applying the group scale, is
-    flagged (``scale_anomaly``) and left as-is rather than divided by a guessed
-    factor (every_eval_ever#209 review, Q2/Erotemic).
-    """
+    """Map one source value onto the canonical [lo, hi] scale using its group's
+    decision (``analyze_group``). Returns ``(mapped_score, detail)``; ``detail``
+    is empty when nothing was decided. ``canonical_rescale_factor`` is the
+    multiplier applied to the raw value to reach canonical (0.01 ==
+    percent->proportion, 100.0 == the reverse). ``rescale_basis`` names WHY
+    (``group_uniform`` / ``group_mixed`` / ``per_row``). The raw value is
+    preserved by the caller regardless. With no group context, a singleton
+    group is assumed (per-row fix still applies to a value impossible under its
+    own declared range)."""
     detail: dict[str, Any] = {}
     if not resolved:
         return score, detail
-    ref = group_repr if group_repr is not None else score
-    if math.isfinite(hi) and hi <= 1.0 and ref > hi:
-        if ref <= 100.0:
-            score = score / 100.0
-            detail['canonical_rescale_factor'] = 100.0
+    gs = group_scale if group_scale is not None else GroupScale(mode='uniform', n=1)
+
+    if gs.mode == 'mixed' and score > 0:
+        cand = gs.high_factor if math.log10(score) > gs.split_log else gs.low_factor
+    else:
+        cand = gs.factor  # 1.0 for uniform-canonical and for anomaly groups
+    scaled = score * cand
+
+    if _in_canonical_range(scaled, lo, hi):
+        score = scaled
+        if cand != 1.0:
+            detail['canonical_rescale_factor'] = cand
             detail['rescale_basis'] = (
-                'group_median' if group_repr is not None else 'single_score'
+                'group_mixed' if gs.mode == 'mixed' else 'group_uniform'
             )
+    elif gs.allow_row_fix:
+        g = _unique_nonidentity_factor(scaled, lo, hi)
+        if g is not None:
+            score = scaled * g
+            detail['canonical_rescale_factor'] = cand * g
+            detail['rescale_basis'] = 'per_row'
         else:
-            # group centred too high to be percent -> scale is unknown, don't guess
-            detail['scale_anomaly'] = 'group_representative_above_percent'
-    if math.isfinite(lo) and math.isfinite(hi) and not (lo <= score <= hi):
-        detail.setdefault('scale_anomaly', 'score_outside_canonical_range')
-    # Reproducibility: whenever a scale DECISION was made (rescale or anomaly),
-    # record the representative it was based on, so the decision can be re-derived
-    # and audited across dumps (every_eval_ever#209 review, Q2/Erotemic). The
-    # no-op path (nothing decided) stays an empty detail.
+            # out of range and no unique fix -> not sure, keep raw + flag
+            detail['scale_anomaly'] = 'score_outside_canonical_range'
+    else:  # anomaly group: never rescale, just flag (keep raw)
+        detail['scale_anomaly'] = gs.reason or 'group_scale_mismatch'
+
     if detail:
-        detail['scale_group_repr'] = ref
+        detail['scale_group_mode'] = gs.mode
+        if gs.n > 1:
+            detail['scale_group_n'] = gs.n
     return score, detail
 
 
@@ -439,6 +633,14 @@ class MetricResolver:
         # onto the canonical scale (scale_anomaly). Filled by build_results from
         # reconcile_scale's detail; the strict gate refuses these too.
         self.scale_anomalies: dict[str, set[str]] = {}
+        # Informational (NOT fatal): scale reconciliations that SUCCEEDED. These
+        # improved the data (the user's "scale it in the right way"); they are
+        # reported for transparency but never abort a run.
+        #   scale_corrected -- per-row fixes of values impossible under the
+        #                      declared range (kept raw + flagged).
+        #   scale_rescaled  -- whole-group technical rescales (percent<->prop).
+        self.scale_corrected: dict[str, set[str]] = {}
+        self.scale_rescaled: dict[str, set[str]] = {}
 
     def _direction(
         self, registry_dir: bool | None, metric_name: str
@@ -486,6 +688,20 @@ class MetricResolver:
                 return next(iter(nrm)), 'normalized', ()
             return None, 'ambiguous_normalized', tuple(sorted(nrm))
         return None, 'unknown', ()
+
+    def bounds_for(self, metric_name: str) -> tuple[float, float] | None:
+        """Canonical (lo, hi) for a name, or None if it does not resolve to a
+        single registry entry. Side-effect free (does NOT record unresolved /
+        direction state) -- used to analyse a group's reporting scale up front.
+        Null registry bounds become +/-inf, exactly as ``resolve``."""
+        cid, _, _ = self._match(metric_name)
+        if cid is None:
+            return None
+        entry = self._by_id[cid]
+        lo, hi = entry.get('min_score'), entry.get('max_score')
+        lo = float('-inf') if lo is None else float(lo)
+        hi = float('inf') if hi is None else float(hi)
+        return lo, hi
 
     def resolve(
         self,
@@ -693,7 +909,7 @@ def build_results(
     metric_ranges: dict[str, tuple[float, float]],
     metric_meta: dict[str, dict[str, Any]],
     paper: dict[str, Any] | None,
-    group_medians: dict[tuple[Any, str], float] | None = None,
+    group_scales: dict[tuple[Any, str], GroupScale] | None = None,
 ) -> list[EvaluationResult]:
     """Fan one evaluation row out to one EvaluationResult per jsonb metric."""
     try:
@@ -703,7 +919,7 @@ def build_results(
     if not isinstance(metrics, dict) or not metrics:
         return []
 
-    group_medians = group_medians or {}
+    group_scales = group_scales or {}
     ds_slug = dataset.get('slug') or slugify(dataset.get('name'))
     task_slug = (task or {}).get('slug') or 'unknown-task'
     eval_name = f'{SRC}.{snake(task_slug)}.{snake(ds_slug)}'
@@ -718,17 +934,21 @@ def build_results(
         obs_range = metric_ranges.get(mname, (score, score))
         resolved = resolver.resolve(mname, obs_range, ds_slug)
         # The reporting scale is decided once per (dataset, metric) leaderboard
-        # from its median, not from this single score (see reconcile_scale).
-        group_repr = group_medians.get((ev.get('dataset_id'), mname))
+        # (see analyze_group), then applied to this single value.
+        group_scale = group_scales.get((ev.get('dataset_id'), mname))
         score, scale_detail = reconcile_scale(
             score,
             resolved.min_score,
             resolved.max_score,
             resolved.resolved,
-            group_repr,
+            group_scale,
         )
         if 'scale_anomaly' in scale_detail:
             resolver.scale_anomalies.setdefault(mname, set()).add(ds_slug)
+        elif scale_detail.get('rescale_basis') == 'per_row':
+            resolver.scale_corrected.setdefault(mname, set()).add(ds_slug)
+        elif 'rescale_basis' in scale_detail:  # group_uniform / group_mixed
+            resolver.scale_rescaled.setdefault(mname, set()).add(ds_slug)
         results.append(
             EvaluationResult(
                 evaluation_result_id=f'{SRC}.{ev.get("id")}.{snake(mname)}',
@@ -816,7 +1036,7 @@ def build_logs(
     retrieved_ts: str,
     source_bucket: str | None = None,
     dump_file: str | None = None,
-    group_medians: dict[tuple[Any, str], float] | None = None,
+    group_scales: dict[tuple[Any, str], GroupScale] | None = None,
 ) -> list[LogBundle]:
     """Group evaluation rows by canonical model id into one log per model."""
     groups: dict[str, list[EvaluationResult]] = defaultdict(list)
@@ -838,7 +1058,7 @@ def build_logs(
             metric_ranges,
             metric_meta,
             paper,
-            group_medians,
+            group_scales,
         )
         if not results:
             continue
@@ -946,14 +1166,15 @@ def scan_evaluations(
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, tuple[float, float]],
-    dict[tuple[Any, str], float],
+    dict[tuple[Any, str], list[float]],
 ]:
     """Single pass over ``evaluations``. Accumulate, over the WHOLE dump,
     per-metric observed ranges (stable, slice-independent bounds for the
     unresolved fallback) AND, per (dataset, metric) leaderboard within the
-    selected slice, the median value used to infer that group's reporting scale
-    (see ``reconcile_scale``). The group median ignores ``--limit`` -- the limit
-    caps how many rows are EMITTED, not the scale evidence for a leaderboard."""
+    selected slice, the full list of reported values used to infer that group's
+    reporting scale (see ``analyze_group``). The group values ignore ``--limit``
+    -- the limit caps how many rows are EMITTED, not the scale evidence for a
+    leaderboard."""
     ranges: dict[str, list[float]] = defaultdict(
         lambda: [float('inf'), float('-inf')]
     )
@@ -973,12 +1194,27 @@ def scan_evaluations(
             continue
         selected.append(ev)
     metric_ranges = {k: (lo, hi) for k, (lo, hi) in ranges.items()}
-    group_medians = {
-        key: statistics.median(vals)
-        for key, vals in group_values.items()
-        if vals
-    }
-    return selected, metric_ranges, group_medians
+    return selected, metric_ranges, dict(group_values)
+
+
+def build_group_scales(
+    group_values: dict[tuple[Any, str], list[float]],
+    resolver: MetricResolver,
+) -> dict[tuple[Any, str], GroupScale]:
+    """Decide each (dataset, metric) leaderboard's reporting scale once, from
+    its full value list and the metric's canonical registry bounds. Unresolved
+    metrics get no entry (they are never rescaled -- their bounds are observed,
+    already on the source scale)."""
+    bounds_cache: dict[str, tuple[float, float] | None] = {}
+    scales: dict[tuple[Any, str], GroupScale] = {}
+    for (ds_id, name), vals in group_values.items():
+        if name not in bounds_cache:
+            bounds_cache[name] = resolver.bounds_for(name)
+        bounds = bounds_cache[name]
+        if bounds is None or not vals:
+            continue
+        scales[(ds_id, name)] = analyze_group(vals, *bounds)
+    return scales
 
 
 def read_papers_subset(dump, paper_ids: set[Any]) -> dict[Any, dict[str, Any]]:
@@ -1311,10 +1547,33 @@ def _imperfection_report(resolver: MetricResolver) -> str:
     if resolver.scale_anomalies:
         blocks.append(
             _summarize_class(
-                'metric(s) with a SCALE ANOMALY (a score outside the canonical '
-                'range after the group rescale; kept + flagged scale_anomaly, '
-                'never rewritten)',
+                'metric(s) with a SCALE ANOMALY (value(s) outside the canonical '
+                'range with no consistent rescale, OR a whole group whose '
+                'registered scale looks wrong -- group_scale_mismatch). Kept RAW '
+                '+ flagged, never guessed. A group_scale_mismatch usually means '
+                'the metric is registered on the wrong scale: re-register it on '
+                'its natural scale (METRIC_MAINTENANCE.md sec 4.3), refresh, re-run',
                 resolver.scale_anomalies,
+            )
+        )
+    # Informational only -- successful reconciliations, never fatal. They are the
+    # data being "scaled the right way"; raw values are retained in every case.
+    if resolver.scale_rescaled:
+        blocks.append(
+            _summarize_class(
+                'metric(s) UNIFORMLY RESCALED to canonical (whole-group '
+                'percent<->proportion; rescale_basis=group_uniform/group_mixed; '
+                'informational, raw kept)',
+                resolver.scale_rescaled,
+            )
+        )
+    if resolver.scale_corrected:
+        blocks.append(
+            _summarize_class(
+                'metric(s) with PER-ROW scale fixes (value(s) impossible under '
+                'the declared range, uniquely resolved by x100//100; '
+                'rescale_basis=per_row; informational, raw kept)',
+                resolver.scale_corrected,
             )
         )
     return '\n\n'.join(blocks)
@@ -1368,7 +1627,7 @@ def run(args: argparse.Namespace) -> int:
                 f'dataset in the dump: {sorted(slugs)}'
             )
 
-    selected, metric_ranges, group_medians = scan_evaluations(
+    selected, metric_ranges, group_values = scan_evaluations(
         dump, dataset_ids, args.limit
     )
     print(f'selected {len(selected)} evaluation row(s)')
@@ -1377,6 +1636,9 @@ def run(args: argparse.Namespace) -> int:
     papers_by_id = read_papers_subset(dump, paper_ids)
 
     resolver = MetricResolver(pwc_directions=metric_dir)
+    # Decide each leaderboard's reporting scale once, from its full value list
+    # and the metric's canonical registry bounds (see analyze_group).
+    group_scales = build_group_scales(group_values, resolver)
     bundles = build_logs(
         selected,
         datasets_by_id,
@@ -1389,7 +1651,7 @@ def run(args: argparse.Namespace) -> int:
         retrieved_ts,
         source_bucket=source_bucket,
         dump_file=dump_file,
-        group_medians=group_medians,
+        group_scales=group_scales,
     )
 
     # --- Imperfection gate -------------------------------------------------

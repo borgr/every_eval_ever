@@ -3,7 +3,7 @@
     "source": "eval-card-registry seed/metrics.yaml",
     "note": "Vendored snapshot of canonical metric entries. Regenerate with refresh_metric_snapshot.py. Do not edit by hand.",
     "count": 397,
-    "registry_revision": "7c3a03ccd8e008f5cde496c7d043b62db0f905fa"
+    "registry_revision": "0052cd2c48e6918b22192195d911ea7423d20db9"
   },
   "metrics": [
     {
@@ -1307,7 +1307,7 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": 1.0,
+      "max_score": 100.0,
       "review_status": "draft",
       "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
@@ -1322,7 +1322,7 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": 1.0,
+      "max_score": 100.0,
       "review_status": "draft",
       "metadata": "{\"kind\": \"real\", \"confidence\": \"high\"}"
     },
@@ -1336,7 +1336,7 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": 1.0,
+      "max_score": 100.0,
       "review_status": "draft",
       "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
@@ -1350,7 +1350,7 @@
       "score_type": "continuous",
       "lower_is_better": true,
       "min_score": 0.0,
-      "max_score": 1.0,
+      "max_score": 100.0,
       "review_status": "draft",
       "metadata": "{\"kind\": \"real\", \"confidence\": \"medium\"}"
     },
