@@ -177,11 +177,13 @@ Example `single_turn` instance:
   "evaluation_id": "math_eval/meta-llama/Llama-2-7b-chat/1706000000",
   "model_id": "meta-llama/Llama-2-7b-chat",
   "evaluation_name": "math_eval",
-  "sample_id": 4,
+  "sample_id": "4",
   "interaction_type": "single_turn",
-  "input": { "raw": "If 2^10 = 4^x, what is the value of x?", "reference": "5" },
-  "output": { "raw": "Rewrite 4 as 2^2, so 4^x = 2^(2x). Since 2^10 = 2^(2x), x = 5." },
-  "answer_attribution": [{ "source": "output.raw", "extracted_value": "5" }],
+  "input": { "raw": "If 2^10 = 4^x, what is the value of x?", "reference": ["5"] },
+  "output": { "raw": ["Rewrite 4 as 2^2, so 4^x = 2^(2x). Since 2^10 = 2^(2x), x = 5."] },
+  "answer_attribution": [
+    { "turn_idx": 0, "source": "output.raw", "extracted_value": "5", "extraction_method": "match", "is_terminal": true }
+  ],
   "evaluation": { "score": 1.0, "is_correct": true }
 }
 ```
