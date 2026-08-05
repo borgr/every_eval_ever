@@ -152,6 +152,17 @@ def publish_evaluation_logs(
     All aggregate and instance-level artifacts are prepared and preflighted
     before any destination file is created. Any publication failure removes
     only files successfully created by this call.
+
+    ``base_output_dir`` is the **``data``** directory, not a collection
+    directory: the collection comes from ``collection_override`` or from
+    ``evaluation_results[0].source_data.dataset_name``, and the final path is
+    ``base_output_dir/<collection>/<developer>/<model>/<uuid>.json``. Passing
+    ``data/<collection>`` therefore writes
+    ``data/<collection>/<collection>/...``, one level too deep, which surfaces
+    later as a path-depth validation failure rather than an error here.
+
+    ``EvaluationLogOutput.base_dir`` and ``default_failure_report_path`` use
+    the opposite convention and take ``data/<collection>``.
     """
 
     logs = list(logs)
