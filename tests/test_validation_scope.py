@@ -19,6 +19,7 @@ from every_eval_ever.eval_types import (
 from every_eval_ever.helpers import SCHEMA_VERSION as ADAPTER_SCHEMA_VERSION
 from every_eval_ever.schema import get_schema_version, schema_json
 from every_eval_ever.validate import (
+    check_developer_slug,
     check_path_structure,
     check_score_metadata,
     validate_aggregate,
@@ -633,3 +634,191 @@ def test_local_command_runs_the_same_repository_checks(
     assert exit_code == 1
     errors = json.loads(capsys.readouterr().out)[0]['errors']
     assert any('was not found' in error['msg'] for error in errors)
+
+
+def test_registry_second_name_used_as_developer_is_flagged():
+    warnings = check_developer_slug(
+        {'model_info': {'name': 'mistral-large', 'developer': 'mistral'}}
+    )
+
+    assert len(warnings) == 1
+    assert warnings[0].startswith('model_info.developer:')
+    assert 'the same organization in the eval-card-registry' in warnings[0]
+    assert "'mistralai'" in warnings[0]
+
+
+def test_registry_second_name_in_the_model_id_prefix_is_flagged():
+    warnings = check_developer_slug(
+        {'model_info': {'name': 'mistral-large', 'id': 'mistral/mistral-large'}}
+    )
+
+    # The prefix, not model_info.developer, decides the datastore directory.
+    assert len(warnings) == 1
+    assert warnings[0].startswith('model_info.id:')
+    assert "'mistralai'" in warnings[0]
+
+
+def test_model_family_standing_in_for_its_publisher_is_flagged():
+    # The registry carries these as org aliases, so a family name used where a
+    # developer belongs resolves the same way any other second name does.
+    for slug, canonical in (
+        ('glm', 'zai'),
+        ('kimi', 'moonshotai'),
+        ('granite', 'ibm'),
+        ('hunyuan', 'tencent'),
+        ('yi', '01-ai'),
+    ):
+        warnings = check_developer_slug(
+            {'model_info': {'name': 'model', 'developer': slug}}
+        )
+
+        assert len(warnings) == 1, slug
+        assert repr(canonical) in warnings[0], slug
+
+
+def test_the_warning_names_both_spellings_without_choosing_one():
+    """A canonical id is an entity id, not a claim about the directory.
+
+    In the published datastore it is regularly the *rarer* of the two spellings
+    — ``zai`` appears in 2 collections against 11 for ``zhipu`` — so naming it
+    as the destination would move records toward the minority directory, which
+    is the split this check exists to prevent.
+    """
+    warning = check_developer_slug({'model_info': {'developer': 'zhipu'}})[0]
+
+    assert "'zhipu'" in warning
+    assert "'zai'" in warning
+    assert 'this collection already uses' in warning
+
+
+def test_second_name_matching_ignores_case_and_punctuation():
+    for slug in ('zhipu', 'zhipu-ai', 'Zhipu AI', 'ZHIPU', 'THUDM', 'thudm'):
+        warnings = check_developer_slug({'model_info': {'developer': slug}})
+
+        assert len(warnings) == 1, slug
+        assert "'zai'" in warnings[0], slug
+
+
+def test_huggingface_namespaces_are_identities_not_drift():
+    # The registry records the namespace an organization publishes under
+    # separately from its canonical id, and models really are published there.
+    # A check written against helpers.get_developer would flag all of these:
+    # get_developer('Llama-3-8B') is 'meta'.
+    for model_info in (
+        {'developer': 'meta-llama', 'id': 'meta-llama/Llama-3-8B'},
+        {'developer': 'qwen', 'id': 'Qwen/Qwen2.5-7B'},
+        {'developer': 'deepseek-ai', 'id': 'deepseek-ai/DeepSeek-V3'},
+        {'developer': 'zai-org', 'id': 'zai-org/GLM-4.5'},
+    ):
+        assert check_developer_slug({'model_info': model_info}) == [], (
+            model_info
+        )
+
+
+def test_case_and_punctuation_variants_of_a_canonical_id_are_left_alone():
+    # The registry aims for HuggingFace-true casing and HuggingFace is not
+    # consistent ('anthropic' but 'Snowflake'), so its preferred spelling is no
+    # evidence about the directory this datastore already uses.
+    for slug in (
+        'Anthropic',
+        'Google',
+        'OpenAI',
+        'xAI',
+        'snowflake',
+        'moonshot-ai',
+        'tii-uae',
+        'z-ai',
+    ):
+        assert (
+            check_developer_slug({'model_info': {'developer': slug}}) == []
+        ), slug
+
+
+def test_organizations_the_registry_has_not_seen_are_left_alone():
+    # An unrecognized slug is assumed to be somebody's real organization;
+    # widening coverage means adding an alias to the registry.
+    for slug in ('facebook', 'mosaicml', 'Xwin-LM', 'aws-prototyping'):
+        assert (
+            check_developer_slug({'model_info': {'developer': slug}}) == []
+        ), slug
+
+
+def test_canonical_organization_ids_are_not_flagged():
+    for model_info in (
+        {'developer': 'alibaba', 'id': 'alibaba/qwen3-max'},
+        {'developer': 'mistralai', 'id': 'mistralai/codestral-2501'},
+        {'developer': 'allenai', 'id': 'allenai/olmo-2'},
+        {'developer': 'unknown', 'id': 'some-model'},
+        {'developer': 'openai', 'id': 'gpt-4'},
+    ):
+        assert check_developer_slug({'model_info': model_info}) == [], (
+            model_info
+        )
+
+
+def test_developer_slug_check_tolerates_missing_and_malformed_fields():
+    for data in (
+        {},
+        {'model_info': None},
+        {'model_info': 'mistral'},
+        {'model_info': {}},
+        {'model_info': {'developer': None, 'id': None}},
+        {'model_info': {'developer': '  ', 'id': 42}},
+    ):
+        assert check_developer_slug(data) == [], data
+
+
+def test_developer_slug_reports_one_warning_per_distinct_spelling():
+    warnings = check_developer_slug(
+        {'model_info': {'id': 'mistral/mistral-large', 'developer': 'mistral'}}
+    )
+
+    # One spelling, both fields holding it, so one warning naming both: fixing
+    # only the field that decides the directory would warn again next run.
+    assert len(warnings) == 1
+    assert warnings[0].startswith('model_info.id and model_info.developer: ')
+
+    warnings = check_developer_slug(
+        {'model_info': {'id': 'moonshot/kimi-k2', 'developer': 'kimi'}}
+    )
+
+    assert len(warnings) == 2
+    assert {warning.split(':', 1)[0] for warning in warnings} == {
+        'model_info.id',
+        'model_info.developer',
+    }
+
+
+def test_only_the_field_that_decides_the_directory_claims_the_split():
+    """A second name in a field that does not pick the directory says so.
+
+    ``model_info.developer`` is ignored by the publisher once the id carries a
+    namespace prefix, so telling that record it is publishing into two
+    directories would be false. The finding stands — the field still misnames
+    the publisher for anything that groups by it — but the consequence does not.
+    """
+    (directory,) = check_developer_slug(
+        {'model_info': {'id': 'mistral/mistral-large'}}
+    )
+    (metadata,) = check_developer_slug(
+        {'model_info': {'id': 'mistralai/mistral-large', 'developer': 'kimi'}}
+    )
+
+    assert 'two datastore directories' in directory
+    assert 'two datastore directories' not in metadata
+    assert 'grouping records by developer' in metadata
+
+
+def test_developer_slug_drift_warns_without_failing_validation(tmp_path):
+    data = valid_aggregate()
+    data['model_info']['id'] = 'mistral/mistral-large'
+    data['model_info']['developer'] = 'mistral'
+
+    report = validate_data(tmp_path, data)
+
+    assert report.valid is True
+    assert report.errors == []
+    assert any(
+        'the same organization in the eval-card-registry' in warning['msg']
+        for warning in report.warnings
+    )

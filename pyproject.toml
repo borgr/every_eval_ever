@@ -59,6 +59,7 @@ include = ["every_eval_ever*"]
 [tool.setuptools.package-data]
 every_eval_ever = [
     "schemas/*.json",
+    "helpers/data/*.json",
     "adapters/**/*.md",
     "adapters/**/*.sh",
     "tools/*.md",

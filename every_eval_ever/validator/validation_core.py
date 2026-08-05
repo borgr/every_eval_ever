@@ -13,6 +13,7 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from every_eval_ever.eval_types import EvaluationLog
+from every_eval_ever.helpers.org_registry import second_name_of
 from every_eval_ever.instance_level_types import InstanceLevelEvaluationLog
 from every_eval_ever.schema import (
     get_schema_fingerprint as get_schema_fingerprint,
@@ -577,6 +578,116 @@ def _metric_bound(value: Any) -> float | None:
     return None
 
 
+def _developer_prefix(model_id: Any) -> str | None:
+    """Return the namespace segment of a slash-bearing model identity."""
+    if not isinstance(model_id, str) or '/' not in model_id:
+        return None
+    return model_id.split('/', 1)[0]
+
+
+def check_developer_slug(data: dict[str, Any]) -> list[str]:
+    """Warn when a developer slug splits one publisher across two directories.
+
+    The datastore groups records into one directory per developer (see
+    ``helpers.io.datastore_path_components``), so two names for one publisher
+    become two publishers and neither listing is complete. Adapters disagree
+    today, and the published datastore shows the result: ``mistral`` beside
+    ``mistralai``, ``moonshot`` beside ``moonshotai``, ``zhipu`` and
+    ``zhipu-ai`` and ``THUDM`` beside ``zai``.
+
+    Which names mean the same organization is decided by the
+    **eval-card-registry** vocabulary in ``helpers.org_registry``, not by a map
+    kept here. Two consequences are worth stating because they are the whole
+    reason for using it:
+
+    - The registry separates an organization's canonical id from the
+      HuggingFace namespace it publishes under, so ``meta-llama``, ``qwen``,
+      ``deepseek-ai`` and ``zai-org`` are accepted identities rather than
+      drift. A check written against a local developer map gets this wrong:
+      ``get_developer('Llama-3-8B')`` is ``meta``, and comparing with that
+      would flag every record correctly filed under ``meta-llama``. The
+      registry fills that field in for 11 of its 1166 organizations so far, so a
+      namespace it has *not* recorded but does carry as an alias is reported
+      like any other second name — ``MiniMaxAI`` for ``minimax``,
+      ``CohereLabs`` for ``cohere``. In the published datastore those records
+      are filed under the canonical spelling anyway (there is no
+      ``MiniMaxAI/``, ``CohereLabs/`` or ``XiaomiMiMo/`` directory in it), so
+      the warning still names the directory that exists; the durable fix is
+      ``hf_org`` upstream, which serves every consumer.
+    - Only *second names* are flagged — a confirmed registry alias that is a
+      genuinely different name, including a model family standing in for its
+      publisher. Case and punctuation variants (``Anthropic`` for
+      ``anthropic``, ``snowflake`` for ``Snowflake``) are left alone: the
+      registry aims for HuggingFace-true casing and HuggingFace is not
+      internally consistent, so its preferred spelling is not evidence about
+      which directory this datastore already uses.
+
+    The message names both spellings and does not pick one. The registry's
+    canonical id is an *entity* id, not a directory name — it keeps the
+    HuggingFace namespace in a separate field precisely because the two differ
+    — and in the published datastore it is often the rarer spelling of the two
+    (``zai`` appears in 2 collections against 11 for ``zhipu``; ``mistralai``
+    in 27 against 28 for ``mistral``). Naming it as the destination would move
+    records toward the minority directory, which is the split this check exists
+    to prevent. Choosing one spelling per publisher is a datastore-wide
+    decision; a per-file warning can only say that two of them are in play.
+
+    Both ``model_info.id``'s namespace prefix and ``model_info.developer`` are
+    checked, and one warning names every field holding the spelling, so a
+    rename does not warn again on the next run. Only one of the two decides the
+    directory, and only that one is told that it splits it.
+
+    The cost is silence on any organization the registry has not seen — an
+    unrecognized slug is assumed to be somebody's real organization, and
+    widening coverage means adding an alias to the registry, which serves
+    every other consumer too.
+
+    A warning, not an error: these records are already published, the fix is a
+    rename that changes join keys, and the name a project treats as primary is
+    an editorial call rather than a schema violation.
+    """
+    model_info = data.get('model_info')
+    if not isinstance(model_info, dict):
+        return []
+
+    # Both fields carry a publisher name, so both are checked, and every field
+    # holding one spelling is named together: renaming only the one that
+    # decides the directory would leave the other to warn on the next run.
+    prefix = _developer_prefix(model_info.get('id'))
+    declared: dict[str, list[str]] = {}
+    for location, value in (
+        ('model_info.id', prefix),
+        ('model_info.developer', model_info.get('developer')),
+    ):
+        if isinstance(value, str) and value.strip():
+            declared.setdefault(value.strip(), []).append(location)
+
+    # Only one of the two decides the directory: the id's namespace prefix when
+    # it has one, model_info.developer when the id is flat (see
+    # helpers.io.datastore_path_components). The other still names the
+    # publisher, so it is still reported — with the consequence it really has.
+    directory_field = 'model_info.id' if prefix else 'model_info.developer'
+    warnings: list[str] = []
+    for slug, locations in declared.items():
+        canonical = second_name_of(slug)
+        if canonical is None:
+            continue
+        consequence = (
+            'publishing under both puts one developer in two datastore '
+            'directories, and neither listing is complete'
+            if directory_field in locations
+            else 'the id prefix decides the directory here, so this field '
+            'does not split it, but anything grouping records by developer '
+            'sees two publishers'
+        )
+        warnings.append(
+            f'{" and ".join(locations)}: {slug!r} and {canonical!r} are the '
+            'same organization in the eval-card-registry. Use whichever '
+            f'spelling this collection already uses — {consequence}'
+        )
+    return warnings
+
+
 def check_model_deployment(data: dict[str, Any]) -> list[str]:
     """Require independent deployment-control and weight-availability axes.
 
@@ -696,6 +807,14 @@ def _aggregate_check_model_deployment(
     return check_model_deployment(data)
 
 
+def _aggregate_check_developer_slug(
+    context: ValidationContext, data: ValidationPayload
+) -> list[str]:
+    if not isinstance(data, dict):
+        return []
+    return check_developer_slug(data)
+
+
 REGISTERED_CHECKS: tuple[ValidationCheck, ...] = (
     ValidationCheck('path structure', 'file', 'error', _file_check_path),
     ValidationCheck(
@@ -712,6 +831,12 @@ REGISTERED_CHECKS: tuple[ValidationCheck, ...] = (
         'aggregate',
         'error',
         _aggregate_check_model_deployment,
+    ),
+    ValidationCheck(
+        'developer slug',
+        'aggregate',
+        'warning',
+        _aggregate_check_developer_slug,
     ),
 )
 
