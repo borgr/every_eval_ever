@@ -19,8 +19,9 @@
      Otherwise: this PR should be ready to merge, and this section makes the non-obvious
      calls visible so a maintainer can comment and the skill/schema can improve. Log every
      non-obvious CHOICE (not just where it was hard — a confident wrong choice has no
-     "friction"). "None" is a valid answer. General items (would recur on other
-     datasets) → also a separate `skill`-labeled PR or a `skill-gap` issue. -->
+     "friction"). "None" is a valid answer. Mark anything that would recur on other
+     datasets as General, so it can become a follow-up rather than being re-solved by
+     the next contributor. -->
 
 - Decision / where: 
   Chose / instead of: 
