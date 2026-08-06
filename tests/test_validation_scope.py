@@ -677,18 +677,28 @@ def test_model_family_standing_in_for_its_publisher_is_flagged():
 
 
 def test_the_warning_names_both_spellings_without_choosing_one():
-    """A canonical id is an entity id, not a claim about the directory.
-
-    In the published datastore it is regularly the *rarer* of the two spellings
-    — ``zai`` appears in 2 collections against 11 for ``zhipu`` — so naming it
-    as the destination would move records toward the minority directory, which
-    is the split this check exists to prevent.
-    """
     warning = check_developer_slug({'model_info': {'developer': 'zhipu'}})[0]
 
     assert "'zhipu'" in warning
     assert "'zai'" in warning
     assert 'this collection already uses' in warning
+
+
+def test_the_warning_names_the_collection_it_says_to_match():
+    # Advice to match the collection is only actionable if it says which one.
+    (warning,) = check_developer_slug(
+        {'model_info': {'id': 'mistral/mistral-large'}},
+        'data/alpaca_eval_v2/mistral/mistral-large/eval.json',
+    )
+
+    assert "spelling 'alpaca_eval_v2' already uses" in warning
+    # A caller checking a record it has not filed yet has no path to give.
+    for repo_path in (None, '', 'mistral/mistral-large/eval.json'):
+        (warning,) = check_developer_slug(
+            {'model_info': {'id': 'mistral/mistral-large'}}, repo_path
+        )
+
+        assert 'spelling this collection already uses' in warning, repo_path
 
 
 def test_second_name_matching_ignores_case_and_punctuation():
@@ -768,18 +778,26 @@ def test_developer_slug_check_tolerates_missing_and_malformed_fields():
         assert check_developer_slug(data) == [], data
 
 
-def test_developer_slug_reports_one_warning_per_distinct_spelling():
-    warnings = check_developer_slug(
-        {'model_info': {'id': 'mistral/mistral-large', 'developer': 'mistral'}}
-    )
+def test_developer_slug_reports_one_warning_per_publisher():
+    # One publisher needs one rename, so it gets one warning naming every field
+    # to change and every spelling in play. Reporting per spelling would warn
+    # again next run for the field the first message did not mention.
+    for model_info, spellings in (
+        ({'id': 'mistral/large', 'developer': 'mistral'}, "'mistral'"),
+        ({'id': 'Mistral/l', 'developer': 'mistral'}, "'Mistral'/'mistral'"),
+        ({'id': 'zhipu-ai/glm-4', 'developer': 'zhipu'}, "'zhipu'/'zhipu-ai'"),
+        ({'id': 'moonshot/kimi-k2', 'developer': 'kimi'}, "'kimi'/'moonshot'"),
+    ):
+        (warning,) = check_developer_slug({'model_info': model_info})
 
-    # One spelling, both fields holding it, so one warning naming both: fixing
-    # only the field that decides the directory would warn again next run.
-    assert len(warnings) == 1
-    assert warnings[0].startswith('model_info.id and model_info.developer: ')
+        assert warning.startswith(
+            f'model_info.id and model_info.developer: {spellings} and '
+        ), model_info
 
+
+def test_two_publishers_in_one_record_are_reported_separately():
     warnings = check_developer_slug(
-        {'model_info': {'id': 'moonshot/kimi-k2', 'developer': 'kimi'}}
+        {'model_info': {'id': 'mistral/large', 'developer': 'kimi'}}
     )
 
     assert len(warnings) == 2
@@ -790,13 +808,9 @@ def test_developer_slug_reports_one_warning_per_distinct_spelling():
 
 
 def test_only_the_field_that_decides_the_directory_claims_the_split():
-    """A second name in a field that does not pick the directory says so.
-
-    ``model_info.developer`` is ignored by the publisher once the id carries a
-    namespace prefix, so telling that record it is publishing into two
-    directories would be false. The finding stands — the field still misnames
-    the publisher for anything that groups by it — but the consequence does not.
-    """
+    # model_info.developer is ignored by the publisher once the id carries a
+    # namespace prefix, so telling that record it publishes into two
+    # directories would be false. The finding stands, the consequence does not.
     (directory,) = check_developer_slug(
         {'model_info': {'id': 'mistral/mistral-large'}}
     )

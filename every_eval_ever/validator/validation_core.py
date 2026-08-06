@@ -585,93 +585,71 @@ def _developer_prefix(model_id: Any) -> str | None:
     return model_id.split('/', 1)[0]
 
 
-def check_developer_slug(data: dict[str, Any]) -> list[str]:
-    """Warn when a developer slug splits one publisher across two directories.
+def _collection_of(repo_path: str | None) -> str:
+    """Name the collection a record is filed under, so advice can cite it.
 
-    The datastore groups records into one directory per developer (see
-    ``helpers.io.datastore_path_components``), so two names for one publisher
-    become two publishers and neither listing is complete. Adapters disagree
-    today, and the published datastore shows the result: ``mistral`` beside
-    ``mistralai``, ``moonshot`` beside ``moonshotai``, ``zhipu`` and
-    ``zhipu-ai`` and ``THUDM`` beside ``zai``.
+    ``data/<collection>/<developer>/<model>/<file>``. Falls back to a generic
+    phrase, because a caller checking a record it has not written yet has no
+    path to give.
+    """
+    parts = PurePosixPath(repo_path).parts if repo_path else ()
+    if len(parts) >= 2 and parts[0] == 'data':
+        return f'{parts[1]!r}'
+    return 'this collection'
 
-    Which names mean the same organization is decided by the
-    **eval-card-registry** vocabulary in ``helpers.org_registry``, not by a map
-    kept here. Two consequences are worth stating because they are the whole
-    reason for using it:
 
-    - The registry separates an organization's canonical id from the
-      HuggingFace namespace it publishes under, so ``meta-llama``, ``qwen``,
-      ``deepseek-ai`` and ``zai-org`` are accepted identities rather than
-      drift. A check written against a local developer map gets this wrong:
-      ``get_developer('Llama-3-8B')`` is ``meta``, and comparing with that
-      would flag every record correctly filed under ``meta-llama``. The
-      registry fills that field in for 11 of its 1166 organizations so far, so a
-      namespace it has *not* recorded but does carry as an alias is reported
-      like any other second name — ``MiniMaxAI`` for ``minimax``,
-      ``CohereLabs`` for ``cohere``. In the published datastore those records
-      are filed under the canonical spelling anyway (there is no
-      ``MiniMaxAI/``, ``CohereLabs/`` or ``XiaomiMiMo/`` directory in it), so
-      the warning still names the directory that exists; the durable fix is
-      ``hf_org`` upstream, which serves every consumer.
-    - Only *second names* are flagged — a confirmed registry alias that is a
-      genuinely different name, including a model family standing in for its
-      publisher. Case and punctuation variants (``Anthropic`` for
-      ``anthropic``, ``snowflake`` for ``Snowflake``) are left alone: the
-      registry aims for HuggingFace-true casing and HuggingFace is not
-      internally consistent, so its preferred spelling is not evidence about
-      which directory this datastore already uses.
+def check_developer_slug(
+    data: dict[str, Any], repo_path: str | None = None
+) -> list[str]:
+    """Warn when two names for one publisher split its datastore directory.
 
-    The message names both spellings and does not pick one. The registry's
-    canonical id is an *entity* id, not a directory name — it keeps the
-    HuggingFace namespace in a separate field precisely because the two differ
-    — and in the published datastore it is often the rarer spelling of the two
-    (``zai`` appears in 2 collections against 11 for ``zhipu``; ``mistralai``
-    in 27 against 28 for ``mistral``). Naming it as the destination would move
-    records toward the minority directory, which is the split this check exists
-    to prevent. Choosing one spelling per publisher is a datastore-wide
-    decision; a per-file warning can only say that two of them are in play.
+    The datastore takes the publisher directory from ``model_info.id``'s
+    namespace, or from ``model_info.developer`` for an id without one (see
+    ``helpers.io.datastore_path_components``), so one publisher under two names
+    is two directories and neither listing is complete. Both fields are checked
+    and only the one deciding the directory is told that it splits it.
 
-    Both ``model_info.id``'s namespace prefix and ``model_info.developer`` are
-    checked, and one warning names every field holding the spelling, so a
-    rename does not warn again on the next run. Only one of the two decides the
-    directory, and only that one is told that it splits it.
+    Flagged: a *second name* — a confirmed eval-card-registry alias that is a
+    genuinely different name, model families included (``mistral`` for
+    ``mistralai``, ``glm`` for ``zai``). Not flagged: a canonical id, a
+    HuggingFace namespace the registry records for one (``meta-llama`` is
+    Meta), a case or punctuation variant of either, and any name the registry
+    has never seen. The message names every spelling in play and the collection
+    to match, but not a destination: the canonical id is an entity id, and in
+    this datastore it is regularly the rarer of the two spellings.
 
-    The cost is silence on any organization the registry has not seen — an
-    unrecognized slug is assumed to be somebody's real organization, and
-    widening coverage means adding an alias to the registry, which serves
-    every other consumer too.
-
-    A warning, not an error: these records are already published, the fix is a
-    rename that changes join keys, and the name a project treats as primary is
-    an editorial call rather than a schema violation.
+    A warning, not an error — the records are published, the fix is a rename
+    that changes join keys, and which name is primary is an editorial call.
     """
     model_info = data.get('model_info')
     if not isinstance(model_info, dict):
         return []
 
-    # Both fields carry a publisher name, so both are checked, and every field
-    # holding one spelling is named together: renaming only the one that
-    # decides the directory would leave the other to warn on the next run.
+    # Keyed by the organization, not the spelling: one publisher needs one
+    # rename, and a per-spelling key warns again next run for the field the
+    # first message did not name ('zhipu' and 'zhipu-ai' are both zai).
     prefix = _developer_prefix(model_info.get('id'))
-    declared: dict[str, list[str]] = {}
+    declared: dict[str, tuple[list[str], set[str]]] = {}
     for location, value in (
         ('model_info.id', prefix),
         ('model_info.developer', model_info.get('developer')),
     ):
-        if isinstance(value, str) and value.strip():
-            declared.setdefault(value.strip(), []).append(location)
-
-    # Only one of the two decides the directory: the id's namespace prefix when
-    # it has one, model_info.developer when the id is flat (see
-    # helpers.io.datastore_path_components). The other still names the
-    # publisher, so it is still reported — with the consequence it really has.
-    directory_field = 'model_info.id' if prefix else 'model_info.developer'
-    warnings: list[str] = []
-    for slug, locations in declared.items():
-        canonical = second_name_of(slug)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        canonical = second_name_of(value)
         if canonical is None:
             continue
+        locations, spellings = declared.setdefault(canonical, ([], set()))
+        locations.append(location)
+        spellings.add(value.strip())
+
+    # The id's namespace prefix decides the directory when it has one, and
+    # model_info.developer when the id is flat. The other field still names the
+    # publisher, so it is reported too — with the consequence it really has.
+    directory_field = 'model_info.id' if prefix else 'model_info.developer'
+    collection = _collection_of(repo_path)
+    warnings: list[str] = []
+    for canonical, (locations, spellings) in declared.items():
         consequence = (
             'publishing under both puts one developer in two datastore '
             'directories, and neither listing is complete'
@@ -680,10 +658,11 @@ def check_developer_slug(data: dict[str, Any]) -> list[str]:
             'does not split it, but anything grouping records by developer '
             'sees two publishers'
         )
+        found = '/'.join(repr(spelling) for spelling in sorted(spellings))
         warnings.append(
-            f'{" and ".join(locations)}: {slug!r} and {canonical!r} are the '
+            f'{" and ".join(locations)}: {found} and {canonical!r} are the '
             'same organization in the eval-card-registry. Use whichever '
-            f'spelling this collection already uses — {consequence}'
+            f'spelling {collection} already uses — {consequence}'
         )
     return warnings
 
@@ -812,7 +791,7 @@ def _aggregate_check_developer_slug(
 ) -> list[str]:
     if not isinstance(data, dict):
         return []
-    return check_developer_slug(data)
+    return check_developer_slug(data, context.repo_path)
 
 
 REGISTERED_CHECKS: tuple[ValidationCheck, ...] = (
