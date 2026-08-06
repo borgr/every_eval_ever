@@ -219,24 +219,65 @@ options:
 
 ## AlpacaEval
 
-The AlpacaEval converter fetches the public leaderboard CSV directly from GitHub
-and converts all model entries into the unified schema. No local log files are required.
-Semantically this is a source adapter rather than a local-log converter; it
-remains under `converters` to preserve the existing
-`every_eval_ever convert alpaca_eval` API.
+The AlpacaEval converter fetches the leaderboards from the upstream
+`tatsu-lab/alpaca_eval` repository and converts every model entry into the
+unified schema. No local log files are required. Semantically this is a source
+adapter rather than a local-log converter; it remains under `converters` to
+preserve the existing `every_eval_ever convert alpaca_eval` API.
 
-Both AlpacaEval 1.0 (GPT-4 judge, `text_davinci_003` baseline) and
-AlpacaEval 2.0 (weighted LC win rate, `gpt4_turbo` baseline) are supported.
+Both AlpacaEval 1.0 (`alpaca_eval_gpt4` judge, `text_davinci_003` baseline) and
+AlpacaEval 2.0 (`weighted_alpaca_eval_gpt4_turbo` judge, `gpt4_turbo` baseline)
+are supported.
+
+The converter fetches more than the score tables, because the scores alone do
+not say what they mean: it also reads the judge configuration and its verbatim
+prompt template, the upstream package version, and one config per leaderboard
+entry (`models_configs/<slug>/configs.yaml`). Those per-model configs are what
+`identity.py` resolves a model's real repo id, developer, availability and
+generation settings from, recording which rung of its evidence ladder fired as
+`identity_source`. Entries it cannot resolve are reported as failures rather
+than published under a guessed name.
 
 Metrics converted per model:
 
-| Metric | Description |
-|---|---|
-| Win Rate | Fraction of outputs preferred over the baseline (raw) |
-| Length-Controlled Win Rate | Win rate debiased for response length (v2 only) |
-| Discrete Win Rate | Binary win rate — no partial credit for ties |
-| Average Response Length | Mean token count of model responses |
+| Metric | Unit | Description |
+|---|---|---|
+| `win_rate` | percent | Share of the 805 instructions on which the judge preferred this model over the baseline |
+| `length_controlled_win_rate` | percent | Win rate debiased for output length (Dubois et al., 2024) |
+| `discrete_win_rate` | percent | Binary win rate — no partial credit for ties |
+| `avg_length` | characters | Mean output length in **characters** (`output.str.len().mean()`), reported for length-bias context, not as a quality score |
 
+Standard errors are the upstream `preferences.sem()`, so they are recorded as
+`analytic`, not bootstrap. Scores are published on the scale the registry
+declares for the metric — `[0, 100]` for `win-rate`, which is what the CSV
+holds — with `score_scale_divisor` recording any conversion applied.
+
+### Canonical ids
+
+Organization, metric and benchmark ids come from the
+[eval-card-registry](https://evaleval-entity-registry.hf.space), so this source
+speaks the same vocabulary as the rest of EEE:
+
+- `model_info.developer` is the registry's canonical organization id, while
+  `model_info.id` keeps the HuggingFace namespace the weights are published
+  under. The registry records both (`meta` and `meta-llama`, `alibaba` and
+  `qwen`), so these are two identities for one organization, not drift.
+- `win_rate` takes the canonical `win-rate` id and its declared bounds.
+- AlpacaEval 2.0 takes the canonical benchmark id `alpacaeval-2-0`.
+- Values the registry has no canonical for keep a namespaced `alpaca_eval.*` id
+  and say so through `*_registry_strategy` in `additional_details`. The CLI
+  prints the current gap list on every run.
+
+Resolution reads a vendored snapshot of the registry's read-only list endpoints
+(`data/registry_snapshot.json`) rather than `POST /resolve`, which defaults to
+`mode="resolve"` and auto-creates a draft canonical for anything it cannot
+place — bulk-resolving a leaderboard that way would write to a shared registry
+as a side effect of a read-only conversion. Refresh the snapshot with:
+
+```bash
+uv run python -m every_eval_ever.converters.alpaca_eval.refresh_registry_snapshot
+uv run python -m every_eval_ever.converters.alpaca_eval.refresh_registry_snapshot --check
+```
 
 ### Usage
 
@@ -246,16 +287,19 @@ Convert both leaderboards (default):
 uv run every_eval_ever convert alpaca_eval --output_dir data
 ```
 
-Convert only AlpacaEval 2.0:
+Convert one leaderboard:
 
 ```bash
 uv run every_eval_ever convert alpaca_eval --version v2 --output_dir data
+uv run every_eval_ever convert alpaca_eval --version v1 --output_dir data
 ```
 
-Convert only AlpacaEval 1.0:
+Keep the fetched upstream artefacts, then replay them without touching the
+network — useful for reviewing a diff, and for reproducing a conversion later:
 
 ```bash
-uv run every_eval_ever convert alpaca_eval --version v1 --output_dir data
+uv run every_eval_ever convert alpaca_eval --save_raw_json upstream.json --output_dir data
+uv run every_eval_ever convert alpaca_eval --input_json upstream.json --output_dir data
 ```
 
 Full argument list:
@@ -263,14 +307,30 @@ Full argument list:
 ```
 usage: every_eval_ever convert alpaca_eval [-h] [--log_path LOG_PATH]
                                            [--output_dir OUTPUT_DIR]
-                                           [--version {v1,v2}]
                                            [--source_organization_name ...]
                                            [--evaluator_relationship ...]
                                            [--source_organization_url ...]
+                                           [--source_organization_logo_url ...]
                                            [--eval_library_name ...]
                                            [--eval_library_version ...]
+                                           [--version {v1,v2}] [--ref REF]
+                                           [--save_raw_json SAVE_RAW_JSON]
+                                           [--input_json INPUT_JSON]
+                                           [--no_registry_resolve]
+                                           [--registry_live]
 
 options:
   --version {v1,v2}            Which leaderboard to convert. Omit to convert both (default).
-  --output_dir OUTPUT_DIR      Base output directory (default: data).
+  --output_dir OUTPUT_DIR      Base output directory. Defaults to a temporary path,
+                               so a smoke run does not write a data/ tree into the
+                               current directory; pass it explicitly to publish.
+  --ref REF                    Upstream git ref to convert from. Pinning a commit
+                               (the default) keeps evaluation_id stable across
+                               reruns; pass a branch to pick up new submissions.
+  --save_raw_json PATH         Write the fetched upstream artefacts to PATH.
+  --input_json PATH            Convert from such a snapshot, with no network access.
+  --no_registry_resolve        Skip eval-card-registry resolution; records carry the
+                               source-derived spellings, marked registry_disabled.
+  --registry_live              Also query the live registry for values the vendored
+                               snapshot cannot place, in side-effect-free mode=exact.
 ```
