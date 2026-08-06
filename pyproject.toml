@@ -62,6 +62,8 @@ every_eval_ever = [
     "adapters/**/*.md",
     "adapters/**/*.sh",
     "tools/*.md",
+    # Vendored registry/upstream snapshots converters resolve against offline.
+    "converters/**/*.json",
 ]
 [dependency-groups]
 dev = [

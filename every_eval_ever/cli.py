@@ -370,12 +370,31 @@ def _cmd_convert_helm(args: argparse.Namespace) -> int:
 
 
 def _cmd_convert_alpaca_eval(args: argparse.Namespace) -> int:
+    import json
+
     from every_eval_ever.converters.alpaca_eval.adapter import (
         LEADERBOARDS,
         AlpacaEvalAdapter,
     )
+    from every_eval_ever.converters.alpaca_eval.registry import Registry, gaps
+    from every_eval_ever.converters.alpaca_eval.upstream import UpstreamSnapshot
 
-    adapter = AlpacaEvalAdapter()
+    snapshot = None
+    if args.input_json:
+        with open(args.input_json, encoding='utf-8') as handle:
+            snapshot = UpstreamSnapshot.from_payload(json.load(handle))
+        print(f'Replaying upstream snapshot {args.input_json} (ref {snapshot.ref})')
+    registry = Registry(
+        enabled=not args.no_registry_resolve, live=args.registry_live
+    )
+    print(f'eval-card-registry: {registry.status()}')
+    if registry.enabled and gaps():
+        # Surfaced every run: a missing canonical is a registry-side follow-up,
+        # and it silently shapes the ids in the output until someone files it.
+        print('  no canonical entry for: ' + ', '.join(gaps()))
+    adapter = AlpacaEvalAdapter(
+        ref=args.ref, snapshot=snapshot, registry=registry
+    )
     versions = [args.version] if args.version else list(LEADERBOARDS.keys())
     output_dir = Path(args.output_dir)
 
@@ -447,6 +466,13 @@ def _cmd_convert_alpaca_eval(args: argparse.Namespace) -> int:
 
             logs_to_publish.append(log)
             eval_uuids.append(str(uuid.uuid4()))
+
+    if args.save_raw_json:
+        raw_path = Path(args.save_raw_json)
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(raw_path, 'w', encoding='utf-8') as handle:
+            json.dump(adapter.snapshot.to_payload(), handle, indent=2)
+        print(f'Upstream snapshot: {raw_path}')
 
     paths = publish_evaluation_logs(logs_to_publish, output_dir, eval_uuids)
     for path in paths:
@@ -592,6 +618,20 @@ def build_parser() -> argparse.ArgumentParser:
         )
 
         if source == 'alpaca_eval':
+            from every_eval_ever.converters.alpaca_eval.upstream import (
+                DEFAULT_UPSTREAM_REF,
+            )
+
+            # This source fetches from the network rather than from a local log,
+            # so a plain `convert alpaca_eval` would otherwise write a data/
+            # tree into whatever directory it was run from. Default to a temp
+            # path so a smoke run is throwaway; publishing is opt-in via
+            # --output_dir.
+            source_parser.set_defaults(
+                output_dir=str(
+                    Path(tempfile.gettempdir()) / 'alpaca-eval-smoke' / 'data'
+                )
+            )
             source_parser.add_argument(
                 '--version',
                 choices=['v1', 'v2'],
@@ -599,6 +639,55 @@ def build_parser() -> argparse.ArgumentParser:
                 help=(
                     'Which leaderboard version to convert: v1 (AlpacaEval 1.0) '
                     'or v2 (AlpacaEval 2.0). Omit to convert both (default).'
+                ),
+            )
+            source_parser.add_argument(
+                '--ref',
+                default=DEFAULT_UPSTREAM_REF,
+                help=(
+                    'Upstream tatsu-lab/alpaca_eval git ref to convert from. '
+                    'Pinning a commit (the default) keeps evaluation_id stable '
+                    'across reruns; pass a branch to pick up new submissions.'
+                ),
+            )
+            source_parser.add_argument(
+                '--save_raw_json',
+                '--save-raw-json',
+                default=None,
+                help=(
+                    'Write the fetched upstream artefacts (leaderboard CSVs, '
+                    'judge configs and prompts, per-model configs) to this JSON '
+                    'file so the conversion can be replayed offline.'
+                ),
+            )
+            source_parser.add_argument(
+                '--input_json',
+                '--input-json',
+                default=None,
+                help=(
+                    'Convert from a --save_raw_json snapshot instead of '
+                    'fetching from GitHub. No network access is performed.'
+                ),
+            )
+            source_parser.add_argument(
+                '--no_registry_resolve',
+                '--no-registry-resolve',
+                action='store_true',
+                help=(
+                    'Do not resolve organization, metric and benchmark ids '
+                    'against the eval-card-registry. Records then carry the '
+                    'source-derived spellings, marked registry_disabled.'
+                ),
+            )
+            source_parser.add_argument(
+                '--registry_live',
+                '--registry-live',
+                action='store_true',
+                help=(
+                    'Additionally query the live registry for values the '
+                    'vendored snapshot cannot place. Uses mode=exact, which '
+                    'resolves without creating draft canonicals. Never fatal: '
+                    'a failure falls back to the snapshot.'
                 ),
             )
 
