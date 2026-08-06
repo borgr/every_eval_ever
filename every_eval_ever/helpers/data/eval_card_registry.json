@@ -13,7 +13,7 @@
     "counts": {
       "orgs": 1166,
       "org_aliases_confirmed": 99,
-      "org_identities": 1173,
+      "org_identities": 1169,
       "metrics": 1842,
       "benchmarks": 2652,
       "harnesses": 39
@@ -247,7 +247,6 @@
     "davielion": "DavieLion",
     "debatelabkit": "DebateLabKIT",
     "deci": "Deci",
-    "deepautoai": "DeepAuto-AI",
     "deepcogito": "deepcogito",
     "deepfloyd": "deepfloyd",
     "deepmount00": "DeepMount00",
@@ -358,8 +357,6 @@
     "gemini20flashw": "gemini-20-flash-w",
     "gemini20w": "gemini-20-w",
     "gemini25w": "gemini-25-w",
-    "gemini3flash12": "Gemini-3-Flash(12",
-    "gemini3pro11": "Gemini-3-Pro(11",
     "geminiprow": "gemini-pro-w",
     "gemtrans": "GemTrans",
     "generalpreference": "general-preference",
@@ -936,7 +933,6 @@
     "scimwang": "sci-m-wang",
     "seallms": "SeaLLMs",
     "securin": "securin",
-    "seedoss36bbasew": "Seed-OSS-36B-Base(w",
     "senseable": "senseable",
     "sensellm": "SenseLLM",
     "sentientagi": "SentientAGI",

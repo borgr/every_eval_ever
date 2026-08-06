@@ -12,6 +12,7 @@ import pytest
 
 from every_eval_ever import cli
 from every_eval_ever.converters.alpaca_eval import identity as identity_mod
+from every_eval_ever.converters.alpaca_eval import upstream as upstream_mod
 from every_eval_ever.converters.alpaca_eval.adapter import (
     LEADERBOARDS,
     AlpacaEvalAdapter,
@@ -23,8 +24,10 @@ from every_eval_ever.converters.alpaca_eval.upstream import (
     UpstreamSnapshot,
     parse_single_entry_yaml,
     raw_url,
+    resolve_ref,
 )
 from every_eval_ever.helpers import eval_card_registry as registry_mod
+from every_eval_ever.helpers.fetch import FetchError
 from every_eval_ever.helpers.io import SourceRecordsError
 
 # ---------------------------------------------------------------------------
@@ -148,6 +151,16 @@ _MODEL_CONFIGS = {
     },
 }
 
+#: Verbatim prompt text, keyed by the ``prompt_template`` paths above. Every
+#: config here names one except ``gpt4_turbo``, which stands in for a template
+#: upstream did not serve.
+_MODEL_PROMPTS = {
+    'gpt4/chatml_prompt.txt': '<|im_start|>user\n{instruction}<|im_end|>\n',
+    'Mixtral-8x7B-Instruct-v0.1/togetherai_prompt.txt': '[INST] {instruction}',
+    'wizardlm-13b/prompt.txt': 'USER: {instruction} ASSISTANT:',
+    'vicuna-7b/prompt.txt': 'USER: {instruction}\nASSISTANT:',
+}
+
 
 def _snapshot(v1_rows=None, v2_rows=None) -> UpstreamSnapshot:
     """Build an in-memory upstream snapshot for the given leaderboard rows."""
@@ -177,6 +190,7 @@ def _snapshot(v1_rows=None, v2_rows=None) -> UpstreamSnapshot:
         package_version='0.6.6',
         leaderboards=boards,
         model_configs={k: dict(v) for k, v in _MODEL_CONFIGS.items()},
+        model_prompts=dict(_MODEL_PROMPTS),
     )
 
 
@@ -234,6 +248,8 @@ def test_snapshot_round_trips_through_payload():
     assert restored.leaderboards['v1'].rows == original.leaderboards['v1'].rows
     assert restored.leaderboards['v2'].judge_prompt == _V2_JUDGE_PROMPT
     assert restored.model_configs == original.model_configs
+    # Without this, replaying a saved snapshot loses every prompt.
+    assert restored.model_prompts == original.model_prompts
 
 
 def test_parse_single_entry_yaml_accepts_mismatched_top_level_key():
@@ -462,6 +478,26 @@ def test_raw_comparison_counts_are_preserved():
     assert details['source_win_rate'] == '95.28'
 
 
+def test_the_description_names_the_rows_own_denominator():
+    """Not every row was judged on all 805 instructions.
+
+    The win rate is a share, and a description that always claims 805 misstates
+    what a lower-``n_total`` row's score is a share of.
+    """
+    rows = [
+        dict(_V1_ROW, **{'': 'vicuna-7b'}, n_total='648'),
+        _V1_ROW,
+    ]
+    logs = _adapter(v1_rows=rows).fetch_leaderboard('v1')
+
+    assert '648 AlpacaEval instructions' in (
+        _by_metric(logs[0])['win_rate'].metric_config.evaluation_description
+    )
+    assert '805 AlpacaEval instructions' in (
+        _by_metric(logs[1])['win_rate'].metric_config.evaluation_description
+    )
+
+
 def test_missing_metric_columns_are_skipped_not_defaulted():
     log = _adapter(v1_rows=[_V1_ROW]).fetch_leaderboard('v1')[0]
     assert 'length_controlled_win_rate' not in _by_metric(log)
@@ -551,6 +587,27 @@ def test_leaderboard_mode_is_kept_as_provenance():
     assert log.source_metadata.source_organization_name.startswith('Tatsu Lab')
 
 
+def test_the_leaderboards_own_models_are_not_marked_independently_evaluated():
+    """``alpaca-7b`` is Tatsu Lab's, and so is the leaderboard.
+
+    Four upstream entries are the evaluator's own models. Marking them
+    ``third_party`` asserts an independence that is not there; every other row
+    stays ``third_party``.
+    """
+    snapshot = _snapshot(v1_rows=[dict(_V1_ROW, **{'': 'alpaca-7b'}), _V1_ROW])
+    snapshot.model_configs['alpaca-7b'] = {
+        'prompt_template': 'vicuna-7b/prompt.txt',
+        'fn_completions': 'huggingface_local_completions',
+        'completions_kwargs': {'model_name': 'tatsu-lab/alpaca-7b-wdiff'},
+        'pretty_name': 'Alpaca 7B',
+    }
+    own, other = AlpacaEvalAdapter(snapshot=snapshot).fetch_leaderboard('v1')
+
+    assert own.model_info.developer == 'tatsu-lab'
+    assert own.source_metadata.evaluator_relationship.value == 'first_party'
+    assert other.source_metadata.evaluator_relationship.value == 'third_party'
+
+
 def test_evaluation_timestamp_is_not_guessed():
     log = _adapter(v1_rows=[_V1_ROW]).fetch_leaderboard('v1')[0]
     # The CSVs carry no per-row date; the fetch time would misdate 2023 rows.
@@ -565,10 +622,58 @@ def test_generation_config_comes_from_the_upstream_model_config():
 
     assert generation.generation_args.temperature == 0.7
     assert generation.generation_args.max_tokens == 2048
-    assert generation.generation_args.prompt_template == 'vicuna-7b/prompt.txt'
     assert generation.additional_details['fn_completions'] == (
         'huggingface_local_completions'
     )
+
+
+def test_prompt_template_carries_the_prompt_not_a_path():
+    """A record has to show the prompt the model was actually given.
+
+    The path and its pinned URL stay in ``additional_details`` — they say which
+    same-model variant (``_concise``, ``_verbose``) this row is — but an offline
+    reader cannot resolve either back into text.
+    """
+    rows = [dict(_V1_ROW, **{'': 'vicuna-7b'})]
+    log = _adapter(v1_rows=rows).fetch_leaderboard('v1')[0]
+    generation = log.evaluation_results[0].generation_config
+
+    assert generation.generation_args.prompt_template == (
+        'USER: {instruction}\nASSISTANT:'
+    )
+    assert generation.additional_details['prompt_template_path'] == (
+        'vicuna-7b/prompt.txt'
+    )
+    assert generation.additional_details['prompt_template_url'].endswith(
+        'src/alpaca_eval/models_configs/vicuna-7b/prompt.txt'
+    )
+    assert 'prompt_template_status' not in generation.additional_details
+
+
+@pytest.mark.parametrize(
+    'missing, expected',
+    [
+        ({}, 'not recorded in this snapshot'),
+        ({'gpt4_turbo/chatml_prompt.txt': 'not fetchable: 404'}, '404'),
+    ],
+)
+def test_absent_prompt_text_is_marked_rather_than_faked(missing, expected):
+    """Two ways the text can be absent, and neither may look like a prompt.
+
+    A snapshot saved before prompt text was recorded has no ``model_prompts`` at
+    all; a template upstream stopped serving is in ``missing_model_prompts``.
+    Either way the typed value stays unset and the reason is recorded.
+    """
+    snapshot = _snapshot(v1_rows=[dict(_V1_ROW, **{'': 'gpt4_turbo'})])
+    snapshot.missing_model_prompts.update(missing)
+    log = AlpacaEvalAdapter(snapshot=snapshot).fetch_leaderboard('v1')[0]
+    generation = log.evaluation_results[0].generation_config
+
+    assert generation.generation_args.prompt_template is None
+    assert generation.additional_details['prompt_template_path'] == (
+        'gpt4_turbo/chatml_prompt.txt'
+    )
+    assert expected in generation.additional_details['prompt_template_status']
 
 
 # ---------------------------------------------------------------------------
@@ -611,6 +716,40 @@ def test_row_without_a_win_rate_is_a_failure():
 
     assert result.records == []
     assert result.failures[0].reason == 'missing win_rate'
+
+
+@pytest.mark.parametrize('cell', ['nan', 'inf', '-inf', '1e999', 'n/a'])
+def test_a_populated_but_unusable_win_rate_is_a_failure(cell):
+    """``float`` accepts most of these, and none of them is a score.
+
+    Letting them through publishes a record whose headline metric is missing, or
+    a bare ``NaN`` token that is not valid JSON.
+    """
+    result = _adapter(
+        v1_rows=[dict(_V1_ROW, win_rate=cell)]
+    ).fetch_leaderboard_result('v1')
+
+    assert result.records == []
+    assert result.failures[0].reason == (
+        f'win_rate is not a finite number: {cell!r}'
+    )
+
+
+def test_a_score_outside_the_registrys_bounds_is_a_failure():
+    result = _adapter(
+        v1_rows=[dict(_V1_ROW, win_rate='150.0')]
+    ).fetch_leaderboard_result('v1')
+
+    assert result.records == []
+    assert 'outside the [0.0, 100.0]' in result.failures[0].reason
+
+
+def test_an_absent_secondary_column_is_not_a_failure():
+    """Only a populated cell can be invalid — v1 has no LC win rate at all."""
+    result = _adapter(v1_rows=[_V1_ROW]).fetch_leaderboard_result('v1')
+
+    assert result.failures == []
+    assert len(result.records) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -844,6 +983,86 @@ def test_published_record_reports_the_namespace_and_the_referenced_id():
 
 
 # ---------------------------------------------------------------------------
+# Pinning the upstream ref
+# ---------------------------------------------------------------------------
+
+
+def test_an_immutable_ref_is_not_looked_up():
+    def _no_network(*_args, **_kwargs):
+        raise AssertionError('a 40-hex ref is already a commit')
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(upstream_mod, 'fetch_text', _no_network)
+
+        assert resolve_ref(DEFAULT_UPSTREAM_REF) == DEFAULT_UPSTREAM_REF
+        assert resolve_ref(f'  {DEFAULT_UPSTREAM_REF.upper()}  ') == (
+            DEFAULT_UPSTREAM_REF
+        )
+
+
+def test_a_moving_ref_is_pinned_to_the_commit_it_names():
+    """Two runs a week apart must not publish different input as one identity."""
+    sha = 'a' * 40
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(
+            upstream_mod,
+            'fetch_text',
+            lambda url, **_kwargs: json.dumps({'sha': sha, 'url': url}),
+        )
+
+        assert resolve_ref('main') == sha
+
+
+@pytest.mark.parametrize('payload', ['not json', '{}', '{"sha": "abc"}'])
+def test_a_ref_that_names_no_commit_fails_before_any_artefact_is_fetched(
+    payload,
+):
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(
+            upstream_mod, 'fetch_text', lambda *_a, **_k: payload
+        )
+
+        with pytest.raises(FetchError):
+            resolve_ref('no-such-branch')
+
+
+def test_populate_fetches_each_prompt_template_once():
+    """Distinct templates only — sibling variants share one file.
+
+    A template upstream no longer serves is recorded rather than raised: a
+    leaderboard is still convertible without one model's prompt.
+    """
+    snapshot = _snapshot(v1_rows=[_V1_ROW])
+    snapshot.model_prompts.clear()
+    snapshot.model_configs['gpt4_variant'] = dict(
+        _MODEL_CONFIGS['gpt4'], pretty_name='GPT-4 (again)'
+    )
+    fetched = []
+
+    def _fetch_text(url, **_kwargs):
+        fetched.append(url)
+        if 'gpt4/chatml_prompt.txt' in url:
+            raise FetchError('404')
+        return f'text of {url.rsplit("models_configs/", 1)[-1]}'
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(upstream_mod, 'fetch_text', _fetch_text)
+        upstream_mod.populate_snapshot(
+            snapshot, {'v1': LEADERBOARDS['v1']}, lambda rows: []
+        )
+
+    distinct = {
+        config['prompt_template'] for config in snapshot.model_configs.values()
+    }
+
+    assert len(fetched) == len(set(fetched)) == len(distinct)
+    assert snapshot.model_prompts['vicuna-7b/prompt.txt'] == (
+        'text of vicuna-7b/prompt.txt'
+    )
+    assert '404' in snapshot.missing_model_prompts['gpt4/chatml_prompt.txt']
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -853,6 +1072,38 @@ def test_cli_output_dir_defaults_to_a_throwaway_path():
     # A network-fetching source must not write a data/ tree into the cwd.
     assert args.output_dir != 'data'
     assert 'alpaca-eval-smoke' in args.output_dir
+
+
+def test_two_default_runs_do_not_pool_their_output(snapshot_file, tmp_path):
+    """Each record is named with a fresh UUID, so a fixed directory piles up.
+
+    A reader of the throwaway output could not tell this run's records from last
+    week's, and the second run's report would be counted against both.
+    """
+    snapshot_path = snapshot_file(v1_rows=[_V1_ROW])
+    argv = [
+        'convert', 'alpaca_eval',
+        '--version', 'v1',
+        '--input-json', str(snapshot_path),
+        '--no-registry-resolve',
+    ]
+
+    made = []
+
+    def _mkdtemp(**_kwargs):
+        run = tmp_path / f'run{len(made)}'
+        run.mkdir()
+        made.append(run)
+        return str(run)
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(cli.tempfile, 'mkdtemp', _mkdtemp)
+        assert cli.main(argv) == 0
+        assert cli.main(argv) == 0
+
+    assert len(made) == 2
+    for run in made:
+        assert len(list((run / 'data').rglob('*.json'))) == 1
 
 
 def test_cli_converts_from_a_snapshot_without_network(snapshot_file, tmp_path):
@@ -873,6 +1124,54 @@ def test_cli_converts_from_a_snapshot_without_network(snapshot_file, tmp_path):
     assert exit_code == 0
     assert len(list(output_dir.rglob('*.json'))) == 2
     assert (output_dir / 'alpaca_eval_v1' / 'openai' / 'gpt-4').is_dir()
+
+
+def test_module_entry_point_accepts_every_option_the_handler_reads(
+    snapshot_file, tmp_path
+):
+    """``python -m ...converters.alpaca_eval`` shares the top-level parser.
+
+    It used to build its own namespace, which meant each option added to the
+    handler — ``--ref``, ``--input-json``, the registry switches — raised
+    ``AttributeError`` here before any conversion happened.
+    """
+    from every_eval_ever.converters.alpaca_eval.__main__ import (
+        main as module_main,
+    )
+
+    output_dir = tmp_path / 'data'
+    exit_code = module_main(
+        [
+            '--version',
+            'v1',
+            '--input-json',
+            str(snapshot_file(v1_rows=[_V1_ROW])),
+            '--output-dir',
+            str(output_dir),
+            '--no-registry-resolve',
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(list(output_dir.rglob('*.json'))) == 1
+
+
+def test_module_entry_point_reads_the_command_line():
+    """``python -m`` passes nothing to ``main``; the options are in ``sys.argv``.
+
+    Defaulting to an empty list instead silently converted both leaderboards to
+    a throwaway directory, whatever was asked for.
+    """
+    from every_eval_ever.converters.alpaca_eval import __main__ as module
+
+    seen = []
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(module.sys, 'argv', ['prog', '--version', 'v1'])
+        patcher.setattr(cli, 'main', lambda argv: seen.append(argv) or 0)
+
+        assert module.main() == 0
+
+    assert seen == [['convert', 'alpaca_eval', '--version', 'v1']]
 
 
 def test_cli_save_raw_json_writes_a_replayable_snapshot(

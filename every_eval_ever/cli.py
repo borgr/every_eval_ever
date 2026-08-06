@@ -369,6 +369,15 @@ def _cmd_convert_helm(args: argparse.Namespace) -> int:
     return 0
 
 
+#: What ``convert alpaca_eval`` writes to when no ``--output_dir`` is given. A
+#: marker, not the directory itself: it is resolved per run (see
+#: :func:`_cmd_convert_alpaca_eval`), and building the parser must not create
+#: anything on disk.
+SMOKE_OUTPUT_DIR = str(
+    Path(tempfile.gettempdir()) / 'alpaca-eval-smoke' / 'data'
+)
+
+
 def _cmd_convert_alpaca_eval(args: argparse.Namespace) -> int:
     import json
 
@@ -396,7 +405,15 @@ def _cmd_convert_alpaca_eval(args: argparse.Namespace) -> int:
         ref=args.ref, snapshot=snapshot, registry=registry
     )
     versions = [args.version] if args.version else list(LEADERBOARDS.keys())
-    output_dir = Path(args.output_dir)
+    if args.output_dir == SMOKE_OUTPUT_DIR:
+        # Records are named with a fresh UUID per run, so a fixed throwaway
+        # directory accumulates earlier runs' output and a reader cannot tell
+        # which files this run produced. One directory per run instead of
+        # deleting: a smoke run is worth looking at.
+        output_dir = Path(tempfile.mkdtemp(prefix='alpaca-eval-smoke-')) / 'data'
+        print(f'No --output_dir given; writing throwaway output to {output_dir}')
+    else:
+        output_dir = Path(args.output_dir)
 
     logs_to_publish = []
     eval_uuids = []
@@ -627,11 +644,7 @@ def build_parser() -> argparse.ArgumentParser:
             # tree into whatever directory it was run from. Default to a temp
             # path so a smoke run is throwaway; publishing is opt-in via
             # --output_dir.
-            source_parser.set_defaults(
-                output_dir=str(
-                    Path(tempfile.gettempdir()) / 'alpaca-eval-smoke' / 'data'
-                )
-            )
+            source_parser.set_defaults(output_dir=SMOKE_OUTPUT_DIR)
             source_parser.add_argument(
                 '--version',
                 choices=['v1', 'v2'],

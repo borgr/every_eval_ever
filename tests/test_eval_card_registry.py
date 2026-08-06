@@ -47,17 +47,24 @@ def test_a_recorded_namespace_is_an_identity_not_an_alias():
     assert identities['cohere'] == 'cohere'
 
 
-def test_identity_resolution_does_not_depend_on_endpoint_order():
-    """Two canonical ids can collapse to one normalized spelling.
+def test_a_spelling_two_organizations_answer_to_names_neither():
+    """``DeepAuto-AI`` and ``deepautoai`` are both canonical ids.
 
-    ``DeepAuto-AI`` and ``deepautoai`` are both in the registry. Whichever wins
-    is arbitrary, but it must be the same one on every refresh, or the snapshot
-    diff shows churn that is not a registry change.
+    Awarding the shared spelling to one makes the other resolve to an
+    organization that is not itself, and this mapping decides a published
+    ``model_info.developer``.
     """
     orgs = [_org('DeepAuto-AI'), _org('deepautoai')]
 
-    assert org_identities(orgs) == org_identities(orgs[::-1])
-    assert org_identities(orgs)['deepautoai'] == 'DeepAuto-AI'
+    assert org_identities(orgs) == org_identities(orgs[::-1]) == {}
+
+
+def test_a_namespace_does_not_claim_a_contested_spelling():
+    identities = org_identities(
+        [_org('DeepAuto-AI'), _org('deepautoai'), _org('other', 'deepauto.ai')]
+    )
+
+    assert 'deepautoai' not in identities
 
 
 def test_second_names_keep_only_a_genuinely_different_name():
@@ -141,6 +148,22 @@ def test_org_resolution_reads_namespaces_and_second_names_alike():
     assert registry.org('meta-llama').reviewed
 
 
+def test_a_canonical_id_always_resolves_to_itself():
+    """Including the four whose normalized spelling another id also answers to.
+
+    Those spellings are unowned in the snapshot, so an id like ``deepautoai``
+    reaches itself only by name. Resolving it to its punctuation twin would
+    publish one organization's records under another's directory.
+    """
+    registry = Registry()
+    for org_id in ('deepautoai', 'DeepAuto-AI', 'mistralai', 'meta', 'zai'):
+        resolution = registry.org(org_id)
+        assert resolution.canonical_id == org_id, org_id
+
+    assert registry.org('deepautoai').strategy == 'snapshot_exact'
+    assert second_name_of('deepautoai') is None
+
+
 def test_snapshot_records_its_own_provenance():
     """A vendored snapshot without provenance cannot be audited."""
     meta = snapshot_meta()
@@ -210,4 +233,44 @@ def test_live_registry_failure_is_never_fatal():
 
     assert resolution.canonical_id is None
     assert resolution.strategy == 'registry_unavailable'
+    assert 'registry unreachable' in registry.live_error
+
+
+def test_one_outage_does_not_relabel_every_later_miss():
+    """A clean miss and an outage are different facts about a record.
+
+    ``live_error`` is a run-level aggregate that the report needs; deciding a
+    single resolution's strategy from it made every lookup after the first fault
+    claim the registry was unavailable when it had answered.
+    """
+    calls = []
+
+    class _Response:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {'canonical_id': None, 'created_new': False}
+
+    def _post(url, json=None, timeout=None):
+        calls.append(json['raw_value'])
+        if len(calls) == 1:
+            raise OSError('registry unreachable')
+        return _Response()
+
+    registry = Registry(live=True)
+    module = pytest.importorskip('requests')
+    original = module.post
+    module.post = _post
+    try:
+        first = registry.metric('a_column_the_registry_never_answers_for')
+        second = registry.metric('another_column_with_no_canonical')
+    finally:
+        module.post = original
+
+    assert first.strategy == 'registry_unavailable'
+    assert second.strategy == 'no_canonical'
+    # The outage is still reported once, for the run as a whole.
     assert 'registry unreachable' in registry.live_error

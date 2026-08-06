@@ -141,22 +141,36 @@ def org_identities(orgs: List[Dict[str, Any]]) -> Dict[str, str]:
     the namespace is the model id prefix, the canonical id is
     ``model_info.developer``.
 
-    Canonical ids are read in sorted order and win over namespaces, so a
-    spelling two organizations both answer to resolves the same way on every
-    refresh. Four such collisions exist today, all between a canonical id and
-    its own differently-punctuated twin (``DeepAuto-AI``/``deepautoai``), plus
-    ``ai21``'s ``ai21labs`` namespace against the ``ai21-labs`` canonical id.
+    A normalized spelling resolves only when **one** organization owns it.
+    Where two canonical ids collapse together the spelling is dropped rather
+    than awarded to whichever sorts first: picking one makes the other id
+    resolve to an organization that is not itself, and this mapping decides a
+    published ``model_info.developer``. Four collisions exist today, three of
+    them registry entries that are really model names (``Gemini-3-Pro(11``) and
+    one a real pair of punctuation twins (``DeepAuto-AI``/``deepautoai``).
+    Dropping the spelling does not strand either id: an exact canonical id is
+    resolved by name, before normalization (see :meth:`Registry.org`).
+
+    Canonical ids still win over namespaces, so a namespace that collides with
+    some organization's id names that organization.
     """
-    identities: Dict[str, str] = {}
-    for record in sorted(orgs, key=lambda record: str(record.get('id', ''))):
+    claimants: Dict[str, set] = {}
+    for record in orgs:
         org_id = record.get('id')
         if isinstance(org_id, str) and normalize(org_id):
-            identities.setdefault(normalize(org_id), org_id)
+            claimants.setdefault(normalize(org_id), set()).add(org_id)
+
+    identities: Dict[str, str] = {
+        key: next(iter(owners))
+        for key, owners in claimants.items()
+        if len(owners) == 1
+    }
     for record in sorted(orgs, key=lambda record: str(record.get('id', ''))):
         namespace, org_id = record.get('hf_org'), record.get('id')
         if isinstance(namespace, str) and isinstance(org_id, str):
-            if normalize(namespace):
-                identities.setdefault(normalize(namespace), org_id)
+            key = normalize(namespace)
+            if key and key not in claimants:
+                identities.setdefault(key, org_id)
     return identities
 
 

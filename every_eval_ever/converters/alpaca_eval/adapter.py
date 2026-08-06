@@ -27,6 +27,7 @@ from every_eval_ever.converters.alpaca_eval.upstream import (
     annotator_config_path,
     blob_url,
     model_config_path,
+    model_prompt_path,
     populate_snapshot,
     raw_url,
 )
@@ -67,6 +68,11 @@ from every_eval_ever.helpers.io import (
 HF_DATASET_REPO = 'tatsu-lab/alpaca_eval'
 HF_DATASET_SPLIT = 'eval'
 HF_DATASET_SAMPLES = 805
+
+#: Who runs the leaderboard. The same organization also has models on it, so
+#: this is compared against each row's developer rather than assumed distinct.
+EVALUATOR_ORG = 'tatsu-lab'
+EVALUATOR_ORG_NAME = 'Tatsu Lab (Stanford University)'
 
 # ---------------------------------------------------------------------------
 # Leaderboard configurations
@@ -300,15 +306,55 @@ _NULL_MODEL_RE = re.compile(r'null.?model', re.IGNORECASE)
 
 
 def _to_float(value: Any) -> Optional[float]:
+    """Parse a CSV cell as a finite number, or ``None``.
+
+    ``float`` accepts ``'nan'``, ``'inf'`` and ``'1e999'``. None of them is a
+    score, and a non-finite one reaches the published record as either a bound
+    violation or a bare ``NaN`` token that is not valid JSON.
+    """
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
 
 
 def _to_int(value: Any) -> Optional[int]:
     number = _to_float(value)
     return int(number) if number is not None and number.is_integer() else None
+
+
+def _metric_cell_failure(
+    metrics: Tuple['_ResolvedMetric', ...], row: Dict[str, str]
+) -> Optional[str]:
+    """Say why a row's metric cells cannot be published, or ``None``.
+
+    An absent cell is not a problem — a leaderboard version that has no
+    ``discrete_win_rate`` column simply publishes fewer results. A *populated*
+    cell that is not a finite number inside its declared bounds is, and it has
+    to be caught here rather than downstream: the row loop drops such a row with
+    a reason a reader can act on, whereas letting it through either publishes
+    the headline metric silently missing (``'n/a'`` parses as nothing) or aborts
+    the whole leaderboard on one out-of-range score.
+    """
+    primary = metrics[0]
+    if not _cell(row, primary.spec.column):
+        return f'missing {primary.spec.column}'
+    for metric in metrics:
+        raw = _cell(row, metric.spec.column)
+        if not raw:
+            continue
+        value = _to_float(raw)
+        if value is None:
+            return f'{metric.spec.column} is not a finite number: {raw!r}'
+        score = value / metric.scale if metric.scale != 1.0 else value
+        if not metric.min_score <= score <= metric.max_score:
+            return (
+                f'{metric.spec.column} of {raw!r} is outside the '
+                f'[{metric.min_score}, {metric.max_score}] the registry '
+                f'declares for {metric.metric_id}'
+            )
+    return None
 
 
 def _cell(row: Dict[str, str], column: str) -> str:
@@ -431,11 +477,20 @@ def _metric_config(
     cfg: Dict[str, Any],
     benchmark: registry_mod.Resolution,
     llm_scoring: Optional[LlmScoring],
+    samples: int,
 ) -> MetricConfig:
+    """Build ``metric_config`` for one metric of one leaderboard row.
+
+    Args:
+        samples: How many instructions this row's score is actually over. Not
+            always the dataset's 805 — a row whose ``n_total`` is lower was
+            judged on fewer, and a description that claims 805 anyway misstates
+            the denominator of a published win rate.
+    """
     spec = metric.spec
     return MetricConfig(
         evaluation_description=spec.description.format(
-            samples=HF_DATASET_SAMPLES,
+            samples=samples,
             annotator=cfg['annotator'],
             baseline=cfg['baseline'],
             preference_rule=cfg['preference_rule'],
@@ -537,9 +592,14 @@ def _evaluation_results(
     benchmark: registry_mod.Resolution,
     evaluation_name: str,
 ) -> List[EvaluationResult]:
-    """Build every result a leaderboard row supports (missing columns skipped)."""
+    """Build every result a leaderboard row supports (missing columns skipped).
+
+    Every populated cell here has already passed :func:`_metric_cell_failure`,
+    so a skipped column is an absent one, never a rejected value.
+    """
     llm_scoring = _llm_scoring(board, cfg, ref)
     source_data = _source_data(cfg, ref)
+    samples = _to_int(_cell(row, 'n_total')) or HF_DATASET_SAMPLES
     results = []
     for metric in metrics:
         value = _to_float(_cell(row, metric.spec.column))
@@ -555,7 +615,7 @@ def _evaluation_results(
                 ),
                 evaluation_name=evaluation_name,
                 metric_config=_metric_config(
-                    metric, cfg, benchmark, llm_scoring
+                    metric, cfg, benchmark, llm_scoring, samples
                 ),
                 score_details=_score_details(metric, row, value),
                 source_data=source_data,
@@ -627,10 +687,55 @@ def _model_info(
     )
 
 
+def _evaluator_relationship(
+    developer: registry_mod.Resolution,
+    evaluator: registry_mod.Resolution,
+) -> EvaluatorRelationship:
+    """Say whether the organization that ran the eval also built the model.
+
+    Tatsu Lab's own models are on Tatsu Lab's leaderboard — ``alpaca-7b`` and the
+    two AlpacaFarm PPO checkpoints — so a blanket ``third_party`` claims
+    independent evaluation for the entries where there is none.
+
+    Canonical ids decide it wherever the registry has both, so two spellings of
+    one organization cannot read as two organizations. ``tatsu-lab`` has no
+    canonical entry today, which is why normalized spellings are the fallback
+    rather than the answer.
+    """
+    left = developer.canonical_id or developer.raw_value
+    right = evaluator.canonical_id or evaluator.raw_value
+    if developer.canonical_id and evaluator.canonical_id:
+        same = left == right
+    else:
+        same = bool(registry_mod.normalize(left)) and (
+            registry_mod.normalize(left) == registry_mod.normalize(right)
+        )
+    return (
+        EvaluatorRelationship.first_party
+        if same
+        else EvaluatorRelationship.third_party
+    )
+
+
 def _generation_config(
-    config: Optional[Dict[str, Any]], ref: str
+    config: Optional[Dict[str, Any]],
+    ref: str,
+    prompts: Optional[Dict[str, str]] = None,
+    missing_prompts: Optional[Dict[str, str]] = None,
 ) -> Optional[GenerationConfig]:
-    """Map the upstream completion kwargs onto ``generation_config``."""
+    """Map the upstream completion kwargs onto ``generation_config``.
+
+    Args:
+        config: The model's upstream ``configs.yaml`` body.
+        ref: Pinned upstream revision, for the provenance URLs.
+        prompts: ``models_configs``-relative template path -> verbatim text, as
+            recorded on the snapshot. ``prompt_template`` carries the text, so a
+            reader can see the prompt without refetching upstream; the path and
+            URL stay in ``additional_details``.
+        missing_prompts: Same keys, with why the text is absent. A snapshot saved
+            before prompt text was recorded has neither dict, and leaves the
+            typed value unset with ``prompt_template_status`` saying so.
+    """
     if not config:
         return None
     kwargs = identity_mod.completions_kwargs(config)
@@ -640,10 +745,11 @@ def _generation_config(
         if candidate is not None and candidate >= 1:
             max_tokens = candidate
             break
-    prompt_template = config.get('prompt_template')
-    prompt_template = (
-        prompt_template if isinstance(prompt_template, str) else None
+    template_path = config.get('prompt_template')
+    template_path = (
+        template_path if isinstance(template_path, str) else None
     )
+    prompt_text = (prompts or {}).get(template_path) if template_path else None
     extra = {
         key: value
         for key, value in kwargs.items()
@@ -654,19 +760,23 @@ def _generation_config(
         top_p=_to_float(kwargs.get('top_p')),
         top_k=_to_float(kwargs.get('top_k')),
         max_tokens=max_tokens,
-        # The template file distinguishes same-model variants (e.g. the
-        # `_concise` / `_verbose` entries), so record where it lives; the
-        # pinned URL resolves to its verbatim text.
-        prompt_template=prompt_template,
+        prompt_template=prompt_text,
     )
     details = {
         'fn_completions': identity_mod.completions_fn(config),
         'upstream_completions_kwargs': extra or None,
     }
-    if prompt_template:
+    if template_path:
+        # The path distinguishes same-model variants (e.g. the `_concise` /
+        # `_verbose` entries) that share prompt text, so keep it alongside.
+        details['prompt_template_path'] = template_path
         details['prompt_template_url'] = blob_url(
-            f'src/alpaca_eval/models_configs/{prompt_template}', ref
+            model_prompt_path(template_path), ref
         )
+        if prompt_text is None:
+            details['prompt_template_status'] = (missing_prompts or {}).get(
+                template_path, 'not recorded in this snapshot'
+            )
     return GenerationConfig(
         generation_args=args, additional_details=_stringify(details)
     )
@@ -765,6 +875,7 @@ class AlpacaEvalAdapter:
         metrics = _resolve_metrics(self.registry)
         benchmark = self.registry.benchmark(cfg['benchmark_query'])
         harness = self.registry.harness('alpaca_eval')
+        evaluator_org = self.registry.org(EVALUATOR_ORG)
         # A resolved benchmark id is what makes these records joinable with
         # other sources' AlpacaEval records, so it names the evaluation when the
         # registry has one. AlpacaEval 1.0 has no canonical entry yet, so it
@@ -802,11 +913,12 @@ class AlpacaEvalAdapter:
                 )
                 continue
 
-            if not _cell(row, 'win_rate'):
+            cell_failure = _metric_cell_failure(metrics, row)
+            if cell_failure:
                 failures.append(
                     SourceRecordFailure(
                         source_ref=source_ref,
-                        reason='missing win_rate',
+                        reason=cell_failure,
                         source_record=row,
                     )
                 )
@@ -843,7 +955,12 @@ class AlpacaEvalAdapter:
                 board,
                 ref,
                 evaluation_id,
-                _generation_config(model_config, ref),
+                _generation_config(
+                    model_config,
+                    ref,
+                    self.snapshot.model_prompts,
+                    self.snapshot.missing_model_prompts,
+                ),
                 metrics,
                 benchmark,
                 evaluation_name,
@@ -858,6 +975,9 @@ class AlpacaEvalAdapter:
                 )
                 continue
 
+            # The id prefix is the organization as the source spells it; the
+            # registry says which organization that is.
+            developer = self.registry.org(resolved.developer)
             logs.append(
                 EvaluationLog(
                     schema_version=SCHEMA_VERSION,
@@ -885,12 +1005,10 @@ class AlpacaEvalAdapter:
                     source_metadata=SourceMetadata(
                         source_name=cfg['source_name'],
                         source_type=SourceType.documentation,
-                        source_organization_name=(
-                            'Tatsu Lab (Stanford University)'
-                        ),
+                        source_organization_name=EVALUATOR_ORG_NAME,
                         source_organization_url=UPSTREAM_URL,
-                        evaluator_relationship=(
-                            EvaluatorRelationship.third_party
+                        evaluator_relationship=_evaluator_relationship(
+                            developer, evaluator_org
                         ),
                         additional_details=_stringify(
                             {
@@ -904,12 +1022,7 @@ class AlpacaEvalAdapter:
                         ),
                     ),
                     model_info=_model_info(
-                        resolved,
-                        ref,
-                        config_missing,
-                        # The id prefix is the organization as the source spells
-                        # it; the registry says which organization that is.
-                        self.registry.org(resolved.developer),
+                        resolved, ref, config_missing, developer
                     ),
                     evaluation_results=results,
                 )

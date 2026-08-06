@@ -11,6 +11,7 @@ serialises them into a single JSON payload so a run can be replayed offline
 
 from __future__ import annotations
 
+import json
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -43,6 +44,40 @@ _MODELS_DIR = 'src/alpaca_eval/models_configs'
 
 _VERSION_RE = re.compile(r'^__version__\s*=\s*[\'"]([^\'"]+)[\'"]', re.M)
 
+_COMMIT_API_URL = 'https://api.github.com/repos/{repo}/commits/{ref}'
+_COMMIT_SHA_RE = re.compile(r'\A[0-9a-f]{40}\Z')
+
+
+def resolve_ref(
+    ref: str, session: Optional[requests.Session] = None
+) -> str:
+    """Return the commit SHA *ref* names, resolving a branch or tag once.
+
+    A 40-hex ref is already immutable and is returned untouched, which is the
+    only path the default ref takes. Anything else — ``main``, ``v0.6.6`` — moves,
+    and it reaches ``evaluation_id`` and every provenance URL: two runs a week
+    apart would publish different input under one identity, and the URLs in the
+    older records would point at content that no longer matches their scores.
+
+    Raises:
+        FetchError: If the ref cannot be resolved. A ref that names nothing is
+            worse than an unpinned one — the fetches that follow would 404
+            individually and blame the paths.
+    """
+    if _COMMIT_SHA_RE.match(ref.strip().lower()):
+        return ref.strip().lower()
+    url = _COMMIT_API_URL.format(repo=UPSTREAM_REPO, ref=quote(ref, safe=''))
+    payload = fetch_text(
+        url, headers={'Accept': 'application/vnd.github+json'}, session=session
+    )
+    try:
+        sha = json.loads(payload).get('sha')
+    except ValueError as exc:
+        raise FetchError(f'{url} did not return JSON: {exc}') from exc
+    if not isinstance(sha, str) or not _COMMIT_SHA_RE.match(sha):
+        raise FetchError(f'{url} named no commit for ref {ref!r}')
+    return sha
+
 
 def raw_url(path: str, ref: str = DEFAULT_UPSTREAM_REF) -> str:
     """Return the raw.githubusercontent URL for *path* at *ref*."""
@@ -71,6 +106,15 @@ def judge_prompt_path(prompt_template: str) -> str:
     evaluators-configs directory (e.g. ``alpaca_eval_gpt4/alpaca_eval.txt``).
     """
     return f'{_EVALUATORS_DIR}/{prompt_template}'
+
+
+def model_prompt_path(prompt_template: str) -> str:
+    """Return the repo path of a *model's* prompt template.
+
+    ``prompt_template`` values inside model configs are relative to the
+    models-configs directory (e.g. ``gpt4/chatml_prompt.txt``).
+    """
+    return f'{_MODELS_DIR}/{prompt_template}'
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +172,11 @@ class UpstreamSnapshot:
     model_configs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     #: leaderboard slugs with no upstream model config (or an unparseable one)
     missing_model_configs: Dict[str, str] = field(default_factory=dict)
+    #: ``models_configs``-relative template path -> its verbatim text. The path
+    #: alone does not let an offline reader see the prompt a model was given.
+    model_prompts: Dict[str, str] = field(default_factory=dict)
+    #: template paths a model config names but upstream does not serve
+    missing_model_prompts: Dict[str, str] = field(default_factory=dict)
 
     # -- serialisation ------------------------------------------------------
 
@@ -147,6 +196,8 @@ class UpstreamSnapshot:
             },
             'model_configs': self.model_configs,
             'missing_model_configs': self.missing_model_configs,
+            'model_prompts': self.model_prompts,
+            'missing_model_prompts': self.missing_model_prompts,
         }
 
     @classmethod
@@ -167,6 +218,12 @@ class UpstreamSnapshot:
             model_configs=dict(payload.get('model_configs') or {}),
             missing_model_configs=dict(
                 payload.get('missing_model_configs') or {}
+            ),
+            # Absent in snapshots saved before prompt text was recorded; such a
+            # run publishes the template path without its content.
+            model_prompts=dict(payload.get('model_prompts') or {}),
+            missing_model_prompts=dict(
+                payload.get('missing_model_prompts') or {}
             ),
         )
 
@@ -194,6 +251,10 @@ def populate_snapshot(
     Anything already present in *snapshot* is left alone, so converting v1 and
     then v2 fetches each leaderboard once and each model config once.
 
+    A branch or tag ref is pinned to its commit SHA first and written back onto
+    *snapshot*, so ``--save-raw-json`` records what was actually fetched. Offline
+    replay reads that SHA and never resolves anything.
+
     Args:
         snapshot: Snapshot to fill; its ``ref`` is the ref that gets fetched.
         boards: ``{version: leaderboard config}`` (see ``adapter.LEADERBOARDS``);
@@ -207,11 +268,14 @@ def populate_snapshot(
 
     Raises:
         FetchError: If a leaderboard CSV, annotator config, judge prompt or the
-            version file cannot be fetched. Individual *model* configs are
-            allowed to be missing and are recorded in ``missing_model_configs``.
+            version file cannot be fetched. Individual *model* configs and the
+            prompt templates they name are allowed to be missing, and are
+            recorded in ``missing_model_configs`` / ``missing_model_prompts``.
     """
-    ref = snapshot.ref
     with requests.Session() as session:
+        # Pinned before the first fetch, so every artefact in one snapshot comes
+        # from one commit even if upstream moves mid-run.
+        ref = snapshot.ref = resolve_ref(snapshot.ref, session=session)
         if snapshot.package_version in ('', 'unknown', None):
             version_text = fetch_text(
                 raw_url(_VERSION_PATH, ref), session=session
@@ -258,6 +322,21 @@ def populate_snapshot(
         if pending:
             _fetch_model_configs(
                 snapshot, pending, ref, session, max_workers
+            )
+
+        templates = [
+            template
+            for template in _unique(
+                config.get('prompt_template')
+                for config in snapshot.model_configs.values()
+                if isinstance(config.get('prompt_template'), str)
+            )
+            if template not in snapshot.model_prompts
+            and template not in snapshot.missing_model_prompts
+        ]
+        if templates:
+            _fetch_model_prompts(
+                snapshot, templates, ref, session, max_workers
             )
     return snapshot
 
@@ -307,6 +386,30 @@ def _fetch_model_configs(
                 snapshot.missing_model_configs[slug] = error or 'missing'
             else:
                 snapshot.model_configs[slug] = config
+
+
+def _fetch_model_prompts(
+    snapshot: UpstreamSnapshot,
+    templates: Sequence[str],
+    ref: str,
+    session: requests.Session,
+    max_workers: int,
+) -> None:
+    def _one(template: str) -> tuple:
+        try:
+            return template, fetch_text(
+                raw_url(model_prompt_path(template), ref), session=session
+            ), None
+        except FetchError as exc:
+            return template, None, f'not fetchable: {exc}'
+
+    workers = max(1, min(max_workers, len(templates) or 1))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for template, text, error in pool.map(_one, templates):
+            if text is None:
+                snapshot.missing_model_prompts[template] = error or 'missing'
+            else:
+                snapshot.model_prompts[template] = text
 
 
 def model_config_reference(

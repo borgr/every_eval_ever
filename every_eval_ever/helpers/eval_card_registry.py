@@ -185,7 +185,9 @@ class Registry:
         self.live_queries = 0
         self.live_hits = 0
         self.live_error: Optional[str] = None
-        self._live_cache: Dict[Tuple[str, str], Optional[Dict[str, Any]]] = {}
+        self._live_cache: Dict[
+            Tuple[str, str], Tuple[Optional[Dict[str, Any]], Optional[str]]
+        ] = {}
 
     # -- organizations ----------------------------------------------------
 
@@ -194,10 +196,25 @@ class Registry:
 
         Both a canonical id and a namespace the registry records for one resolve
         here, because both name the same organization.
+
+        An exact canonical id is answered by name, before normalization. Two ids
+        can collapse to one normalized spelling (``DeepAuto-AI`` and
+        ``deepautoai``), and that spelling is left unowned rather than awarded to
+        one of them, so without this an id would resolve to a different
+        organization or not at all.
         """
         if not self.enabled:
             return _unresolved(slug, 'org', 'registry_disabled')
         snapshot = _snapshot()
+        exact = slug.strip() if isinstance(slug, str) else slug
+        if exact in snapshot['org_review_status']:
+            return Resolution(
+                raw_value=slug,
+                entity_type='org',
+                canonical_id=exact,
+                review_status=snapshot['org_review_status'][exact],
+                strategy='snapshot_exact',
+            )
         key = normalize(slug)
         canonical = snapshot['org_identities'].get(key)
         strategy = 'snapshot'
@@ -263,11 +280,12 @@ class Registry:
         """Ask the registry directly, in the mode that creates nothing."""
         if not self.live:
             return _unresolved(raw_value, entity_type, 'no_canonical')
-        payload = self._live_lookup(entity_type, raw_value)
+        payload, error = self._live_lookup(entity_type, raw_value)
         if payload is None:
-            strategy = (
-                'registry_unavailable' if self.live_error else 'no_canonical'
-            )
+            # This lookup's own outcome, not the run's: ``live_error`` is a
+            # sticky aggregate, and reading it here would relabel every later
+            # clean miss as an outage in the published record.
+            strategy = 'registry_unavailable' if error else 'no_canonical'
             return _unresolved(raw_value, entity_type, strategy)
         return Resolution(
             raw_value=raw_value,
@@ -280,11 +298,17 @@ class Registry:
 
     def _live_lookup(
         self, entity_type: str, raw_value: str
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Return ``(payload, error)`` for one lookup — a hit, a miss, or a fault.
+
+        A miss and a fault are both ``payload is None`` and mean different things
+        to a reader of the record, so they are cached and reported separately.
+        """
         cache_key = (entity_type, raw_value)
         if cache_key in self._live_cache:
             return self._live_cache[cache_key]
         result = None
+        error_text = None
         try:
             import requests
 
@@ -307,9 +331,10 @@ class Registry:
                 result = payload
                 self.live_hits += 1
         except Exception as error:  # never fatal — provenance, not data
-            self.live_error = f'{type(error).__name__}: {error}'
-        self._live_cache[cache_key] = result
-        return result
+            error_text = f'{type(error).__name__}: {error}'
+            self.live_error = error_text
+        self._live_cache[cache_key] = (result, error_text)
+        return result, error_text
 
     # -- reporting --------------------------------------------------------
 
@@ -382,6 +407,8 @@ def second_name_of(slug: str) -> Optional[str]:
     # kept because the guarantee belongs to this function: a caller uses the
     # answer to warn a contributor, and a hand-edited or older snapshot must
     # not be able to turn a canonical id into a "second name".
+    if slug.strip() in snapshot['org_review_status']:
+        return None
     if key in snapshot['org_identities']:
         return None
     return snapshot['org_aliases'].get(key)
