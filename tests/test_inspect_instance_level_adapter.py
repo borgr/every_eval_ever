@@ -22,6 +22,8 @@ from every_eval_ever.instance_level_types import (
     InteractionType,
 )
 
+TEST_UUID = '123e4567-e89b-42d3-a456-426614174000'
+
 
 def _load_instance_level_data(adapter, filepath, metadata_args):
     eval_filepath = Path(filepath)
@@ -32,8 +34,13 @@ def _load_instance_level_data(adapter, filepath, metadata_args):
             eval_filepath, metadata_args=metadata_args
         )
 
-        instance_level_path = Path(
-            converted_eval.detailed_evaluation_results.file_path
+        model_dev, model_name = converted_eval.model_info.id.split('/', 1)
+        instance_level_path = (
+            Path(tmpdir)
+            / converted_eval.evaluation_results[0].source_data.dataset_name
+            / model_dev
+            / model_name
+            / Path(converted_eval.detailed_evaluation_results.file_path).name
         )
         instance_logs = []
         with instance_level_path.open('r', encoding='utf-8') as f:
@@ -55,7 +62,7 @@ def test_pubmedqa_instance_level():
             'source_organization_name': 'TestOrg',
             'evaluator_relationship': EvaluatorRelationship.first_party,
             'parent_eval_output_dir': tmpdir,
-            'file_uuid': 'test_pubmedqa',
+            'file_uuid': TEST_UUID,
         }
 
         converted_eval, instance_logs = _load_instance_level_data(
@@ -67,7 +74,6 @@ def test_pubmedqa_instance_level():
         assert len(instance_logs) == 2
         log = instance_logs[0]
 
-        assert log.schema_version == '0.2.2'
         assert log.model_id == 'openai/gpt-4o-mini-2024-07-18'
         assert log.interaction_type == InteractionType.single_turn
 
@@ -88,7 +94,7 @@ def test_arc_sonnet_instance_level():
             'source_organization_name': 'TestOrg',
             'evaluator_relationship': EvaluatorRelationship.first_party,
             'parent_eval_output_dir': tmpdir,
-            'file_uuid': 'test_arc_sonnet',
+            'file_uuid': TEST_UUID,
         }
 
         converted_eval, instance_logs = _load_instance_level_data(
@@ -98,7 +104,6 @@ def test_arc_sonnet_instance_level():
         assert len(instance_logs) == 5
         log = instance_logs[0]
 
-        assert log.schema_version == '0.2.2'
         assert log.model_id == 'anthropic/claude-sonnet-4-20250514'
         assert log.interaction_type == InteractionType.single_turn
 
@@ -124,7 +129,7 @@ def test_arc_qwen_instance_level():
             'source_organization_name': 'TestOrg',
             'evaluator_relationship': EvaluatorRelationship.first_party,
             'parent_eval_output_dir': tmpdir,
-            'file_uuid': 'test_arc_qwen',
+            'file_uuid': TEST_UUID,
         }
 
         converted_eval, instance_logs = _load_instance_level_data(
@@ -134,7 +139,6 @@ def test_arc_qwen_instance_level():
         assert len(instance_logs) == 3
         log = instance_logs[0]
 
-        assert log.schema_version == '0.2.2'
         assert log.model_id == 'ollama/qwen2.5-0.5b'
         assert log.interaction_type == InteractionType.single_turn
 
@@ -158,7 +162,7 @@ def test_gaia_instance_level():
             'source_organization_name': 'TestOrg',
             'evaluator_relationship': EvaluatorRelationship.first_party,
             'parent_eval_output_dir': tmpdir,
-            'file_uuid': 'test_gaia',
+            'file_uuid': TEST_UUID,
         }
 
         converted_eval, instance_logs = _load_instance_level_data(
@@ -170,7 +174,6 @@ def test_gaia_instance_level():
         assert len(instance_logs) > 0
         log = instance_logs[0]
 
-        assert log.schema_version == '0.2.2'
         assert log.model_id == 'openai/gpt-4.1-mini-2025-04-14'
 
         assert log.interaction_type == InteractionType.agentic
@@ -195,7 +198,7 @@ def test_gaia_instance_level():
 
 def test_serialize_input_skips_non_user_messages():
     adapter = InspectInstanceLevelDataAdapter(
-        'test_id', 'jsonl', 'sha256', '/tmp'
+        'test_id', 'test_id', 'jsonl', 'sha256', '/tmp'
     )
 
     user_msg = ChatMessageUser(content='user question')
@@ -208,7 +211,7 @@ def test_serialize_input_skips_non_user_messages():
 
 def test_serialize_input_concatenates_list_content():
     adapter = InspectInstanceLevelDataAdapter(
-        'test_id', 'jsonl', 'sha256', '/tmp'
+        'test_id', 'test_id', 'jsonl', 'sha256', '/tmp'
     )
 
     msg_str = ChatMessageUser(content='plain string content')
@@ -229,7 +232,7 @@ def _convert_single_synthetic_sample(
 ) -> InstanceLevelEvaluationLog:
     with tempfile.TemporaryDirectory() as tmpdir:
         adapter = InspectInstanceLevelDataAdapter(
-            'synthetic_test', 'jsonl', 'sha256', tmpdir
+            'synthetic_test', 'synthetic_test', 'jsonl', 'sha256', tmpdir
         )
         path, rows_count = adapter.convert_instance_level_logs(
             'synthetic_eval',

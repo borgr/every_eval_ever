@@ -2,9 +2,11 @@
 
 > [EvalEval Coalition](https://evalevalai.com) — "We are a researcher community developing scientifically grounded research outputs and robust deployment infrastructure for broader impact evaluations."
 
+📄 **[Paper (arXiv:2606.14516)](https://arxiv.org/abs/2606.14516)**
+
 **Every Eval Ever** is a shared schema and crowdsourced eval database. It defines a standardized metadata format for storing AI evaluation results — from leaderboard scrapes and research papers to local evaluation runs — so that results from different frameworks can be compared, reproduced, and reused. The three components that make it work:
 
-- 📋 **A metadata schema** ([`eval.schema.json`](eval.schema.json)) that defines the information needed for meaningful comparison of evaluation results, including [instance-level data](instance_level_eval.schema.json)
+- 📋 **A metadata schema** ([`eval.schema.json`](every_eval_ever/schemas/eval.schema.json)) that defines the information needed for meaningful comparison of evaluation results, including [instance-level data](every_eval_ever/schemas/instance_level_eval.schema.json)
 - 🔧 **Validation** that checks data against the schema before it enters the repository
 - 🔌 **Converters** for [Inspect AI](every_eval_ever/converters/inspect/), [HELM](every_eval_ever/converters/helm/), and [lm-eval-harness](every_eval_ever/converters/lm_eval/), so you can transform your existing evaluation logs into the standard format
 
@@ -22,6 +24,20 @@ pip install 'every-eval-ever[helm]'
 pip install 'every-eval-ever[all]'
 ```
 
+> [!NOTE]
+> **`helm` extra + nltk's import guard.** The `helm` extra pulls in `nltk`, and
+> nltk ≥ 3.10.1 ships an import guard (`nltk/inisec.py`, a CWE-427 mitigation)
+> that blocks nltk-initiated imports of any module whose file resolves *under the
+> current working directory*. With the common in-project virtualenv layout
+> (`uv`'s `.venv/`, or any venv inside the repo), site-packages sits under the
+> CWD, so the guard trips on nltk's own dependencies and importing the HELM
+> converter fails. The extra currently caps `nltk<3.10.1`, so this does not bite
+> by default. If you move to a newer nltk, keep the environment **outside** the
+> checkout — the same thing CI does via `UV_PROJECT_ENVIRONMENT` — e.g.
+> `UV_PROJECT_ENVIRONMENT=/tmp/eee-venv uv sync --extra helm`, or create your
+> venv outside the repository. Upstream tracker:
+> [nltk#3730](https://github.com/nltk/nltk/issues/3730).
+
 ### Terminology
 
 | Term | Our Definition | Example |
@@ -33,11 +49,11 @@ pip install 'every-eval-ever[all]'
 ## 🚀 Contributor Guide
 New data can be contributed to the [Hugging Face Dataset](https://huggingface.co/datasets/evaleval/EEE_datastore) using the following process:
 
-Leaderboard/evaluation data is split-up into files by individual model, and data for each model is stored using [`eval.schema.json`](eval.schema.json). The repository is structured into folders as `data/{benchmark_name}/{developer_name}/{model_name}/`.
+Leaderboard/evaluation data is split-up into files by individual model, and data for each model is stored using [`eval.schema.json`](every_eval_ever/schemas/eval.schema.json). The repository is structured into folders as `data/{benchmark_name}/{developer_name}/{model_name}/`.
 
 ### TL;DR How to successfully submit
 
-1. Data must conform to [`eval.schema.json`](eval.schema.json) (current version: `0.2.2`)
+1. Data must conform to [`eval.schema.json`](every_eval_ever/schemas/eval.schema.json) (current version: `0.3.0`)
 2. The validation pipeline will automatically verify the data submitted in the pull request, but can also be manually triggered by typing ```/eee validate changed``` in a comment on the HF PR.
 3. An EvalEval member will review and merge your submission
 
@@ -70,11 +86,45 @@ Note: Each file can contain multiple individual results related to one model. Se
 1. Add a new folder under [`data/`](https://huggingface.co/datasets/evaleval/EEE_datastore/tree/main/data) on the Hugging Face datastore with a codename for your eval.
 2. For each model, use the Hugging Face (`developer_name/model_name`) naming convention to create a 2-tier folder structure.
 3. Add a JSON file with results for each model and name it `{uuid}.json`.
-4. [Optional] Include a [`utils/`](utils/) folder in your benchmark name folder with any scripts used to generate the data (see e.g. [`utils/global-mmlu-lite/adapter.py`](utils/global-mmlu-lite/adapter.py)).
+4. [Optional] Add scripts used to generate the data under [`every_eval_ever/adapters/`](every_eval_ever/adapters/) in this repository (see e.g. [`every_eval_ever/adapters/global_mmlu_lite/adapter.py`](every_eval_ever/adapters/global_mmlu_lite/adapter.py)).
 5. [Submit] Two ways to submit your evaluation data:
    - **Option A: Drag & drop via Hugging Face** — Go to [evaleval/EEE_datastore](https://huggingface.co/datasets/evaleval/EEE_datastore) → click "Files and versions" → "Contribute" → "Upload files" → drag and drop your data → select "Open as a pull request to the main branch". See [step-by-step screenshots](https://docs.google.com/document/d/1dxTQF8ncGCzaAOIj0RX7E9Hg4THmUBzezDOYUp_XdCY/edit?usp=sharing).
-   - **Option B: Clone & PR** — Clone the [Hugging Face repository](https://huggingface.co/datasets/evaleval/EEE_datastore), add your data under `data/`, and open a pull request
+   - **Option B: Upload via `huggingface_hub`** — Useful for larger submissions or many files.
 
+     ```python
+     from huggingface_hub import HfApi
+
+     api = HfApi()
+
+     pr_url = api.upload_folder(
+         folder_path="data/my-eval",
+         path_in_repo="data/my-eval",
+         repo_id="evaleval/EEE_datastore",
+         repo_type="dataset",
+         commit_message="[Submission] Add my eval",
+         commit_description="Adds evaluation data for my eval.",
+         create_pr=True,  # opens a PR instead of committing directly
+     )
+
+     print(pr_url)
+     ```
+
+     To add more files to the same PR, use the PR ref returned by Hugging Face (for example, `refs/pr/XX`):
+
+     ```python
+     from huggingface_hub import HfApi
+
+     api = HfApi()
+
+     api.upload_file(
+         path_or_fileobj="data/my-eval/developer/model/uuid_samples.jsonl",
+         path_in_repo="data/my-eval/developer/model/uuid_samples.jsonl",
+         repo_id="evaleval/EEE_datastore",
+         repo_type="dataset",
+         revision="refs/pr/XX",  # upload to an existing PR
+         commit_message="[Submission] Add instance-level samples",
+     )
+     ```
 ### Schema Instructions
 
 1. **`model_info`**: Use Hugging Face formatting (`developer_name/model_name`). If a model does not come from Hugging Face, use the exact API reference. Check [examples in data/livecodebenchpro](https://huggingface.co/datasets/evaleval/EEE_datastore/tree/main/data/livecodebenchpro). Notably, some do have a **date included in the model name**, but others **do not**. For example:
@@ -111,7 +161,7 @@ Note: Each file can contain multiple individual results related to one model. Se
 
 ### Instance-Level Data
 
-For evaluations that include per-sample results, the individual results should be stored in a companion `{uuid}_samples.jsonl` file in the same folder (one JSONL per JSON, sharing the same UUID). The aggregate JSON file refers to its JSONL via the `detailed_evaluation_results` field. The instance-level schema ([`instance_level_eval.schema.json`](instance_level_eval.schema.json)) supports three interaction types:
+For evaluations that include per-sample results, the individual results should be stored in a companion `{uuid}_samples.jsonl` file in the same folder (one JSONL per JSON, sharing the same UUID). The aggregate JSON file refers to its JSONL via the `detailed_evaluation_results` field. The instance-level schema ([`instance_level_eval.schema.json`](every_eval_ever/schemas/instance_level_eval.schema.json)) supports three interaction types:
 
 - **`single_turn`**: Standard QA, MCQ, classification — uses `output` object
 - **`multi_turn`**: Conversational evaluations with multiple exchanges — uses `messages` array
@@ -123,7 +173,7 @@ Example `single_turn` instance:
 
 ```json
 {
-  "schema_version": "instance_level_eval_0.2.2",
+  "schema_version": "0.3.0",
   "evaluation_id": "math_eval/meta-llama/Llama-2-7b-chat/1706000000",
   "model_id": "meta-llama/Llama-2-7b-chat",
   "evaluation_name": "math_eval",
@@ -157,7 +207,7 @@ At the instance level, agentic evaluations use `interaction_type: "agentic"` wit
 
 ## ✅ Data Validation
 
-Validation uses Pydantic models generated from the JSON schemas. This validates aggregate `.json` files against `EvaluationLog` and instance-level `_samples.jsonl` files line-by-line against `InstanceLevelEvaluationLog`. Requires [uv](https://docs.astral.sh/uv/).
+Validation rejects invalid JSON, applies the generated schema models, and runs the same repository checks used by the PR bot. Aggregate JSON and sample JSONL files are also checked against each other. Requires [uv](https://docs.astral.sh/uv/).
 
 ### Validate files with the package CLI
 
@@ -168,26 +218,42 @@ uv run python -m every_eval_ever validate data/benchmark/dev/model/uuid.json
 # Instance-level JSONL
 uv run python -m every_eval_ever validate data/benchmark/dev/model/uuid_samples.jsonl
 
-# Entire directory (recurses into subdirectories)
-uv run python -m every_eval_ever validate data/benchmark/dev/model/
+# A fixed-depth glob (quote it so the CLI expands it consistently)
+uv run python -m every_eval_ever validate 'data/*/*/*/*.json*'
 
 # Multiple paths
-uv run python -m every_eval_ever validate file1.json file2_samples.jsonl data/
+uv run python -m every_eval_ever validate \
+  data/benchmark/dev/model/uuid.json \
+  data/benchmark/dev/model/uuid_samples.jsonl
 ```
 
-File type is determined by extension: `.json` validates against `EvaluationLog`, `.jsonl` validates each line against `InstanceLevelEvaluationLog`.
+Run the command from the repository root and use `data/...` paths. File type is determined by extension: `.json` validates against `EvaluationLog`, while `.jsonl` validates each line against `InstanceLevelEvaluationLog`. Paths must be exactly `data/<collection>/<developer>/<model>/<uuid>.json` or the matching `<uuid>_samples.jsonl`. Directory arguments are not accepted; use a fixed-depth or explicit recursive glob to select local files.
+
+When samples exist, both files must be in the same folder and use the same UUID. The aggregate must provide the samples' full repository-relative path (for example, `data/<collection>/<developer>/<model>/<uuid>_samples.jsonl`) in `detailed_evaluation_results.file_path`, and the JSONL must point back to that aggregate. Their evaluation IDs, model IDs, and declared row count must agree.
+
+Local validation checks only the files present in the local checkout and their expected siblings. The PR bot remains responsible for checking every changed datastore path against the complete PR branch.
+
+Collision checks cover the files selected in one validation or publication
+operation and files already present at their destination. Validation does not
+walk the entire datastore looking for historical route or case-only
+collisions; repository-wide checks belong in the PR bot or a separate audit.
+
+For local smoke output outside the checkout, retain the same layout under a
+`data/` directory and pass an explicit glob, for example
+`'/tmp/run/data/benchmark/*/*/*.json*'`. The CLI maps that absolute path back
+to the canonical datastore path before applying the same checks.
 
 #### Output formats
 
 ```sh
 # Rich terminal output (default)
-uv run python -m every_eval_ever validate data/
+uv run python -m every_eval_ever validate 'data/*/*/*/*.json*'
 
 # Machine-readable JSON
-uv run python -m every_eval_ever validate --format json data/
+uv run python -m every_eval_ever validate --format json 'data/*/*/*/*.json*'
 
 # GitHub Actions annotations
-uv run python -m every_eval_ever validate --format github data/
+uv run python -m every_eval_ever validate --format github 'data/*/*/*/*.json*'
 ```
 
 #### Options
@@ -226,7 +292,7 @@ Example evaluations included in the schema v0.2 release:
 | LiveCodeBench Pro | [`data/livecodebenchpro/`](https://huggingface.co/datasets/evaleval/EEE_datastore/tree/main/data/livecodebenchpro) |
 | RewardBench | [`data/reward-bench/`](https://huggingface.co/datasets/evaleval/EEE_datastore/tree/main/data/reward-bench) |
 
-Schemas: [`eval.schema.json`](eval.schema.json) (aggregate) · [`instance_level_eval.schema.json`](instance_level_eval.schema.json) (per-sample JSONL)
+Schemas: [`eval.schema.json`](every_eval_ever/schemas/eval.schema.json) (aggregate) · [`instance_level_eval.schema.json`](every_eval_ever/schemas/instance_level_eval.schema.json) (per-sample JSONL)
 
 Each evaluation has its own directory under [`data/`](https://huggingface.co/datasets/evaleval/EEE_datastore/tree/main/data) on the Hugging Face datastore. Within each evaluation, models are organized by developer and model name. Instance-level data is stored in optional `{uuid}_samples.jsonl` files alongside aggregate `{uuid}.json` results.
 
@@ -277,7 +343,7 @@ Each result file captures not just scores but the context needed to interpret an
 }]
 ```
 
-The schema also supports **level-based metrics** (e.g. Low/Medium/High) and **uncertainty** reporting (confidence intervals, standard errors). See [`eval.schema.json`](eval.schema.json) for the full specification.
+The schema also supports **level-based metrics** (e.g. Low/Medium/High) and **uncertainty** reporting (confidence intervals, standard errors). See [`eval.schema.json`](every_eval_ever/schemas/eval.schema.json) for the full specification.
 
 ## 🔧 Auto-generation of Pydantic Classes for Schema
 
@@ -286,7 +352,7 @@ Run the following commands to generate the package-local Pydantic classes from t
 ```bash
 uv run datamodel-codegen --input every_eval_ever/schemas/eval.schema.json --output every_eval_ever/eval_types.py --class-name EvaluationLog --output-model-type pydantic_v2.BaseModel --input-file-type jsonschema --formatters ruff-format ruff-check
 uv run datamodel-codegen --input every_eval_ever/schemas/instance_level_eval.schema.json --output every_eval_ever/instance_level_types.py --class-name InstanceLevelEvaluationLog --output-model-type pydantic_v2.BaseModel --input-file-type jsonschema --formatters ruff-format ruff-check
-uv run python post_codegen.py
+uv run python -m every_eval_ever.post_codegen
 ```
 
 ## 🔌 Eval Converters
@@ -305,8 +371,8 @@ For full CLI usage and required input files, see the [Eval Converters README](ev
 
 We are running a [Shared Task](https://evalevalai.com/events/shared-task-every-eval-ever/) at **ACL 2026 in San Diego** (July 7, 2026). The task invites participants to contribute to a unifying database of eval results:
 
-- **Track 1: Public Eval Data Parsing** — Parse leaderboards (Chatbot Arena, Open LLM Leaderboard, AlpacaEval, etc.) and academic papers into [our schema](eval.schema.json) and contribute to a unifying database of eval results!
-- **Track 2: Proprietary Evaluation Data** — Convert proprietary evaluation datasets into [our schema](eval.schema.json) and contribute to a unifying database of eval results!
+- **Track 1: Public Eval Data Parsing** — Parse leaderboards (Chatbot Arena, Open LLM Leaderboard, AlpacaEval, etc.) and academic papers into [our schema](every_eval_ever/schemas/eval.schema.json) and contribute to a unifying database of eval results!
+- **Track 2: Proprietary Evaluation Data** — Convert proprietary evaluation datasets into [our schema](every_eval_ever/schemas/eval.schema.json) and contribute to a unifying database of eval results!
 
 | Milestone | Date |
 |---|---|
@@ -318,13 +384,16 @@ Qualifying contributors will be invited as co-authors on the shared task paper.
 
 ## 📎 Citation
 
+If Every Eval Ever informs your research, please cite the paper:
+
 ```bibtex
-@misc{everyevalever2026schema,
-  title   = {Every Eval Ever Metadata Schema v0.2},
-  author  = {EvalEval Coalition},
-  year    = {2026},
-  month   = {February},
-  url     = {https://github.com/evaleval/every_eval_ever},
-  note    = {Schema Release}
+@misc{batzner2026evaleverunifyingschema,
+      title={Every Eval Ever: A Unifying Schema and Community Repository for AI Evaluation Results}, 
+      author={Jan Batzner and Sree Harsha Nelaturu and Damian Stachura and Anastassia Kornilova and Jon Crall and Tommaso Cerruti and Yanan Long and Yifan Mai and Sanchit Ahuja and Asaf Yehudai and Marek Šuppa and John P. Lalor and Oluwagbemike Olowe and Jatin Ganhotra and Brian H. Hu and Eliya Habba and Andrew M. Bean and Chang Liu and Sander Land and Steven Dillmann and Aniketh Garikaparthi and Elron Bandel and Saki Imai and James Edgell and Wm. Matthew Kennedy and Jenny Chim and Patrick Meusling and Asteria Kaeberlein and Venkata Ramachandra Karthik Chundi and Manasi Patwardhan and Martin Ku and Austin Meek and Leon Knauer and Brian Wingenroth and Srishti Yadav and Usman Gohar and Felix Friedrich and Michelle Lin and Jennifer Mickel and Arman Cohan and Stella Biderman and Irene Solaiman and Zeerak Talat and Anka Reuel and Mubashara Akhtar and Gjergji Kasneci and Avijit Ghosh and Leshem Choshen},
+      year={2026},
+      eprint={2606.14516},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2606.14516}, 
 }
 ```

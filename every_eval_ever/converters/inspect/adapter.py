@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-import uuid
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 from urllib.parse import urlparse
@@ -40,6 +40,7 @@ def _require_inspect_dependencies() -> None:
             'Inspect converter dependencies are missing. '
             "Install with: pip install 'every_eval_ever[inspect]'"
         ) from _INSPECT_IMPORT_ERROR
+
 
 from every_eval_ever.converters import SCHEMA_VERSION
 from every_eval_ever.converters.common.adapter import (
@@ -83,10 +84,18 @@ from every_eval_ever.eval_types import (
     ScoreDetails,
     ScoreType,
     SourceDataHf,
+    SourceDataPrivate,
     SourceMetadata,
     SourceType,
     StandardError,
     Uncertainty,
+)
+from every_eval_ever.helpers.io import (
+    SourceConversionResult,
+    SourceRecordFailure,
+    datastore_output_dir,
+    datastore_repo_file_path,
+    require_uuid4,
 )
 
 logger = logging.getLogger(__name__)
@@ -138,7 +147,7 @@ class InspectAIAdapter(BaseEvaluationAdapter):
         num_samples: int = 0,
     ) -> EvaluationResult:
         return EvaluationResult(
-            evaluation_name=f"{metric_info.name} on {evaluation_task_name} for scorer {scorer_name}",
+            evaluation_name=f'{metric_info.name} on {evaluation_task_name} for scorer {scorer_name}',
             source_data=source_data,
             evaluation_timestamp=evaluation_timestamp,
             metric_config=MetricConfig(
@@ -228,9 +237,75 @@ class InspectAIAdapter(BaseEvaluationAdapter):
 
         return results
 
+    # A HuggingFace repo identifier: exactly `namespace/name` with no
+    # extra path segments, schemes, or path-unsafe prefixes. We use an
+    # allowlist regex because the set of "real HF repos" is much easier
+    # to characterize precisely than the set of "local paths".
+    _HF_REPO_RE = re.compile(r'^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$')
+
+    @classmethod
+    def _looks_like_local_path(cls, location: str | None) -> bool:
+        """Heuristic: is `dataset.location` a local filesystem path rather
+        than a HuggingFace repo identifier?
+
+        A valid HF repo is exactly `namespace/name`. Anything else —
+        absolute/relative paths (`/`, `./`, `../`, `~`), Windows drive
+        letters, URL schemes (`file://`, `http://`), three-or-more
+        segment paths (e.g. `inspect_evals/gaia_dataset/GAIA` from older
+        Inspect versions), or plain single words — we treat as local.
+        """
+        if not location:
+            return False
+        return not cls._HF_REPO_RE.match(location)
+
     def _extract_source_data(
         self, dataset: EvalDataset, task_name: str
-    ) -> SourceDataHf:
+    ) -> SourceDataHf | SourceDataPrivate:
+        sample_ids = (
+            [str(sid) for sid in dataset.sample_ids]
+            if dataset.sample_ids is not None
+            else None
+        )
+
+        if self._looks_like_local_path(dataset.location):
+            # dataset.location is not a valid HF repo identifier: it may
+            # be an absolute filesystem path (e.g. a cached HF dataset
+            # or a benchmark's bundled challenges directory) or some
+            # other non-HF reference. We can't claim this is an HF
+            # dataset, and `dataset.name` is often an internal filename
+            # that doesn't identify the benchmark (e.g. 'challenges' for
+            # cyberseceval_2 vulnerability_exploit, 'ic_ctf' for
+            # gdm_intercode_ctf). Use the canonical inspect_evals task
+            # name as `dataset_name`, and preserve the harness-provided
+            # `dataset.name` and `dataset.location` in
+            # `additional_details` for anyone who needs the raw values.
+            dataset_name = (
+                task_name.split('/')[-1]
+                if task_name
+                else (dataset.name.split('/')[-1] if dataset.name else '')
+            )
+            additional_details: dict[str, str] = {
+                'shuffled': str(dataset.shuffled),
+            }
+            if dataset.location:
+                additional_details['inspect_dataset_location'] = str(
+                    dataset.location
+                )
+            if dataset.name:
+                additional_details['inspect_dataset_name'] = dataset.name
+            if dataset.samples is not None:
+                additional_details['samples_number'] = str(dataset.samples)
+            if sample_ids is not None:
+                additional_details['sample_ids'] = ','.join(sample_ids)
+            return SourceDataPrivate(
+                source_type='other',
+                dataset_name=dataset_name,
+                additional_details=additional_details,
+            )
+
+        # Real HF dataset: trust `dataset.name` as the benchmark
+        # identifier. When the harness sets it to the full repo id
+        # (e.g. `bigbio/pubmed_qa`), take the final path segment.
         dataset_name = (
             dataset.name.split('/')[-1]
             if dataset.name
@@ -241,9 +316,7 @@ class InspectAIAdapter(BaseEvaluationAdapter):
             dataset_name=dataset_name,
             hf_repo=dataset.location,
             samples_number=dataset.samples,
-            sample_ids=[str(sid) for sid in dataset.sample_ids]
-            if dataset.sample_ids is not None
-            else None,
+            sample_ids=sample_ids,
             additional_details={'shuffled': str(dataset.shuffled)},
         )
 
@@ -378,6 +451,14 @@ class InspectAIAdapter(BaseEvaluationAdapter):
     def transform_from_directory(
         self, dir_path: Union[str, Path], metadata_args: Dict[str, Any] = None
     ) -> List[EvaluationLog]:
+        result = self.transform_from_directory_result(dir_path, metadata_args)
+        result.raise_if_incomplete()
+        return [log for log, _ in result.records]
+
+    def transform_from_directory_result(
+        self, dir_path: Union[str, Path], metadata_args: Dict[str, Any] = None
+    ) -> SourceConversionResult[tuple[EvaluationLog, str | None]]:
+        """Convert every Inspect log while retaining per-file failures."""
         metadata_args = metadata_args or {}
 
         if isinstance(dir_path, str):
@@ -388,30 +469,60 @@ class InspectAIAdapter(BaseEvaluationAdapter):
                 f'Directory path {dir_path} does not exist!'
             )
 
-        log_paths: List[Path] = list_eval_logs(dir_path.absolute().as_posix())
+        log_paths: List[Path] = sorted(
+            list_eval_logs(dir_path.absolute().as_posix()),
+            key=lambda path: path.name,
+        )
         file_uuids = metadata_args.get('file_uuids')
-        try:
-            transformed_logs: List[EvaluationLog] = []
-            for idx, log_path in enumerate(log_paths):
-                # In directory mode, each converted log must get its own UUID.
-                per_log_metadata_args = dict(metadata_args)
-                file_uuid = None
-                if isinstance(file_uuids, list) and idx < len(file_uuids):
-                    file_uuid = file_uuids[idx]
-                per_log_metadata_args['file_uuid'] = file_uuid or str(
-                    uuid.uuid4()
-                )
+        writes_samples = bool(metadata_args.get('parent_eval_output_dir'))
+        if not log_paths:
+            raise AdapterError(
+                f'No Inspect evaluation logs found in directory {dir_path}'
+            )
+        if writes_samples and (
+            not isinstance(file_uuids, list)
+            or len(file_uuids) != len(log_paths)
+        ):
+            raise AdapterError(
+                'metadata_args["file_uuids"] must contain exactly one UUID '
+                f'for each Inspect log ({len(log_paths)} required)'
+            )
+        transformed_logs: list[tuple[EvaluationLog, str | None]] = []
+        failures: list[SourceRecordFailure] = []
+        for idx, log_path in enumerate(log_paths):
+            per_log_metadata_args = dict(metadata_args)
+            file_uuid = None
+            try:
+                if writes_samples:
+                    file_uuid = require_uuid4(
+                        file_uuids[idx],
+                        f'file_uuids[{idx}]',
+                    )
+                    per_log_metadata_args['file_uuid'] = file_uuid
                 transformed_logs.append(
-                    self.transform_from_file(
-                        urlparse(log_path.name).path,
-                        per_log_metadata_args,
+                    (
+                        self.transform_from_file(
+                            urlparse(log_path.name).path,
+                            per_log_metadata_args,
+                        ),
+                        file_uuid,
                     )
                 )
-            return transformed_logs
-        except Exception as e:
-            raise AdapterError(
-                f'Failed to load file from directory {dir_path}: {str(e)} for InspectAIAdapter'
-            )
+            except Exception as exc:
+                failures.append(
+                    SourceRecordFailure(
+                        source_ref=str(log_path),
+                        reason=str(exc),
+                        source_record={'path': str(log_path)},
+                    )
+                )
+
+        return SourceConversionResult(
+            source_name=f'Inspect logs under {dir_path}',
+            total_records=len(log_paths),
+            records=transformed_logs,
+            failures=failures,
+        )
 
     def transform_from_file(
         self,
@@ -537,7 +648,7 @@ class InspectAIAdapter(BaseEvaluationAdapter):
         )
 
         supplemental_eval_details = parse_supplemental_eval_details(
-            metadata_args.get("supplemental_eval_details")
+            metadata_args.get('supplemental_eval_details')
         )
 
         apply_supplemental_eval_details(
@@ -546,45 +657,50 @@ class InspectAIAdapter(BaseEvaluationAdapter):
             supplemental_eval_details=supplemental_eval_details,
         )
 
-        evaluation_id = f'{source_data.dataset_name}/{model_path.replace('/', '_')}/{evaluation_unix_timestamp}'
+        evaluation_id = f'{source_data.dataset_name}/{model_path.replace("/", "_")}/{evaluation_unix_timestamp}'
 
-        parent_eval_output_dir = metadata_args.get(
-            'parent_eval_output_dir', 'data'
-        )
+        parent_eval_output_dir = metadata_args.get('parent_eval_output_dir')
         if raw_eval_log.samples and parent_eval_output_dir:
-            file_uuid = metadata_args.get('file_uuid')
-            if not file_uuid:
-                file_uuid = str(uuid.uuid4())
-                metadata_args['file_uuid'] = file_uuid
-                logging.warning(
-                    f"Missing metadata_args['file_uuid']; generated one for instance-level log: {file_uuid}. "
-                    'Save unified aggregate log with the same uuid.'
-                )
-
-            if '/' in model_info.id:
-                model_dev, model_name = model_info.id.split('/', 1)
-            else:
-                model_dev, model_name = 'unknown', model_info.id
-            evaluation_dir = f'{parent_eval_output_dir}/{source_data.dataset_name}/{model_dev}/{model_name}'
-            detailed_results_id = f'{file_uuid}_samples'
+            file_uuid = require_uuid4(
+                metadata_args.get('file_uuid'),
+                "metadata_args['file_uuid']",
+            )
+            evaluation_dir = datastore_output_dir(
+                parent_eval_output_dir,
+                source_data.dataset_name,
+                model_info.id,
+                model_info.developer,
+            ).as_posix()
+            # The aggregate `evaluation_id` is the foreign key consumers
+            # use to join instance-level records back to the aggregate,
+            # so pass it through verbatim. The file basename is a
+            # separate, filesystem-safe identifier since the aggregate
+            # id contains slashes and other path-unsafe characters.
+            file_basename = f'{file_uuid}_samples'
 
             instance_level_log_path, instance_level_rows_number = (
                 InspectInstanceLevelDataAdapter(
-                    detailed_results_id,
-                    Format.jsonl.value,
-                    HashAlgorithm.sha256.value,
-                    evaluation_dir,
+                    evaluation_id=evaluation_id,
+                    file_basename=file_basename,
+                    format=Format.jsonl.value,
+                    hash_algorithm=HashAlgorithm.sha256.value,
+                    evaluation_dir=evaluation_dir,
                 ).convert_instance_level_logs(
                     evaluation_task_name,
                     model_info.id,
                     raw_eval_log.samples,
-                    getattr(raw_eval_log, "reductions", None),
+                    getattr(raw_eval_log, 'reductions', None),
                 )
             )
 
             detailed_evaluation_results = DetailedEvaluationResults(
                 format=Format.jsonl,
-                file_path=instance_level_log_path,
+                file_path=datastore_repo_file_path(
+                    source_data.dataset_name,
+                    model_info.id,
+                    model_info.developer,
+                    Path(instance_level_log_path).name,
+                ),
                 hash_algorithm=HashAlgorithm.sha256.value,
                 checksum=sha256_file(instance_level_log_path),
                 total_rows=instance_level_rows_number,

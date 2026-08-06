@@ -1,0 +1,483 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from every_eval_ever.adapters.llm_stats import adapter
+from every_eval_ever.eval_types import EvaluationLog
+from every_eval_ever.helpers.io import SourceRecordsError
+from every_eval_ever.validate import validate_file
+
+
+def sample_payload() -> dict:
+    return {
+        'models': {
+            'data': [
+                {
+                    'id': 'gpt-5',
+                    'slug': 'gpt-5',
+                    'name': 'GPT-5',
+                    'provider': {'slug': 'openai', 'name': 'OpenAI'},
+                    'context_window': 128000,
+                    'modalities': ['text'],
+                    'pricing': {'input': 1.25, 'output': 10.0},
+                    'release_date': '2025-08-07',
+                    'license': 'proprietary',
+                },
+                {
+                    'id': 'claude-4-opus',
+                    'slug': 'claude-4-opus',
+                    'name': 'Claude 4 Opus',
+                    'provider': {'slug': 'anthropic', 'name': 'Anthropic'},
+                    'context_window': 200000,
+                    'modalities': ['text', 'vision'],
+                },
+            ]
+        },
+        'benchmarks': {
+            'data': [
+                {
+                    'id': 'gpqa-diamond',
+                    'slug': 'gpqa-diamond',
+                    'name': 'GPQA Diamond',
+                    'description': 'Graduate-level science QA.',
+                    'category': 'reasoning',
+                    'min_score': 0,
+                    'max_score': 100,
+                    'metric_kind': 'accuracy',
+                    'metric_unit': 'percent',
+                },
+                {
+                    'id': 'math-500',
+                    'slug': 'math-500',
+                    'name': 'MATH-500',
+                    'description': 'Competition mathematics benchmark.',
+                    'category': 'math',
+                    'min_score': 0,
+                    'max_score': 1,
+                    'metric_kind': 'accuracy',
+                    'metric_unit': 'proportion',
+                },
+            ]
+        },
+        'scores': {
+            'data': [
+                {
+                    'id': 'score-gpt5-gpqa',
+                    'model_id': 'gpt-5',
+                    'benchmark_id': 'gpqa-diamond',
+                    'score': 94.2,
+                    'unit': 'percent',
+                    'source_type': 'model_card',
+                    'verified': True,
+                    'source_url': 'https://openai.com/index/gpt-5-system-card/',
+                },
+                {
+                    'id': 'score-gpt5-math',
+                    'model_id': 'gpt-5',
+                    'benchmark_id': 'math-500',
+                    'score': 0.91,
+                    'unit': 'proportion',
+                    'provenance': 'independent_runner',
+                    'verification_tier': 'third_party',
+                    'citation_url': 'https://example.org/independent-math-500',
+                },
+                {
+                    'id': 'score-claude-gpqa',
+                    'model_id': 'claude-4-opus',
+                    'benchmark_id': 'gpqa-diamond',
+                    'score': 88.5,
+                },
+            ]
+        },
+    }
+
+
+def logs_by_relationship() -> dict[str, EvaluationLog]:
+    bundles = adapter.make_logs(
+        sample_payload(),
+        base_url=adapter.DEFAULT_BASE_URL,
+        retrieved_timestamp='1234567890.0',
+    )
+    logs = {
+        bundle.log.source_metadata.evaluator_relationship.value: bundle.log
+        for bundle in bundles
+    }
+    assert set(logs) == {'first_party', 'third_party', 'other'}
+    return logs
+
+
+def test_make_logs_validate_against_schema():
+    for log in logs_by_relationship().values():
+        validated = EvaluationLog.model_validate(log.model_dump())
+        assert validated.source_metadata.source_organization_name == 'LLM Stats'
+        assert validated.source_metadata.source_type.value == 'documentation'
+        assert (
+            validated.source_metadata.additional_details['attribution_required']
+            == 'true'
+        )
+        assert (
+            validated.source_metadata.additional_details['scores_endpoint']
+            == 'https://api.llm-stats.com/v1/scores'
+        )
+        assert (
+            validated.source_metadata.additional_details[
+                'scores_endpoint_fallback'
+            ]
+            == 'https://api.llm-stats.com/leaderboard/benchmarks/{benchmark_id}'
+        )
+
+
+def test_scores_are_grouped_by_evaluator_relationship():
+    logs = logs_by_relationship()
+
+    first_party = logs['first_party']
+    assert first_party.model_info.id == 'openai/gpt-5'
+    assert first_party.evaluation_id.startswith(
+        'llm-stats/first_party/openai_gpt-5/'
+    )
+    assert len(first_party.evaluation_results) == 1
+    assert (
+        first_party.evaluation_results[0].evaluation_name
+        == 'llm_stats.gpqa-diamond'
+    )
+
+    third_party = logs['third_party']
+    assert third_party.model_info.id == 'openai/gpt-5'
+    assert len(third_party.evaluation_results) == 1
+    assert (
+        third_party.evaluation_results[0].evaluation_name
+        == 'llm_stats.math-500'
+    )
+
+    other = logs['other']
+    assert other.model_info.id == 'anthropic/claude-4-opus'
+    assert other.source_metadata.evaluator_relationship.value == 'other'
+
+
+def test_raw_citation_and_provenance_are_preserved():
+    logs = logs_by_relationship()
+
+    first_result = logs['first_party'].evaluation_results[0]
+    first_details = first_result.score_details.details or {}
+    assert first_details['raw_provenance_label'] == 'model_card'
+    assert first_details['raw_verified'] == 'true'
+    assert first_details['raw_source_organization'] == 'openai'
+    assert first_details['relationship_inference_reason'] == (
+        'source_matches_model_developer'
+    )
+    assert 'https://openai.com/index/gpt-5-system-card/' in json.loads(
+        first_details['source_urls_json']
+    )
+    assert (
+        'https://openai.com/index/gpt-5-system-card/'
+        in first_result.source_data.url
+    )
+    assert first_result.metric_config.metric_unit == 'percent'
+    assert first_result.metric_config.max_score == 100
+
+    other_result = logs['other'].evaluation_results[0]
+    other_details = other_result.score_details.details or {}
+    assert other_details['raw_provenance_label'] == 'unknown'
+    assert other_details['relationship_inference_reason'] == (
+        'no_provenance_signal'
+    )
+
+
+def test_fallback_fetch_failures_are_preserved_and_fail_conversion(
+    monkeypatch,
+):
+    payload = sample_payload()
+
+    def fake_fetch(url, *, headers):
+        del headers
+        if url.endswith('/v1/models'):
+            return payload['models']
+        if url.endswith('/leaderboard/benchmarks'):
+            return payload['benchmarks']
+        if url.endswith('/v1/scores'):
+            raise adapter.FetchError('scores endpoint unavailable')
+        raise adapter.FetchError(f'benchmark detail unavailable: {url}')
+
+    monkeypatch.setattr(adapter, 'fetch_json', fake_fetch)
+
+    fetched = adapter.fetch_payload('secret', 'https://example.test')
+
+    assert len(fetched['source_failures']) == 2
+    assert (
+        fetched['source_failures'][0]['source_record']
+        == (payload['benchmarks']['data'][0])
+    )
+    try:
+        adapter.make_logs(fetched, base_url='https://example.test')
+    except SourceRecordsError as exc:
+        assert exc.source_name == 'LLM Stats'
+        assert len(exc.failures) == 2
+        assert all(
+            failure.source_ref.startswith('https://example.test/')
+            for failure in exc.failures
+        )
+    else:
+        raise AssertionError('expected incomplete benchmark fetch to fail')
+
+
+def test_export_paths_follow_datastore_layout(tmp_path: Path):
+    output_dir = tmp_path / 'data' / 'llm-stats'
+    bundles = adapter.make_logs(
+        sample_payload(), retrieved_timestamp='1234567890.0'
+    )
+    paths = adapter.export_logs(bundles, output_dir)
+
+    assert len(paths) == 3
+    for path in paths:
+        assert path.suffix == '.json'
+        assert path.parent.parent.parent == output_dir
+        report = validate_file(path)
+        assert report.valid, report.errors
+
+    assert (output_dir / 'openai' / 'gpt-5').is_dir()
+    assert (output_dir / 'anthropic' / 'claude-4-opus').is_dir()
+
+
+def test_scores_from_live_benchmark_detail_shape():
+    detail = {
+        'benchmark_id': 'gpqa',
+        'name': 'GPQA',
+        'description': 'Graduate-level science questions.',
+        'max_score': 1.0,
+        'models': [
+            {
+                'rank': 1,
+                'model_id': 'gpt-5.5',
+                'model_name': 'GPT-5.5',
+                'organization_id': 'openai',
+                'organization_name': 'OpenAI',
+                'score': 0.936,
+                'normalized_score': 0.936,
+                'verified': False,
+                'self_reported': True,
+                'self_reported_source': 'https://openai.com/index/introducing-gpt-5-5/',
+                'analysis_method': 'GPQA Diamond. Reasoning effort xhigh.',
+            }
+        ],
+    }
+
+    scores = adapter.scores_from_benchmark_detail(detail)
+
+    assert len(scores) == 1
+    assert scores[0]['benchmark']['benchmark_id'] == 'gpqa'
+    assert scores[0]['model_id'] == 'gpt-5.5'
+    assert (
+        scores[0]['source_url']
+        == 'https://openai.com/index/introducing-gpt-5-5/'
+    )
+    assert adapter.relationship_from_score(scores[0]) == 'first_party'
+
+
+def test_extracts_model_page_score_sources():
+    page_html = (
+        r'{\"benchmark_id\":\"arc-agi-v2\",\"name\":\"ARC-AGI v2\",'
+        r'\"score\":0.065,\"self_reported\":false,'
+        r'\"self_reported_source\":\"https://x.com/xai/status/1943158495588815072\"}'
+        r'{\"benchmark_id\":\"gpqa\",\"name\":\"GPQA\",'
+        r'\"score\":0.936,\"self_reported\":true,'
+        r'\"self_reported_source\":\"https://openai.com/index/introducing-gpt-5-5/\"}'
+    )
+
+    sources = adapter.extract_model_page_score_sources(page_html)
+
+    assert sources['arc-agi-v2']['self_reported'] is False
+    assert (
+        sources['arc-agi-v2']['self_reported_source']
+        == 'https://x.com/xai/status/1943158495588815072'
+    )
+    assert sources['arc-agi-v2']['source_organization'] == 'xai'
+    assert sources['gpqa']['self_reported'] is True
+    assert sources['gpqa']['source_organization'] == 'openai'
+
+
+def test_enrich_scores_with_model_page_sources(monkeypatch):
+    page_html = (
+        r'{\"benchmark_id\":\"arc-agi-v2\",\"name\":\"ARC-AGI v2\",'
+        r'\"score\":0.065,\"self_reported\":false,'
+        r'\"self_reported_source\":\"https://x.com/xai/status/1943158495588815072\"}'
+    )
+    monkeypatch.setattr(adapter, 'fetch_text', lambda _url: page_html)
+    scores = [
+        {
+            'model_id': 'o3-2025-04-16',
+            'benchmark_id': 'arc-agi-v2',
+            'score': 0.065,
+        }
+    ]
+
+    enriched = adapter.enrich_scores_with_model_page_sources(scores)
+
+    assert enriched[0]['self_reported'] is False
+    assert (
+        enriched[0]['source_url']
+        == 'https://x.com/xai/status/1943158495588815072'
+    )
+    assert enriched[0]['source_organization'] == 'xai'
+
+
+def test_model_page_failure_keeps_scores_and_records_provenance(monkeypatch):
+    scores = [
+        {
+            'model_id': 'gpt-5.5',
+            'benchmark_id': 'gpqa',
+            'score': 0.936,
+        }
+    ]
+
+    def fail_fetch(_url):
+        raise adapter.FetchError('model page unavailable')
+
+    monkeypatch.setattr(adapter, 'fetch_text', fail_fetch)
+
+    result = adapter.enrich_scores_with_model_page_sources_result(scores)
+
+    assert result.records == scores
+    assert len(result.failures) == 1
+    assert result.failures[0].source_ref.endswith('/models/gpt-5.5')
+    assert result.failures[0].source_record == scores
+
+
+def test_relationship_uses_score_source_against_model_developer():
+    openai_model = {
+        'id': 'o3-2025-04-16',
+        'name': 'o3',
+        'organization_id': 'openai',
+        'organization_name': 'OpenAI',
+    }
+
+    assert (
+        adapter.relationship_from_score(
+            {'source_url': 'https://openai.com/index/o3/', 'score': 0.8},
+            openai_model,
+        )
+        == 'first_party'
+    )
+    assert (
+        adapter.relationship_from_score(
+            {
+                'source_url': 'https://x.com/xai/status/1943158495588815072',
+                'score': 0.065,
+            },
+            openai_model,
+        )
+        == 'third_party'
+    )
+    assert (
+        adapter.relationship_from_score(
+            {'self_reported': False, 'score': 0.065},
+            openai_model,
+        )
+        == 'third_party'
+    )
+    assert (
+        adapter.relationship_from_score({'score': 0.065}, openai_model)
+        == 'other'
+    )
+
+
+def test_scores_from_live_benchmark_detail_handles_empty_model_id():
+    detail = {
+        'benchmark_id': 'gpqa',
+        'name': 'GPQA',
+        'models': [
+            {
+                'model_id': None,
+                'score': 0.936,
+            }
+        ],
+    }
+
+    scores = adapter.scores_from_benchmark_detail(detail)
+
+    assert scores[0]['id'] == 'gpqa::unknown'
+
+
+def test_benchmark_detail_result_keeps_valid_score_and_reports_bad_entry():
+    valid_entry = {
+        'model_id': 'gpt-5.5',
+        'model_name': 'GPT-5.5',
+        'score': 0.936,
+    }
+    bad_entry = {
+        'model_id': 'broken-model',
+        'model_name': 'Broken Model',
+    }
+    detail = {
+        'benchmark_id': 'gpqa',
+        'name': 'GPQA',
+        'models': [valid_entry, bad_entry],
+    }
+
+    result = adapter.scores_from_benchmark_detail_result(detail)
+
+    assert len(result.records) == 1
+    assert result.records[0]['model_id'] == 'gpt-5.5'
+    assert len(result.failures) == 1
+    assert result.failures[0].source_ref == "benchmark 'gpqa' score row 1"
+    assert result.failures[0].source_record == bad_entry
+
+
+def test_live_benchmark_scores_preserve_score_level_organization():
+    detail = {
+        'benchmark_id': 'gpqa',
+        'name': 'GPQA',
+        'models': [
+            {
+                'model_id': 'gpt-5.5',
+                'model_name': 'GPT-5.5',
+                'organization_id': 'openai',
+                'organization_name': 'OpenAI',
+                'score': 0.936,
+                'self_reported': True,
+                'self_reported_source': 'https://openai.com/index/introducing-gpt-5-5/',
+            }
+        ],
+    }
+    payload = {
+        'models': [],
+        'benchmarks': [],
+        'scores': adapter.scores_from_benchmark_detail(detail),
+    }
+
+    bundles = adapter.make_logs(payload, retrieved_timestamp='1234567890.0')
+
+    assert len(bundles) == 1
+    assert bundles[0].developer == 'openai'
+    assert bundles[0].model == 'gpt-5.5'
+    assert bundles[0].log.model_info.id == 'openai/gpt-5.5'
+
+
+def test_relationship_accepts_canonical_values_from_provenance_keys():
+    assert (
+        adapter.relationship_from_score({'relationship': 'collaborative'})
+        == 'collaborative'
+    )
+    assert (
+        adapter.relationship_from_score({'verification_tier': 'third_party'})
+        == 'third_party'
+    )
+
+
+def test_missing_model_and_benchmark_identity_fails_with_count():
+    payload = {
+        'models': [],
+        'benchmarks': [],
+        'scores': [{'score': 0.5}],
+    }
+
+    try:
+        adapter.make_logs(payload, retrieved_timestamp='1234567890.0')
+    except ValueError as exc:
+        assert (
+            'encountered 1 conversion issue(s) across 1 source record(s)'
+            in str(exc)
+        )
+        assert 'model identity is required' in str(exc)
+    else:
+        raise AssertionError('expected missing identities to fail')
