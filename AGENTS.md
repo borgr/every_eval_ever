@@ -28,6 +28,12 @@ convert external eval sources into it.
 - **Tests/lint**: add an offline, fixture-based `tests/test_<name>_adapter.py`, guard
   optional deps so the `core` CI matrix skips cleanly, and keep `ruff check` green —
   see the skill's `reference/verification.md` and `reference/gotchas.md` for the exact mechanics.
+- **Docstrings say what, not why-I-changed-it.** A docstring documents what the function
+  does and what a caller must know. Rationale for a change, what it replaced, and notes
+  aimed at a reviewer belong in the **PR description** — a maintainer reads that once,
+  instead of reading it every time they open the file. Where a future editor really would
+  break something, leave a one-line `#` comment at that line, not a paragraph in the
+  docstring. If it needs a paragraph, it needs the PR.
 - **Publish through the repo, not by hand**: `converters.common.publication.publish_evaluation_logs`
   writes records atomically; `SourceConversionResult` + `save_failure_report` + a non-zero
   exit account for every source row you could not convert.
