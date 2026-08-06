@@ -585,22 +585,7 @@ def _developer_prefix(model_id: Any) -> str | None:
     return model_id.split('/', 1)[0]
 
 
-def _collection_of(repo_path: str | None) -> str:
-    """Name the collection a record is filed under, so advice can cite it.
-
-    ``data/<collection>/<developer>/<model>/<file>``. Falls back to a generic
-    phrase, because a caller checking a record it has not written yet has no
-    path to give.
-    """
-    parts = PurePosixPath(repo_path).parts if repo_path else ()
-    if len(parts) >= 2 and parts[0] == 'data':
-        return f'{parts[1]!r}'
-    return 'this collection'
-
-
-def check_developer_slug(
-    data: dict[str, Any], repo_path: str | None = None
-) -> list[str]:
+def check_developer_slug(data: dict[str, Any]) -> list[str]:
     """Warn when two names for one publisher split its datastore directory.
 
     The datastore takes the publisher directory from ``model_info.id``'s
@@ -614,9 +599,13 @@ def check_developer_slug(
     ``mistralai``, ``glm`` for ``zai``). Not flagged: a canonical id, a
     HuggingFace namespace the registry records for one (``meta-llama`` is
     Meta), a case or punctuation variant of either, and any name the registry
-    has never seen. The message names every spelling in play and the collection
-    to match, but not a destination: the canonical id is an entity id, and in
-    this datastore it is regularly the rarer of the two spellings.
+    has never seen.
+
+    The message names every spelling in play but no destination. The canonical
+    id is an entity id and in this datastore it is regularly the rarer of the
+    two spellings, and which name is primary is one choice for the whole
+    datastore rather than per collection — most publishers under two names use
+    only one of them in any single collection.
 
     A warning, not an error — the records are published, the fix is a rename
     that changes join keys, and which name is primary is an editorial call.
@@ -647,7 +636,6 @@ def check_developer_slug(
     # model_info.developer when the id is flat. The other field still names the
     # publisher, so it is reported too — with the consequence it really has.
     directory_field = 'model_info.id' if prefix else 'model_info.developer'
-    collection = _collection_of(repo_path)
     warnings: list[str] = []
     for canonical, (locations, spellings) in declared.items():
         consequence = (
@@ -661,8 +649,9 @@ def check_developer_slug(
         found = '/'.join(repr(spelling) for spelling in sorted(spellings))
         warnings.append(
             f'{" and ".join(locations)}: {found} and {canonical!r} are the '
-            'same organization in the eval-card-registry. Use whichever '
-            f'spelling {collection} already uses — {consequence}'
+            'same organization in the eval-card-registry — '
+            f'{consequence}. Match how this organization is already filed '
+            'across the datastore; one collection is not enough to tell'
         )
     return warnings
 
@@ -791,7 +780,7 @@ def _aggregate_check_developer_slug(
 ) -> list[str]:
     if not isinstance(data, dict):
         return []
-    return check_developer_slug(data, context.repo_path)
+    return check_developer_slug(data)
 
 
 REGISTERED_CHECKS: tuple[ValidationCheck, ...] = (

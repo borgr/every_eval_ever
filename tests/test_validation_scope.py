@@ -681,24 +681,18 @@ def test_the_warning_names_both_spellings_without_choosing_one():
 
     assert "'zhipu'" in warning
     assert "'zai'" in warning
-    assert 'this collection already uses' in warning
 
 
-def test_the_warning_names_the_collection_it_says_to_match():
-    # Advice to match the collection is only actionable if it says which one.
+def test_the_warning_sends_the_reader_to_the_datastore_not_one_collection():
+    # Most publishers under two names use only one of them in any single
+    # collection, so advice to match the collection reads as "keep what you
+    # have" on the records this fires on.
     (warning,) = check_developer_slug(
-        {'model_info': {'id': 'mistral/mistral-large'}},
-        'data/alpaca_eval_v2/mistral/mistral-large/eval.json',
+        {'model_info': {'id': 'mistral/mistral-large'}}
     )
 
-    assert "spelling 'alpaca_eval_v2' already uses" in warning
-    # A caller checking a record it has not filed yet has no path to give.
-    for repo_path in (None, '', 'mistral/mistral-large/eval.json'):
-        (warning,) = check_developer_slug(
-            {'model_info': {'id': 'mistral/mistral-large'}}, repo_path
-        )
-
-        assert 'spelling this collection already uses' in warning, repo_path
+    assert 'across the datastore' in warning
+    assert 'one collection is not enough to tell' in warning
 
 
 def test_second_name_matching_ignores_case_and_punctuation():
