@@ -21,6 +21,15 @@ convert external eval sources into it.
 - Validate: `python -m every_eval_ever validate <files-or-glob>` (`.json`→aggregate,
   `.jsonl`→instance; directories are rejected).
 
+## Principles (tie-breakers, for when the conventions below don't decide)
+- **Report, don't interpret.** The job is the most correct data in a unified form. Record
+  what the source states; never infer or tidy a value to make a record look complete. An
+  unknown is data; a guess is corruption. If the source is ambiguous, ask in the PR.
+- **Prefer a check to an instruction.** If a test or a CI job can enforce a rule, add that
+  instead of writing the rule down — and delete the prose it replaces.
+- **Don't spend a contributor's attention on what a machine can verify.** No checklist
+  item for something CI could check.
+
 ## Conventions (non-negotiable)
 - **The schemas are the source of truth.** When a doc and a schema disagree, the schema wins.
 - **Validating ≠ correct.** Everything must pass `validate`, but spot-check *content*
