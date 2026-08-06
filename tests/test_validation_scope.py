@@ -643,7 +643,7 @@ def test_registry_second_name_used_as_developer_is_flagged():
 
     assert len(warnings) == 1
     assert warnings[0].startswith('model_info.developer:')
-    assert 'the same organization in the eval-card-registry' in warnings[0]
+    assert 'one organization in the eval-card-registry' in warnings[0]
     assert "'mistralai'" in warnings[0]
 
 
@@ -691,8 +691,8 @@ def test_the_warning_sends_the_reader_to_the_datastore_not_one_collection():
         {'model_info': {'id': 'mistral/mistral-large'}}
     )
 
-    assert 'across the datastore' in warning
-    assert 'one collection is not enough to tell' in warning
+    assert 'already filed datastore-wide' in warning
+    assert 'collection' not in warning
 
 
 def test_second_name_matching_ignores_case_and_punctuation():
@@ -814,7 +814,7 @@ def test_only_the_field_that_decides_the_directory_claims_the_split():
 
     assert 'two datastore directories' in directory
     assert 'two datastore directories' not in metadata
-    assert 'grouping records by developer' in metadata
+    assert 'grouping by developer' in metadata
 
 
 def test_developer_slug_drift_warns_without_failing_validation(tmp_path):
@@ -827,6 +827,6 @@ def test_developer_slug_drift_warns_without_failing_validation(tmp_path):
     assert report.valid is True
     assert report.errors == []
     assert any(
-        'the same organization in the eval-card-registry' in warning['msg']
+        'one organization in the eval-card-registry' in warning['msg']
         for warning in report.warnings
     )

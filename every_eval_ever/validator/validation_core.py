@@ -639,19 +639,17 @@ def check_developer_slug(data: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
     for canonical, (locations, spellings) in declared.items():
         consequence = (
-            'publishing under both puts one developer in two datastore '
-            'directories, and neither listing is complete'
+            'two datastore directories for one publisher, neither listing '
+            'complete'
             if directory_field in locations
-            else 'the id prefix decides the directory here, so this field '
-            'does not split it, but anything grouping records by developer '
-            'sees two publishers'
+            else 'the id prefix picks the directory here, so this field '
+            'splits none, but anything grouping by developer sees two'
         )
         found = '/'.join(repr(spelling) for spelling in sorted(spellings))
         warnings.append(
-            f'{" and ".join(locations)}: {found} and {canonical!r} are the '
-            'same organization in the eval-card-registry — '
-            f'{consequence}. Match how this organization is already filed '
-            'across the datastore; one collection is not enough to tell'
+            f'{" and ".join(locations)}: {found} and {canonical!r} are one '
+            f'organization in the eval-card-registry — {consequence}. Match '
+            'how it is already filed datastore-wide'
         )
     return warnings
 
