@@ -327,6 +327,24 @@ uv run python -m every_eval_ever.converters.alpaca_eval.refresh_hf_canonical_ids
 uv run python -m every_eval_ever.converters.alpaca_eval.refresh_hf_canonical_ids --check
 ```
 
+### What is stable across reruns
+
+Two runs over the same upstream ref produce the same `evaluation_id`s, the same
+output directories, and identical record contents — with two exceptions that are
+repo-wide conventions rather than adapter choices:
+
+- the **file name**, which is a fresh `uuid4()` per write. `helpers/io.py`
+  requires a v4 UUID (`require_uuid4`), so a name derived from the record's
+  content would have to either lie about its version or be a UUIDv5 the
+  validator rejects. Re-identifying a record uses `evaluation_id`, which *is*
+  content-derived and stable; deciding whether file names should be too is a
+  repo-wide convention change, not something for one adapter to do differently.
+- `retrieved_timestamp`, which is when the run fetched, one value per
+  leaderboard.
+
+So compare two runs on the record contents minus `retrieved_timestamp`, not
+byte-for-byte on the tree.
+
 ### Usage
 
 Convert both leaderboards (default):

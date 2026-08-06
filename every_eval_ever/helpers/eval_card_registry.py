@@ -14,9 +14,12 @@ to warn about. It answers four questions a source must not answer by hand:
   canonical org id.
 - whether a publisher name is a **second name** for an organization already in
   the registry (``Mistral`` for ``mistralai``, ``AI2`` for ``allenai``) rather
-  than an identity of its own. The datastore keys queries on
-  ``data/<collection>/<developer>/``, so one publisher under two names is two
-  directories and neither listing is complete — see :func:`second_name_of`.
+  than an identity of its own. The datastore gives each publisher one directory
+  (``data/<collection>/<publisher>/``, taken from the ``model_info.id``
+  namespace and from ``developer`` for an id without one — see
+  :func:`every_eval_ever.helpers.io.datastore_path_components`), so one
+  publisher under two names is two directories and neither listing is complete
+  — see :func:`second_name_of`.
 - the **metric** id and the score bounds that come with it. The registry's
   ``win-rate`` is declared on ``[0, 100]``, which is the scale the AlpacaEval
   leaderboard CSV already publishes, so this settles a question two prior
@@ -355,8 +358,9 @@ def second_name_of(slug: str) -> Optional[str]:
     A second name is a confirmed alias that is a genuinely **different** name
     for an organization the registry already knows: ``Mistral`` for
     ``mistralai``, ``AI2`` for ``allenai``, or a model family such as ``glm``
-    used where its publisher belongs. Two names for one publisher split its
-    datastore directory, so a caller that groups by publisher wants to know.
+    used where its publisher belongs. Two names for one publisher split it
+    across two datastore directories, so a caller that groups by publisher —
+    or warns a contributor about to create the second one — wants to know.
 
     ``None`` in the three cases where a name is *not* evidence of a split: a
     canonical id, a HuggingFace namespace the registry records for one
