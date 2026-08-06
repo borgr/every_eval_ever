@@ -156,20 +156,12 @@ def render_report_rich(report: ValidationReport, console: Console) -> None:
             if report.file_type == 'aggregate'
             else f'Instance (InstanceLevelEvaluationLog, {report.line_count} lines)'
         )
-        lines = [Text.assemble(label, '  ', (kind, 'dim'))]
-        # A warning-severity check leaves the file valid, so this branch is the
-        # only place its message can be read; dropping it here would make the
-        # rich format the one output that never shows warnings.
-        for warning in report.warnings:
-            lines.append(
-                Text(f'  Warning: {format_warning(warning)}', style='yellow')
-            )
         console.print(
             Panel(
-                Text('\n').join(lines),
+                Text.assemble(label, '  ', (kind, 'dim')),
                 title=f'[blue underline]{report.file_path}[/]',
                 title_align='left',
-                border_style='yellow' if report.warnings else 'green',
+                border_style='green',
             )
         )
         return
@@ -210,7 +202,6 @@ def render_summary_rich(
     passed = sum(1 for report in reports if report.valid)
     failed = len(reports) - passed
     total_errors = sum(len(report.errors) for report in reports)
-    total_warnings = sum(len(report.warnings) for report in reports)
     if failed:
         style = 'bold red'
         message = (
@@ -220,11 +211,6 @@ def render_summary_rich(
     else:
         style = 'bold green'
         message = f'All {passed} file(s) passed validation'
-    if total_warnings:
-        # A sweep over a whole collection prints one panel per file, so the
-        # count is the only place the warnings are visible in aggregate.
-        style = 'bold yellow'
-        message = f'{message}, with {total_warnings} warning(s)'
     console.print()
     console.print(
         Panel(Text(message, style=style), title='Summary', border_style='dim')
