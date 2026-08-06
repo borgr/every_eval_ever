@@ -279,6 +279,52 @@ uv run python -m every_eval_ever.converters.alpaca_eval.refresh_registry_snapsho
 uv run python -m every_eval_ever.converters.alpaca_eval.refresh_registry_snapshot --check
 ```
 
+### Repo ids
+
+The per-model configs are hand-written, and the leaderboards are from 2023-2024,
+so two things can make a repo id in them differ from the id HuggingFace serves
+today. Both are corrected after the identity ladder runs, and both only ever
+change *how a repo is spelled*, never *which* repo a record points at:
+
+- **Casing.** `01-ai/Yi-34b-Chat` in a `completions_kwargs` is the same repo as
+  `01-ai/Yi-34B-Chat` in a `link`, because repo ids are case-insensitive. A link
+  is a URL that resolved for whoever wrote it, so a link's spelling wins.
+- **Renames.** `WizardLM` was renamed to `WizardLMTeam`, `THUDM` to `zai-org`,
+  `cognitivecomputations` to `dphn`, and Meta dropped the `Meta-` prefix from
+  the Llama 3.1 repos. The old id still answers on HuggingFace via a redirect,
+  so nothing looks broken — but the datastore already holds records under the
+  current id from other sources, and a stale id silently fails to join with
+  them. `data/hf_canonical_ids.json` maps the referenced id to the current one,
+  and `model_id_as_referenced` on the published record keeps the spelling the
+  source used.
+
+A rename is only applied to identity rungs whose id **is** a repo id — a
+reference link (`hf_model_link`) or a repo id upstream recorded in
+`completions_kwargs` (`upstream_model_name`). The other rungs *construct* an id
+from an organization and a slug, and a constructed id that happens to collide
+with a real repo is not evidence that the repo is what ran: HuggingFace
+redirects `cohere/command-nightly` to `CohereLabs/Command-nightly`, but that row
+was served by Cohere's API under a rolling `-nightly` alias, so adopting the
+repo id would contradict the record's own `model_availability`.
+
+`developer` deliberately does **not** follow the new namespace. A redirect
+cannot tell an organization renaming itself from a repo being transferred to
+someone else, and the organization that published the evaluated model is the one
+the source names — the same `model_id`/`developer` duality that `meta-llama/…`
+published by `meta` already documents. Nor is a rename extrapolated to repos
+HuggingFace would not confirm: `WizardLM/WizardLM-13B-V1.1` and
+`WizardLMTeam/WizardLM-13B-V1.1` both answer `401`, so guessing the new
+namespace would publish an id that resolves nowhere.
+
+Refresh the map with (GET-only, unauthenticated — of 135 published repo ids the
+last sweep confirmed 124 and left 11 as the source spells them, since `401`
+conflates *gated* with *nonexistent*):
+
+```bash
+uv run python -m every_eval_ever.converters.alpaca_eval.refresh_hf_canonical_ids
+uv run python -m every_eval_ever.converters.alpaca_eval.refresh_hf_canonical_ids --check
+```
+
 ### Usage
 
 Convert both leaderboards (default):

@@ -28,13 +28,30 @@ Rungs, in order:
 
 Unresolvable rows return ``None`` so the caller can record a failure instead of
 inventing an identity.
+
+Two canonicalization steps run after the ladder, both correcting a repo id the
+source spells in a way HuggingFace does not:
+
+* **casing** — hand-typed repo ids are sometimes miscased
+  (``01-ai/Yi-34b-Chat``); a reference link is a URL that resolves, so a link's
+  spelling wins (:func:`canonical_repo_casing`).
+* **renames** — a repo that has since moved (``WizardLM`` was renamed to
+  ``WizardLMTeam``) still answers under its old id via a redirect, but that id
+  joins with nothing. The vendored :data:`HF_CANONICAL_NAME` map, refreshed by
+  ``refresh_hf_canonical_ids.py``, replaces it with the id HuggingFace serves
+  today and records the referenced spelling on the record.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Optional
+from functools import lru_cache
+from importlib import resources
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any, Dict, Iterable, Mapping, Optional
 from urllib.parse import urlparse
 
 from every_eval_ever.helpers.developer import get_developer, get_model_id
@@ -128,6 +145,27 @@ _HOSTED_FNS = {
 
 _NON_ALNUM = re.compile(r'[^a-z0-9]+')
 
+#: Identity rungs whose ``model_id`` **is** a HuggingFace repo id — taken from
+#: a reference link, or from a repo id upstream recorded in
+#: ``completions_kwargs``. Only these are looked up in the rename map. The other
+#: rungs *construct* an id from an organization and a slug (the Cohere-API row
+#: becomes ``cohere/command-nightly``), and a constructed id that happens to
+#: collide with a real repo is not evidence that the repo is what ran:
+#: HuggingFace redirects ``cohere/command-nightly`` to
+#: ``CohereLabs/Command-nightly``, but that row was served by Cohere's API under
+#: a rolling ``-nightly`` alias, so adopting the repo id would contradict the
+#: record's own ``model_availability``.
+HF_GROUNDED_SOURCES = frozenset({'hf_model_link', 'upstream_model_name'})
+
+HF_CANONICAL_NAME = 'hf_canonical_ids.json'
+
+#: Where ``refresh_hf_canonical_ids.py`` writes the rename map in a source
+#: checkout. Reading goes through :func:`hf_canonical_ids` so an installed or
+#: zipped package works too.
+HF_CANONICAL_PATH = (
+    Path(__file__).resolve().parent / 'data' / HF_CANONICAL_NAME
+)
+
 #: Reference links for entries whose upstream config omits ``link`` but whose
 #: upstream pull request states the developer. Keys are **exact** slugs (a
 #: substring rule here would misfire: ``-evo`` also matches
@@ -166,6 +204,11 @@ class ModelIdentity:
     #: Set when ``reference_link`` came from :data:`_LINK_EVIDENCE` rather than
     #: from the upstream config itself.
     link_evidence: Optional[str] = None
+    #: The repo id the source referenced, set only when it is no longer the id
+    #: HuggingFace serves and :func:`hf_canonical_ids` replaced it. The rewrite
+    #: is recoverable from ``reference_link`` too, but a consumer joining on ids
+    #: should not have to parse a URL to learn that an id was rewritten.
+    model_id_as_referenced: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -395,10 +438,42 @@ def canonical_repo_casing(configs: Iterable[Dict[str, Any]]) -> Dict[str, str]:
     return casing
 
 
+def hf_canonical_map(payload: Dict[str, Any]) -> Dict[str, str]:
+    """Extract the lookup map from a parsed ``hf_canonical_ids.json`` payload.
+
+    Keys are lowercased because a repo id is case-insensitive on HuggingFace,
+    so a differently-cased spelling of a renamed repo must still be caught.
+    """
+    renames = _mapping(payload).get('renamed_repos')
+    return {
+        key.lower(): value
+        for key, value in _mapping(renames).items()
+        if isinstance(key, str) and isinstance(value, str)
+    }
+
+
+@lru_cache(maxsize=1)
+def hf_canonical_ids() -> Mapping[str, str]:
+    """Return the vendored ``referenced repo id -> current repo id`` map.
+
+    Renames are vendored rather than resolved live for the same reason the
+    registry snapshot is: a conversion stays deterministic and needs no network,
+    and the map is reviewable in the diff. It is authoritative only as of its
+    ``retrieved_date`` — rerun ``refresh_hf_canonical_ids.py --check`` to see
+    whether HuggingFace has moved anything since.
+    """
+    resource = resources.files(
+        'every_eval_ever.converters.alpaca_eval'
+    ).joinpath('data', HF_CANONICAL_NAME)
+    payload = json.loads(resource.read_text(encoding='utf-8'))
+    return MappingProxyType(hf_canonical_map(payload))
+
+
 def resolve_identity(
     slug: str,
     config: Optional[Dict[str, Any]],
     casing: Optional[Dict[str, str]] = None,
+    hf_canonical: Optional[Mapping[str, str]] = None,
 ) -> Optional[ModelIdentity]:
     """Resolve one leaderboard slug against its upstream model config.
 
@@ -408,6 +483,9 @@ def resolve_identity(
             ``None`` when upstream has no config for the slug.
         casing: Optional output of :func:`canonical_repo_casing`, letting a row
             borrow a sibling entry's link as casing evidence (see below).
+        hf_canonical: ``referenced repo id -> current repo id`` overrides,
+            defaulting to the vendored :func:`hf_canonical_ids` map. Pass ``{}``
+            to publish repo ids exactly as the source spells them.
 
     Returns:
         A :class:`ModelIdentity`, or ``None`` when no rung applies (the caller
@@ -445,6 +523,7 @@ def resolve_identity(
     casing = dict(casing or {})
     if hf_repo:
         casing.setdefault(hf_repo.lower(), hf_repo)
+    renames = hf_canonical_ids() if hf_canonical is None else hf_canonical
 
     def _identity(
         model_id: str, developer: str, source: str
@@ -453,6 +532,21 @@ def resolve_identity(
         if canonical and canonical != model_id:
             model_id = canonical
             developer = canonical.split('/')[0]
+
+        # A renamed repo redirects on HuggingFace, so the old id still *works*
+        # while joining with nothing — the datastore already holds records
+        # under the current id from other sources. ``developer`` deliberately
+        # does not follow the new namespace: an HTTP redirect cannot tell an
+        # organization renaming itself from a repo being transferred to someone
+        # else, and the organization that published the evaluated model is the
+        # one the source names. That divergence is the one ``meta-llama/…``
+        # published by ``meta`` already documents.
+        referenced = None
+        if source in HF_GROUNDED_SOURCES:
+            current = renames.get(model_id.lower())
+            if current and current != model_id:
+                referenced, model_id = model_id, current
+
         return ModelIdentity(
             slug=slug,
             model_id=model_id,
@@ -466,6 +560,7 @@ def resolve_identity(
             pretty_name=pretty if isinstance(pretty, str) else None,
             upstream_model_name=model_name or None,
             link_evidence=link_evidence,
+            model_id_as_referenced=referenced,
         )
 
     # 0. A hosting provider's namespace and spelling are not the model's

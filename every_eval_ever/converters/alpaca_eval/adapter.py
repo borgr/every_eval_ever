@@ -583,12 +583,14 @@ def _model_info(
 ) -> ModelInfo:
     """Assemble ``model_info``, with the registry naming the organization.
 
-    ``id`` keeps the prefix the source gives it, because that is the repo id
-    that resolves on HuggingFace; ``developer`` carries the registry's canonical
-    organization id, which is a different string by design (``meta-llama/…``
-    published by ``meta``, ``Qwen/…`` by ``alibaba``). Both spellings identify
-    the same organization, so the prefix is kept in ``additional_details``
-    rather than overwritten.
+    ``id`` is the repo id that resolves on HuggingFace today; ``developer``
+    carries the registry's canonical organization id, which is a different
+    string by design (``meta-llama/…`` published by ``meta``, ``Qwen/…`` by
+    ``alibaba``). Both spellings identify the same organization, so the id's
+    prefix is kept in ``additional_details`` rather than overwritten. When a repo
+    has been renamed the two can also disagree on the *organization*
+    (``WizardLMTeam/…`` published by ``wizardlm``); ``model_id_as_referenced``
+    then records the spelling the source used.
     """
     engine = (
         InferenceEngine(name=resolved.inference_engine)
@@ -608,9 +610,10 @@ def _model_info(
                 'deployment_type': resolved.deployment_type,
                 'model_availability': resolved.model_availability,
                 'identity_source': resolved.identity_source,
-                'model_id_prefix': resolved.developer,
+                'model_id_prefix': resolved.model_id.split('/')[0],
                 **developer.provenance('developer'),
                 'leaderboard_slug': resolved.slug,
+                'model_id_as_referenced': resolved.model_id_as_referenced,
                 'pretty_name': resolved.pretty_name,
                 'upstream_model_name': resolved.upstream_model_name,
                 'upstream_config_url': blob_url(

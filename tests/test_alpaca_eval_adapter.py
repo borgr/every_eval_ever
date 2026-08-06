@@ -126,6 +126,19 @@ _MODEL_CONFIGS = {
         'pretty_name': 'Llama 3 70B Instruct',
         'link': 'https://huggingface.co/meta-llama/Meta-Llama-3-70B-Instruct',
     },
+    # Ran from a local checkout, so only the link names the repo — and that repo
+    # has since been renamed (``WizardLM`` -> ``WizardLMTeam``).
+    'wizardlm-13b-v1.2': {
+        'prompt_template': 'wizardlm-13b/prompt.txt',
+        'fn_completions': 'huggingface_local_completions',
+        'completions_kwargs': {
+            'model_name': './wizardlm_13b-v1.2',
+            'max_new_tokens': 4096,
+            'temperature': 0.7,
+        },
+        'pretty_name': 'WizardLM 13B V1.2',
+        'link': 'https://huggingface.co/WizardLM/WizardLM-13B-V1.2',
+    },
     'vicuna-7b': {
         'prompt_template': 'vicuna-7b/prompt.txt',
         'fn_completions': 'huggingface_local_completions',
@@ -722,6 +735,112 @@ def test_identity_casing_map_does_not_rename_a_different_repo():
     )
 
     assert resolved.model_id == 'allenai/tulu-2-dpo-13b'
+
+
+# ---------------------------------------------------------------------------
+# HuggingFace repo renames
+# ---------------------------------------------------------------------------
+
+
+def test_renamed_repo_is_published_under_the_id_hf_serves_today():
+    """A stale id still redirects on HuggingFace but joins with nothing."""
+    config = {
+        'completions_kwargs': {'model_name': 'WizardLM/WizardLM-70B-V1.0'},
+        'link': 'https://huggingface.co/WizardLM/WizardLM-70B-V1.0',
+    }
+    resolved = identity_mod.resolve_identity('wizardlm-70b', config)
+
+    assert resolved.model_id == 'WizardLMTeam/WizardLM-70B-V1.0'
+    # The organization the source names is the one that published the model; an
+    # HTTP redirect cannot tell a rename from a transfer, so `developer` stays.
+    assert resolved.developer == 'WizardLM'
+    assert resolved.model_id_as_referenced == 'WizardLM/WizardLM-70B-V1.0'
+
+
+def test_rename_lookup_is_case_insensitive_like_huggingface():
+    config = {'link': 'https://huggingface.co/thudm/chatglm2-6b'}
+    resolved = identity_mod.resolve_identity('chatglm2-6b', config)
+
+    assert resolved.model_id == 'zai-org/chatglm2-6b'
+
+
+def test_renames_can_be_switched_off_for_verbatim_source_ids():
+    config = {
+        'completions_kwargs': {'model_name': 'WizardLM/WizardLM-70B-V1.0'},
+        'link': 'https://huggingface.co/WizardLM/WizardLM-70B-V1.0',
+    }
+    resolved = identity_mod.resolve_identity(
+        'wizardlm-70b', config, hf_canonical={}
+    )
+
+    assert resolved.model_id == 'WizardLM/WizardLM-70B-V1.0'
+    assert resolved.model_id_as_referenced is None
+
+
+def test_a_constructed_id_is_never_canonicalized_against_huggingface():
+    """``cohere/command-nightly`` is a constructed id, not a repo id.
+
+    HuggingFace redirects it to ``CohereLabs/Command-nightly``, but this row was
+    served by Cohere's API under a rolling alias. Adopting the repo id would
+    assert an equivalence nobody checked and contradict the record's own
+    ``model_availability: closed_weights``.
+    """
+    config = {
+        'fn_completions': 'cohere_completions',
+        'completions_kwargs': {'model_name': 'command-nightly'},
+    }
+    renames = {'cohere/command-nightly': 'CohereLabs/Command-nightly'}
+    resolved = identity_mod.resolve_identity(
+        'cohere', config, hf_canonical=renames
+    )
+
+    assert resolved.identity_source == 'vendor_api'
+    assert resolved.model_id == 'cohere/command-nightly'
+    assert resolved.model_id_as_referenced is None
+
+
+def test_rename_map_is_a_fixed_point():
+    """Applying the map twice must change nothing.
+
+    A value that is also a key would mean a chained rename, so which id gets
+    published would depend on iteration order.
+    """
+    renames = identity_mod.hf_canonical_ids()
+
+    assert renames
+    assert all(key == key.lower() for key in renames)
+    assert not set(renames.values()) & set(renames)
+
+
+def test_rename_map_is_pinned_to_the_upstream_ref_it_was_built_from():
+    """The map's keys are ids *this* upstream ref publishes.
+
+    Moving the pinned ref changes the set of ids, so the map has to be refreshed
+    with it — otherwise a new stale id is published with no signal that anything
+    was missed.
+    """
+    payload = json.loads(
+        identity_mod.HF_CANONICAL_PATH.read_text(encoding='utf-8')
+    )
+
+    assert payload['_meta']['upstream_ref'] == DEFAULT_UPSTREAM_REF
+    assert payload['_meta']['retrieved_date']
+    assert payload['_meta']['counts']['renamed'] == len(
+        payload['renamed_repos']
+    )
+
+
+def test_published_record_reports_the_namespace_and_the_referenced_id():
+    row = dict(_V2_ROW, **{'': 'wizardlm-13b-v1.2'})
+    log = _adapter(v2_rows=[row]).fetch_leaderboard('v2')[0]
+    details = log.model_info.additional_details
+
+    assert log.model_info.id == 'WizardLMTeam/WizardLM-13B-V1.2'
+    assert details['model_id_prefix'] == 'WizardLMTeam'
+    assert details['model_id_as_referenced'] == 'WizardLM/WizardLM-13B-V1.2'
+    # The registry canonicalizes the organization the source named, not the
+    # namespace the repo has since moved to.
+    assert log.model_info.developer == 'wizardlm'
 
 
 # ---------------------------------------------------------------------------
