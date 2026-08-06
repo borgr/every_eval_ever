@@ -268,15 +268,17 @@ speaks the same vocabulary as the rest of EEE:
   and say so through `*_registry_strategy` in `additional_details`. The CLI
   prints the current gap list on every run.
 
-Resolution reads a vendored snapshot of the registry's read-only list endpoints
-(`data/registry_snapshot.json`) rather than `POST /resolve`, which defaults to
-`mode="resolve"` and auto-creates a draft canonical for anything it cannot
-place — bulk-resolving a leaderboard that way would write to a shared registry
-as a side effect of a read-only conversion. Refresh the snapshot with:
+Resolution goes through `helpers/eval_card_registry.py`, which every consumer in
+this repo shares, and it reads a vendored snapshot of the registry's read-only
+list endpoints (`helpers/data/eval_card_registry.json`) rather than
+`POST /resolve` — that endpoint defaults to `mode="resolve"` and auto-creates a
+draft canonical for anything it cannot place, so bulk-resolving a leaderboard
+would write to a shared registry as a side effect of a read-only conversion.
+Refresh the snapshot with:
 
 ```bash
-uv run python -m every_eval_ever.converters.alpaca_eval.refresh_registry_snapshot
-uv run python -m every_eval_ever.converters.alpaca_eval.refresh_registry_snapshot --check
+uv run python -m every_eval_ever.tools.refresh_eval_card_registry
+uv run python -m every_eval_ever.tools.refresh_eval_card_registry --check
 ```
 
 ### Repo ids

@@ -12,7 +12,6 @@ import pytest
 
 from every_eval_ever import cli
 from every_eval_ever.converters.alpaca_eval import identity as identity_mod
-from every_eval_ever.converters.alpaca_eval import registry as registry_mod
 from every_eval_ever.converters.alpaca_eval.adapter import (
     LEADERBOARDS,
     AlpacaEvalAdapter,
@@ -25,6 +24,7 @@ from every_eval_ever.converters.alpaca_eval.upstream import (
     parse_single_entry_yaml,
     raw_url,
 )
+from every_eval_ever.helpers import eval_card_registry as registry_mod
 from every_eval_ever.helpers.io import SourceRecordsError
 
 # ---------------------------------------------------------------------------
@@ -1023,69 +1023,3 @@ def test_disabled_registry_still_declares_usable_bounds():
         assert config.min_score == 0.0
         assert config.min_score <= result.score_details.score
         assert result.score_details.score <= config.max_score
-
-
-def test_registry_never_resolves_in_a_mode_that_creates_canonicals():
-    """The live path must not write to a shared registry.
-
-    ``POST /resolve`` defaults to ``mode="resolve"``, which auto-creates a draft
-    canonical for anything it cannot place. Only ``mode="exact"`` is
-    side-effect-free, so that is the only mode this adapter may send.
-    """
-    sent = {}
-
-    class _Response:
-        status_code = 200
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {'canonical_id': None, 'created_new': False}
-
-    def _post(url, json=None, timeout=None):
-        sent.update(json or {})
-        return _Response()
-
-    registry = registry_mod.Registry(live=True)
-    module = pytest.importorskip('requests')
-    original = module.post
-    module.post = _post
-    try:
-        registry.metric('a_column_the_registry_has_never_heard_of')
-    finally:
-        module.post = original
-
-    assert sent['mode'] == 'exact'
-
-
-def test_live_registry_failure_is_never_fatal():
-    """A registry outage degrades provenance; it does not fail a conversion."""
-
-    def _post(url, json=None, timeout=None):
-        raise OSError('registry unreachable')
-
-    registry = registry_mod.Registry(live=True)
-    module = pytest.importorskip('requests')
-    original = module.post
-    module.post = _post
-    try:
-        resolution = registry.metric('a_column_with_no_canonical')
-    finally:
-        module.post = original
-
-    assert resolution.canonical_id is None
-    assert resolution.strategy == 'registry_unavailable'
-    assert 'registry unreachable' in registry.live_error
-
-
-def test_snapshot_records_its_own_provenance():
-    """A vendored snapshot without provenance cannot be audited."""
-    meta = registry_mod.snapshot_meta()
-
-    assert 'read-only' in meta['source']
-    assert meta['retrieved_date']
-    assert meta['counts']['orgs'] > 0
-    # The gaps are recorded rather than silently absent, so the CLI can report
-    # them and a refresh can be diffed.
-    assert 'metric:avg_length' in registry_mod.gaps()

@@ -376,8 +376,8 @@ def _cmd_convert_alpaca_eval(args: argparse.Namespace) -> int:
         LEADERBOARDS,
         AlpacaEvalAdapter,
     )
-    from every_eval_ever.converters.alpaca_eval.registry import Registry, gaps
     from every_eval_ever.converters.alpaca_eval.upstream import UpstreamSnapshot
+    from every_eval_ever.helpers.eval_card_registry import Registry, gaps
 
     snapshot = None
     if args.input_json:

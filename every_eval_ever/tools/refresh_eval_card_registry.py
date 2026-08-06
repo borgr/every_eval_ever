@@ -1,21 +1,30 @@
-"""Refresh the vendored eval-card-registry snapshot this adapter resolves against.
+"""Refresh the vendored eval-card-registry snapshot this repo resolves against.
 
 Run by a maintainer, not by tests or CI::
 
-    uv run python -m every_eval_ever.converters.alpaca_eval.refresh_registry_snapshot
+    uv run python -m every_eval_ever.tools.refresh_eval_card_registry
 
 The registry (``https://evaleval-entity-registry.hf.space``) is the shared
 canonicalization service for EEE. This script reads its **read-only list
 endpoints** and writes the snapshot that
-:mod:`every_eval_ever.converters.alpaca_eval.registry` loads offline, so a
-conversion is deterministic, needs no network, and cannot write to a shared
+:mod:`every_eval_ever.helpers.eval_card_registry` loads offline, so a conversion
+or a validation is deterministic, needs no network, and cannot write to a shared
 registry as a side effect of reading it.
 
 That last point is not hypothetical: ``POST /api/v1/resolve`` defaults to
 ``mode="resolve"``, which **auto-creates a draft canonical** for anything it
 cannot place, so bulk-resolving a leaderboard would silently add hundreds of
-draft models. Only ``mode="exact"`` is side-effect-free, and the adapter's
-opt-in live path uses it (see ``registry.py``). This script sticks to GETs.
+draft models. Only ``mode="exact"`` is side-effect-free, and the converter's
+opt-in live path uses it (see ``helpers/eval_card_registry.py``). This script
+sticks to GETs.
+
+The snapshot is **derived**, not a verbatim mirror: it is the vocabulary a
+consumer needs, keyed the way a consumer looks things up. Organizations come out
+whole, because any source can publish any organization; metrics, benchmarks and
+harnesses are keyed by the spellings the converters actually ask about
+(:data:`METRIC_QUERIES` and friends), because a query the registry has no
+canonical for has to be recorded as a known gap rather than mistaken for a stale
+snapshot.
 
 ``--check`` verifies the committed snapshot still matches the registry without
 writing anything, so drift can be caught in review.
@@ -28,11 +37,11 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 
-from every_eval_ever.converters.alpaca_eval.registry import (
+from every_eval_ever.helpers.eval_card_registry import (
     SNAPSHOT_PATH,
     normalize,
     snapshot_gaps,
@@ -41,9 +50,10 @@ from every_eval_ever.converters.alpaca_eval.registry import (
 REGISTRY_BASE_URL = 'https://evaleval-entity-registry.hf.space'
 REQUEST_TIMEOUT = 180
 
-#: Metric column names this adapter publishes, in the spelling the leaderboard
-#: CSV uses. Only ``win_rate`` has a canonical entry today; the rest are
-#: recorded as gaps so the adapter can say so rather than guess.
+#: Metric names the converters look up, in the spelling their source uses. The
+#: registry matches punctuation-insensitively, so one spelling per distinct name
+#: is enough; a source adding a name it needs adds it here. All four are
+#: AlpacaEval's leaderboard columns today.
 METRIC_QUERIES = (
     'win_rate',
     'length_controlled_winrate',
@@ -51,10 +61,10 @@ METRIC_QUERIES = (
     'avg_length',
 )
 
-#: Benchmark names to look for, per leaderboard version.
+#: Benchmark names the converters look up. AlpacaEval's two leaderboards.
 BENCHMARK_QUERIES = ('AlpacaEval 1.0', 'AlpacaEval 2.0')
 
-#: Harness name of the upstream library.
+#: Harness names the converters look up.
 HARNESS_QUERIES = ('alpaca_eval',)
 
 
@@ -121,47 +131,114 @@ def _named_entry(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def build_snapshot(base_url: str = REGISTRY_BASE_URL) -> Dict[str, Any]:
-    """Derive the offline vocabulary from the registry's list endpoints."""
-    orgs = _get('orgs', base_url)
-    org_aliases = _get('aliases', base_url, entity_type='org')
-    metrics = _get('metrics', base_url)
-    benchmarks = _get('benchmarks', base_url)
-    harnesses = _get('harnesses', base_url)
+def org_identities(orgs: List[Dict[str, Any]]) -> Dict[str, str]:
+    """``normalized spelling -> canonical org id`` for every name of record.
 
-    # ``hf_org`` is how a canonical org id reaches the HuggingFace namespace
-    # models are actually published under (``meta`` -> ``meta-llama``,
-    # ``alibaba`` -> ``qwen``, ``zai`` -> ``zai-org``). Both spellings are real
-    # identities for the same organization, so the adapter needs the mapping in
-    # both directions: the namespace is the model id prefix, the canonical id is
-    # ``model_info.developer``.
+    ``hf_org`` is how a canonical org id reaches the HuggingFace namespace
+    models are actually published under (``meta`` -> ``meta-llama``, ``alibaba``
+    -> ``qwen``, ``zai`` -> ``zai-org``). Both spellings are real identities for
+    the same organization, so a consumer needs the mapping in both directions:
+    the namespace is the model id prefix, the canonical id is
+    ``model_info.developer``.
+
+    Canonical ids are read in sorted order and win over namespaces, so a
+    spelling two organizations both answer to resolves the same way on every
+    refresh. Four such collisions exist today, all between a canonical id and
+    its own differently-punctuated twin (``DeepAuto-AI``/``deepautoai``), plus
+    ``ai21``'s ``ai21labs`` namespace against the ``ai21-labs`` canonical id.
+    """
     identities: Dict[str, str] = {}
-    review_status: Dict[str, str] = {}
-    for record in orgs:
+    for record in sorted(orgs, key=lambda record: str(record.get('id', ''))):
         org_id = record.get('id')
-        if not isinstance(org_id, str) or not normalize(org_id):
-            continue
-        identities[normalize(org_id)] = org_id
-        if record.get('review_status'):
-            review_status[org_id] = record['review_status']
-    for record in orgs:
+        if isinstance(org_id, str) and normalize(org_id):
+            identities.setdefault(normalize(org_id), org_id)
+    for record in sorted(orgs, key=lambda record: str(record.get('id', ''))):
         namespace, org_id = record.get('hf_org'), record.get('id')
         if isinstance(namespace, str) and isinstance(org_id, str):
-            identities.setdefault(normalize(namespace), org_id)
+            if normalize(namespace):
+                identities.setdefault(normalize(namespace), org_id)
+    return identities
 
-    # Only confirmed aliases, and only where they add a spelling the identities
-    # above do not already cover — an unconfirmed alias is a guess, and this
-    # snapshot is used to *decide* a published developer id.
-    aliases: Dict[str, str] = {}
+
+def org_second_names(
+    org_aliases: List[Dict[str, Any]], identities: Dict[str, str]
+) -> Dict[str, str]:
+    """``normalized alias -> canonical org id``, for genuinely other names.
+
+    Four rules, and every one of them drops toward silence — this vocabulary
+    decides a *published* developer id and holds back a validator warning, so a
+    wrong entry is worse than a missing one:
+
+    - **Confirmed only.** An unconfirmed alias is the registry's guess.
+    - **The alias must point at an organization the registry lists.** An alias
+      naming a canonical id that no longer exists is stale, not a second name.
+    - **An identity wins.** A spelling that normalizes onto a canonical id or a
+      recorded namespace is dropped, whether it lands on *its own* organization
+      (``Mistral AI`` for ``mistralai`` — no information) or on a different one.
+      The second case is the one that matters: the registry has ``ai21-labs`` as
+      its own canonical id while confirming ``AI21 Labs`` as an alias of
+      ``ai21``, so keeping the alias would claim a spelling another organization
+      already answers to. Six publishers are in that position today
+      (``ai21``/``ai21-labs``, ``ibm``/``ibm-granite``,
+      ``inception``/``inceptionlabs``, ``LGAI-EXAONE``/``lg-ai``,
+      ``internlm``/``shanghai-ai-lab``, ``LiquidAI``/``liquid``). Until the
+      registry settles which id is primary, saying nothing cannot be wrong.
+    - **One organization per normalized spelling.** Aliases that disagree about
+      the organization are dropped as ambiguous rather than resolved by
+      whichever the endpoint returned first.
+    """
+    listed = set(identities.values())
+    by_key: Dict[str, Tuple[str, str]] = {}
+    ambiguous = set()
     for record in org_aliases:
         raw, canonical = record.get('raw_value'), record.get('canonical_id')
         if record.get('status') != 'confirmed':
             continue
-        if not isinstance(raw, str) or not isinstance(canonical, str):
+        if not isinstance(raw, str) or canonical not in listed:
             continue
         key = normalize(raw)
-        if key and key not in identities:
-            aliases.setdefault(key, canonical)
+        if not key or key in identities:
+            continue
+        seen = by_key.get(key)
+        if seen is not None:
+            if seen[1] != canonical:
+                ambiguous.add(key)
+            # One spelling per normalized form; the lexicographically smallest
+            # is arbitrary but stable, so a refresh diffs cleanly.
+            if seen[0] <= raw.strip():
+                continue
+        by_key[key] = (raw.strip(), canonical)
+    return {
+        key: canonical
+        for key, (_, canonical) in by_key.items()
+        if key not in ambiguous
+    }
+
+
+def org_review_status(orgs: List[Dict[str, Any]]) -> Dict[str, str]:
+    """``canonical org id -> review_status``, for ids that declare one.
+
+    Travels with the vocabulary so a consumer can tell a ``reviewed``
+    organization from one the registry auto-created as a ``draft``.
+    """
+    return {
+        record['id']: record['review_status']
+        for record in orgs
+        if isinstance(record.get('id'), str) and record.get('review_status')
+    }
+
+
+def build_snapshot(base_url: str = REGISTRY_BASE_URL) -> Dict[str, Any]:
+    """Derive the offline vocabulary from the registry's list endpoints."""
+    orgs = _get('orgs', base_url)
+    aliases = _get('aliases', base_url, entity_type='org')
+    metrics = _get('metrics', base_url)
+    benchmarks = _get('benchmarks', base_url)
+    harnesses = _get('harnesses', base_url)
+
+    identities = org_identities(orgs)
+    second_names = org_second_names(aliases, identities)
+    review_status = org_review_status(orgs)
 
     return {
         '_meta': {
@@ -175,8 +252,12 @@ def build_snapshot(base_url: str = REGISTRY_BASE_URL) -> Dict[str, Any]:
             ],
             'note': (
                 'Vendored snapshot of eval-card-registry canonical entries. '
-                'Regenerate with refresh_registry_snapshot.py. Do not edit by '
-                'hand. Authoritative at snapshot time: entries added to the '
+                'Regenerate with '
+                'python -m every_eval_ever.tools.refresh_eval_card_registry. '
+                'Do not edit by hand. Derived, not a verbatim mirror: org '
+                'spellings are normalized, and an alias is dropped when it '
+                'restates an identity or points at two organizations. '
+                'Authoritative at snapshot time: entries added to the '
                 'registry later resolve here only after a refresh.'
             ),
             'retrieved_date': datetime.now(timezone.utc)
@@ -184,7 +265,7 @@ def build_snapshot(base_url: str = REGISTRY_BASE_URL) -> Dict[str, Any]:
             .isoformat(),
             'counts': {
                 'orgs': len(orgs),
-                'org_aliases_confirmed': len(aliases),
+                'org_aliases_confirmed': len(second_names),
                 'org_identities': len(identities),
                 'metrics': len(metrics),
                 'benchmarks': len(benchmarks),
@@ -192,7 +273,7 @@ def build_snapshot(base_url: str = REGISTRY_BASE_URL) -> Dict[str, Any]:
             },
         },
         'org_identities': dict(sorted(identities.items())),
-        'org_aliases': dict(sorted(aliases.items())),
+        'org_aliases': dict(sorted(second_names.items())),
         'org_review_status': dict(sorted(review_status.items())),
         'metrics': {
             query: (_metric_entry(record) if record else None)

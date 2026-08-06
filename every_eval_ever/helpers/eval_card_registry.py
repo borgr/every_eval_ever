@@ -1,8 +1,9 @@
 """Canonical ids from the eval-card-registry, resolved offline.
 
 The registry (``https://evaleval-entity-registry.hf.space``) is the shared
-canonicalization service for EEE, and it is how this adapter decides three
-things it must not decide by hand:
+canonicalization service for EEE, and this module is how anything in this repo
+reads it — converters deciding what to publish, and the validator deciding what
+to warn about. It answers four questions a source must not answer by hand:
 
 - ``model_info.developer`` — the canonical **organization** id. The registry
   distinguishes the organization from the HuggingFace namespace its models are
@@ -11,11 +12,17 @@ things it must not decide by hand:
   organization rather than drift. So ``model_info.id`` keeps the namespace,
   because that is the repo id that resolves, and ``developer`` carries the
   canonical org id.
+- whether a publisher name is a **second name** for an organization already in
+  the registry (``Mistral`` for ``mistralai``, ``AI2`` for ``allenai``) rather
+  than an identity of its own. The datastore keys queries on
+  ``data/<collection>/<developer>/``, so one publisher under two names is two
+  directories and neither listing is complete — see :func:`second_name_of`.
 - the **metric** id and the score bounds that come with it. The registry's
-  ``win-rate`` is declared on ``[0, 100]``, which is the scale the leaderboard
-  CSV already publishes, so this settles a question the two prior
-  implementations answered differently.
-- the **benchmark** id, for the evaluation name.
+  ``win-rate`` is declared on ``[0, 100]``, which is the scale the AlpacaEval
+  leaderboard CSV already publishes, so this settles a question two prior
+  implementations of that converter answered differently.
+- the **benchmark** and **harness** ids, for the evaluation name and the
+  library that produced it.
 
 Resolution reads a vendored snapshot of the registry's read-only list
 endpoints (:data:`SNAPSHOT_PATH`), not its ``/resolve`` endpoint. That is a
@@ -24,8 +31,9 @@ easy to verify: ``POST /api/v1/resolve`` defaults to ``mode="resolve"``, which
 **auto-creates a draft canonical** for any value it cannot place. Resolving 226
 leaderboard rows that way would add hundreds of draft models to a shared
 registry as a side effect of a read-only conversion, and the registry is already
-18157 draft models to 5298 reviewed ones. Reading a snapshot is deterministic,
-needs no network, and cannot write.
+18157 draft models to 5298 reviewed ones. A validator calling it would be worse:
+checking a file would write to a shared registry. Reading a snapshot is
+deterministic, needs no network, and cannot write.
 
 ``--registry-live`` opts into a live check anyway, and uses ``mode="exact"``,
 which is the one mode that resolves without creating anything. It is never
@@ -34,7 +42,7 @@ back to the source-derived spelling marked unverified, so a registry outage
 degrades provenance instead of blocking a conversion.
 
 Refresh the snapshot with
-``python -m every_eval_ever.converters.alpaca_eval.refresh_registry_snapshot``.
+``python -m every_eval_ever.tools.refresh_eval_card_registry``.
 """
 
 from __future__ import annotations
@@ -48,11 +56,11 @@ from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
 REGISTRY_BASE_URL = 'https://evaleval-entity-registry.hf.space'
 
-SNAPSHOT_NAME = 'registry_snapshot.json'
+SNAPSHOT_NAME = 'eval_card_registry.json'
 
-#: Where :mod:`refresh_registry_snapshot` writes the snapshot in a source
-#: checkout. Reading goes through :func:`load_snapshot` so an installed or
-#: zipped package works too.
+#: Where :mod:`every_eval_ever.tools.refresh_eval_card_registry` writes the
+#: snapshot in a source checkout. Reading goes through :func:`load_snapshot` so
+#: an installed or zipped package works too.
 SNAPSHOT_PATH = Path(__file__).resolve().parent / 'data' / SNAPSHOT_NAME
 
 #: Only this mode resolves without creating a draft canonical.
@@ -73,9 +81,11 @@ def normalize(value: str) -> str:
     """Collapse a name to its punctuation-insensitive identity.
 
     ``win_rate``, ``Win Rate`` and ``win-rate`` normalize alike, which is what
-    lets a leaderboard column name find a canonical id. The registry's own ids
-    are inconsistent about punctuation and case, so treating those differences
-    as meaningful would produce noise rather than signal.
+    lets a leaderboard column name find a canonical id; so do ``moonshot-ai``,
+    ``Moonshot AI`` and ``moonshotai``. The registry's own ids are inconsistent
+    about punctuation and case (it aims for HuggingFace-true casing, and
+    HuggingFace is not consistent either), so treating those differences as
+    meaningful would produce noise rather than signal.
     """
     if not isinstance(value, str):
         return ''
@@ -84,9 +94,9 @@ def normalize(value: str) -> str:
 
 def load_snapshot() -> Dict[str, Any]:
     """Return the bundled registry snapshot as parsed JSON."""
-    resource = resources.files(
-        'every_eval_ever.converters.alpaca_eval'
-    ).joinpath('data', SNAPSHOT_NAME)
+    resource = resources.files('every_eval_ever.helpers').joinpath(
+        'data', SNAPSHOT_NAME
+    )
     return json.loads(resource.read_text(encoding='utf-8'))
 
 
@@ -337,3 +347,37 @@ def gaps() -> List[str]:
 def iter_org_identities() -> Iterable[Tuple[str, str]]:
     """(normalized spelling, canonical org id) pairs, for tests and tooling."""
     return _snapshot()['org_identities'].items()
+
+
+def second_name_of(slug: str) -> Optional[str]:
+    """Return the canonical org id when ``slug`` is a *second name* for it.
+
+    A second name is a confirmed alias that is a genuinely **different** name
+    for an organization the registry already knows: ``Mistral`` for
+    ``mistralai``, ``AI2`` for ``allenai``, or a model family such as ``glm``
+    used where its publisher belongs. Two names for one publisher split its
+    datastore directory, so a caller that groups by publisher wants to know.
+
+    ``None`` in the three cases where a name is *not* evidence of a split: a
+    canonical id, a HuggingFace namespace the registry records for one
+    (``meta-llama`` is Meta), and a spelling the registry has never seen — no
+    opinion rather than a guess.
+
+    This is the read-side counterpart of :meth:`Registry.org`, which answers
+    "what should this be called" for a converter. Here the question is only
+    "is this a second name", so an identity gets ``None`` rather than itself.
+    """
+    if not isinstance(slug, str):
+        return None
+    key = normalize(slug)
+    if not key:
+        return None
+    snapshot = _snapshot()
+    # The snapshot builder already drops an alias that normalizes onto an
+    # identity, so this check is redundant against a snapshot it wrote. It is
+    # kept because the guarantee belongs to this function: a caller uses the
+    # answer to warn a contributor, and a hand-edited or older snapshot must
+    # not be able to turn a canonical id into a "second name".
+    if key in snapshot['org_identities']:
+        return None
+    return snapshot['org_aliases'].get(key)

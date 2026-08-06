@@ -18,7 +18,6 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from every_eval_ever.converters import SCHEMA_VERSION
 from every_eval_ever.converters.alpaca_eval import identity as identity_mod
-from every_eval_ever.converters.alpaca_eval import registry as registry_mod
 from every_eval_ever.converters.alpaca_eval.upstream import (
     DEFAULT_UPSTREAM_REF,
     UPSTREAM_REPO,
@@ -52,6 +51,7 @@ from every_eval_ever.eval_types import (
     StandardError,
     Uncertainty,
 )
+from every_eval_ever.helpers import eval_card_registry as registry_mod
 from every_eval_ever.helpers.io import (
     SourceConversionResult,
     SourceRecordExclusion,
