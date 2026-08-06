@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 
 from every_eval_ever.schema import get_schema_version
 from every_eval_ever.validate import (
@@ -13,6 +14,8 @@ from every_eval_ever.validate import (
     main,
     render_report_github,
     render_report_json,
+    render_report_rich,
+    render_summary_rich,
 )
 from every_eval_ever.validate import (
     validate_aggregate as _validate_aggregate,
@@ -125,6 +128,38 @@ def _write_json(tmp_path: Path, name: str, data: dict) -> Path:
     p = tmp_path / name
     p.write_text(json.dumps(data), encoding='utf-8')
     return p
+
+
+def _validate_datastore_file(tmp_path: Path, developer: str):
+    """Validate one record filed at a datastore path, semantic checks on."""
+    repo_path = (
+        f'data/alpaca_eval_v2/{developer}/test-model/'
+        'f82b2807-fb31-4e42-a4a4-497d7d7a7e61.json'
+    )
+    path = tmp_path / repo_path
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                **VALID_AGGREGATE,
+                'model_info': {
+                    'name': 'test-model',
+                    'id': f'{developer}/test-model',
+                    'additional_details': {
+                        'deployment_type': 'unknown',
+                        'model_availability': 'unknown',
+                    },
+                },
+            }
+        ),
+        encoding='utf-8',
+    )
+    return _validate_file(
+        path,
+        repo_path=repo_path,
+        available_files=frozenset(),
+        run_semantic_checks=True,
+    )
 
 
 def _write_jsonl(tmp_path: Path, name: str, lines: list[dict | str]) -> Path:
@@ -439,6 +474,36 @@ class TestOutputFormats:
         report = validate_file(fp)
         output = render_report_github([report])
         assert output == ''
+
+    def test_rich_output_shows_warnings_on_a_passing_file(self, tmp_path: Path):
+        # A warning-severity check leaves the file valid, so a renderer that
+        # only lists warnings beside errors never shows them at all.
+        report = _validate_datastore_file(tmp_path, 'mistral')
+        console = Console(record=True, width=200)
+
+        render_report_rich(report, console)
+        render_summary_rich([report], console)
+        output = console.export_text()
+
+        assert report.valid is True
+        assert report.warnings
+        assert 'PASS' in output
+        assert 'Warning:' in output
+        assert 'mistralai' in output
+        assert '1 warning(s)' in output
+
+    def test_rich_output_stays_quiet_on_a_clean_file(self, tmp_path: Path):
+        report = _validate_datastore_file(tmp_path, 'allenai')
+        console = Console(record=True, width=200)
+
+        render_report_rich(report, console)
+        render_summary_rich([report], console)
+        output = console.export_text()
+
+        assert report.valid is True
+        assert report.warnings == []
+        assert 'Warning' not in output
+        assert 'warning(s)' not in output
 
 
 class TestExitCode:
