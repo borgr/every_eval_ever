@@ -94,13 +94,7 @@ def test_a_spelling_two_organizations_record_is_dropped_here_too():
 
 
 def test_alias_spellings_keep_an_alias_that_restates_its_own_name():
-    """The read-side ``second_name_of`` drops these; resolution wants them.
-
-    ``second_name_of`` answers "is this a *second* name", where an alias
-    restating its organization's own id carries no information. Here the question
-    is "which organization is this", and such an alias is a fine way to get
-    there.
-    """
+    """The read-side ``second_name_of`` drops these; resolution wants them."""
     spellings = org_identity_spellings([_org('mistralai'), _org('allenai')])
     aliases = org_alias_spellings(
         [
@@ -197,13 +191,7 @@ def test_org_resolution_reads_namespaces_and_second_names_alike():
 
 
 def test_a_recorded_spelling_outranks_a_punctuation_collapse():
-    """The two are different claims, and the record has to say which was used.
-
-    ``meta-llama`` is a namespace Meta declares; ``metallama`` is a spelling
-    nobody declared that merely collapses onto one. Publishing both as
-    ``snapshot`` hid the difference behind the stronger of the two, and
-    punctuation guessing is how ``anthropic/claude-2.1`` becomes ``claude-21``.
-    """
+    """``meta-llama`` is a namespace Meta declares; ``metallama`` is nobody's."""
     registry = Registry()
 
     assert registry.org('meta-llama').strategy == 'snapshot_identifier'
@@ -218,10 +206,9 @@ def test_a_recorded_spelling_outranks_a_punctuation_collapse():
 def test_no_alpaca_eval_publisher_needs_the_normalized_tiers():
     """Every organization on either leaderboard matches a recorded identifier.
 
-    This is the measurement behind publishing punctuation-insensitive matches at
-    all: the fallback exists, and today it decides nothing. If a future upstream
-    row lands on it, this test fails and the spelling gets looked at rather than
-    resolved by coincidence.
+    The punctuation-insensitive fallback exists but decides nothing today. If a
+    future upstream row lands on it, this fails and the spelling gets looked at
+    rather than resolved by coincidence.
     """
     registry = Registry()
     namespaces = (
@@ -343,9 +330,8 @@ def test_live_registry_failure_is_never_fatal():
 def test_one_outage_does_not_relabel_every_later_miss():
     """A clean miss and an outage are different facts about a record.
 
-    ``live_error`` is a run-level aggregate that the report needs; deciding a
-    single resolution's strategy from it made every lookup after the first fault
-    claim the registry was unavailable when it had answered.
+    ``live_error`` is a run-level aggregate, so a resolution's strategy must not
+    be decided from it.
     """
     calls = []
 

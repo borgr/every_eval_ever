@@ -1,9 +1,7 @@
 """``python -m every_eval_ever.converters.alpaca_eval`` — the shared CLI.
 
 Every option comes from ``every_eval_ever.cli``'s ``convert alpaca_eval``
-parser, so this entry point cannot fall behind it. Building a namespace here
-instead is what made it stale: the handler grew ``--ref``, ``--input_json`` and
-the registry switches, and a hand-built namespace has no way to know.
+parser, so this entry point cannot fall behind it.
 """
 
 import sys

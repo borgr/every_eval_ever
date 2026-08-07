@@ -219,83 +219,58 @@ options:
 
 ## AlpacaEval
 
-The AlpacaEval converter fetches the leaderboards from the upstream
-`tatsu-lab/alpaca_eval` repository and converts every model entry into the
-unified schema. No local log files are required. Semantically this is a source
-adapter rather than a local-log converter; it remains under `converters` to
-preserve the existing `every_eval_ever convert alpaca_eval` API.
+```bash
+uv run every_eval_ever convert alpaca_eval --output_dir data          # both
+uv run every_eval_ever convert alpaca_eval --version v2 --output_dir data
+```
 
-Both AlpacaEval 1.0 (`alpaca_eval_gpt4` judge, `text_davinci_003` baseline) and
-AlpacaEval 2.0 (`weighted_alpaca_eval_gpt4_turbo` judge, `gpt4_turbo` baseline)
-are supported.
+Fetches the leaderboards from the upstream `tatsu-lab/alpaca_eval` repository
+and converts every model entry; no local log files. Semantically a source
+adapter rather than a local-log converter, kept under `converters` to preserve
+the existing `every_eval_ever convert alpaca_eval` API. Both AlpacaEval 1.0
+(`alpaca_eval_gpt4` judge, `text_davinci_003` baseline) and 2.0
+(`weighted_alpaca_eval_gpt4_turbo` judge, `gpt4_turbo` baseline) are supported.
 
-The converter fetches more than the score tables, because the scores alone do
-not say what they mean: it also reads the judge configuration and its verbatim
-prompt template, the upstream package version, and one config per leaderboard
-entry (`models_configs/<slug>/configs.yaml`). Those per-model configs are what
-`identity.py` resolves a model's real repo id, developer, availability and
-generation settings from, recording which rung of its evidence ladder fired as
-`identity_source`. Entries it cannot resolve are reported as failures rather
-than published under a guessed name.
+One record per leaderboard entry, with one result per published column:
 
-`deployment_type` and `inference_platform` normally come from the config's
-`fn_completions`, but 28 configs record none — the key is absent, empty, or the
-literal `null`. For those the `completions_kwargs` still decide it, because
-AlpacaEval's local and API callers take different parameter names: a
-`model_kwargs.torch_dtype` is an argument to `from_pretrained` and cannot be sent
-to a remote API, and `max_new_tokens`/`max_length` are the
-`transformers.generate()` spellings where the API spelling is `max_tokens`. The
-kwarg that decided it is published as `deployment_evidence`; a config with only
-`max_tokens` says a request was made but not to whom, so it stays `unknown`.
-None of this touches `model_availability` — running weights yourself does not
-make them public, and the Humpback checkpoints were never released.
-
-Metrics converted per model:
-
-| Metric | Unit | Description |
+| Metric | Unit | Scope |
 |---|---|---|
-| `win_rate` | percent | Share of the 805 instructions on which the judge preferred this model over the baseline |
+| `win_rate` | percent | Share of the 805 instructions where the judge preferred this model over the baseline |
 | `length_controlled_win_rate` | percent | Win rate debiased for output length (Dubois et al., 2024) |
-| `discrete_win_rate` | percent | Binary win rate — no partial credit for ties |
-| `avg_length` | characters | Mean output length in **characters** (`output.str.len().mean()`), reported for length-bias context, not as a quality score |
+| `discrete_win_rate` | percent | Binary win rate, no partial credit for ties |
+| `avg_length` | characters | Mean output length in **characters** (`output.str.len().mean()`), for length-bias context, not a quality score |
 
-Standard errors are the upstream `preferences.sem()`, so they are recorded as
-`analytic`, not bootstrap. Scores are published on the scale the registry
-declares for the metric — `[0, 100]` for `win-rate`, which is what the CSV
-holds — with `score_scale_divisor` recording any conversion applied.
+Scores are published on the scale the registry declares for the metric — `[0,
+100]` for `win-rate`, which is what the CSV holds — with `score_scale_divisor`
+recording any conversion. Standard errors are the upstream `preferences.sem()`,
+so they are recorded as `analytic`, not bootstrap.
+
+Beyond the score tables the converter reads the judge configuration and its
+verbatim prompt template, the upstream package version, and one config per entry
+(`models_configs/<slug>/configs.yaml`). Those configs are what `identity.py`
+resolves each model's repo id, developer, availability and generation settings
+from, recording which rung of its ladder fired as `identity_source`; an entry it
+cannot resolve is reported as a failure rather than published under a guessed
+name. `deployment_type` normally comes from the config's `fn_completions`, but
+28 configs record none, and for those the `completions_kwargs` decide it — see
+`local_generate_evidence`, which names the deciding kwarg on the record as
+`deployment_evidence`.
 
 ### Canonical ids
 
-Organization, metric and benchmark ids come from the
-[eval-card-registry](https://evaleval-entity-registry.hf.space), so this source
-speaks the same vocabulary as the rest of EEE:
+Organization, metric, benchmark and harness ids come from the
+[eval-card-registry](https://evaleval-entity-registry.hf.space) through
+`helpers/eval_card_registry.py`, which every consumer in this repo shares, and
+which reads a vendored snapshot of the registry's read-only list endpoints
+(`helpers/data/eval_card_registry.json`). `model_info.developer` is the canonical
+organization id while `model_info.id` keeps the HuggingFace namespace the weights
+are published under; the registry records both (`meta` and `meta-llama`), so
+these are two identities for one organization rather than drift.
 
-- `model_info.developer` is the registry's canonical organization id, while
-  `model_info.id` keeps the HuggingFace namespace the weights are published
-  under. The registry records both (`meta` and `meta-llama`, `alibaba` and
-  `qwen`), so these are two identities for one organization, not drift.
-- `win_rate` takes the canonical `win-rate` id and its declared bounds.
-- AlpacaEval 2.0 takes the canonical benchmark id `alpacaeval-2-0`.
-- Values the registry has no canonical for keep a namespaced `alpaca_eval.*` id
-  and say so through `*_registry_strategy` in `additional_details`. The CLI
-  prints the current gap list on every run.
-- `*_registry_strategy` also says **how much of the spelling had to be discarded**
-  to reach the canonical id, because that is the difference between reading an
-  identifier and guessing. `snapshot_exact` is a canonical id verbatim;
-  `snapshot_identifier` / `snapshot_alias_identifier` matched a spelling the
-  registry records (a canonical id, an `hf_org` namespace, a confirmed alias)
-  case-insensitively; `snapshot_normalized` / `snapshot_alias_normalized` matched
-  only after punctuation was dropped too — which is how `anthropic/claude-2.1`
-  would become `claude-21`. Every organization on both leaderboards currently
-  matches a recorded identifier, and a test fails if that stops being true.
-
-Resolution goes through `helpers/eval_card_registry.py`, which every consumer in
-this repo shares, and it reads a vendored snapshot of the registry's read-only
-list endpoints (`helpers/data/eval_card_registry.json`) rather than
-`POST /resolve` — that endpoint defaults to `mode="resolve"` and auto-creates a
-draft canonical for anything it cannot place, so bulk-resolving a leaderboard
-would write to a shared registry as a side effect of a read-only conversion.
-Refresh the snapshot with:
+A value the registry has no canonical for keeps a namespaced `alpaca_eval.*` id
+and says so through `*_registry_strategy`, which also records how much of the
+spelling had to be discarded to reach a canonical id. The CLI prints the current
+gap list on every run. Refresh the snapshot with:
 
 ```bash
 uv run python -m every_eval_ever.tools.refresh_eval_card_registry
@@ -304,40 +279,28 @@ uv run python -m every_eval_ever.tools.refresh_eval_card_registry --check
 
 ### Repo ids
 
-The per-model configs are hand-written, and the leaderboards are from 2023-2024,
-so two things can make a repo id in them differ from the id HuggingFace serves
-today. Both are corrected after the identity ladder runs, and both only ever
-change *how a repo is spelled*, never *which* repo a record points at:
+The per-model configs are hand-written and the leaderboards are from 2023-2024,
+so two things make a repo id in them differ from the id HuggingFace serves today.
+Both are corrected after the identity ladder runs, and both change only *how a
+repo is spelled*, never *which* repo a record points at:
 
 - **Casing.** `01-ai/Yi-34b-Chat` in a `completions_kwargs` is the same repo as
   `01-ai/Yi-34B-Chat` in a `link`, because repo ids are case-insensitive. A link
   is a URL that resolved for whoever wrote it, so a link's spelling wins.
-- **Renames.** `WizardLM` was renamed to `WizardLMTeam`, `THUDM` to `zai-org`,
-  `cognitivecomputations` to `dphn`, and Meta dropped the `Meta-` prefix from
-  the Llama 3.1 repos. The old id still answers on HuggingFace via a redirect,
-  so nothing looks broken — but the datastore already holds records under the
-  current id from other sources, and a stale id silently fails to join with
-  them. `data/hf_canonical_ids.json` maps the referenced id to the current one,
-  and `model_id_as_referenced` on the published record keeps the spelling the
-  source used.
+- **Renames.** `WizardLM` became `WizardLMTeam`, `THUDM` became `zai-org`,
+  `cognitivecomputations` became `dphn`, and Meta dropped the `Meta-` prefix from
+  the Llama 3.1 repos. The old id still answers via a redirect, so nothing looks
+  broken, but the datastore already holds records under the current id from other
+  sources and a stale id silently fails to join with them.
+  `data/hf_canonical_ids.json` maps the referenced id to the current one, and
+  `model_id_as_referenced` keeps the spelling the source used.
 
-A rename is only applied to identity rungs whose id **is** a repo id — a
-reference link (`hf_model_link`) or a repo id upstream recorded in
-`completions_kwargs` (`upstream_model_name`). The other rungs *construct* an id
-from an organization and a slug, and a constructed id that happens to collide
-with a real repo is not evidence that the repo is what ran: HuggingFace
-redirects `cohere/command-nightly` to `CohereLabs/Command-nightly`, but that row
-was served by Cohere's API under a rolling `-nightly` alias, so adopting the
-repo id would contradict the record's own `model_availability`.
-
-`developer` deliberately does **not** follow the new namespace. A redirect
-cannot tell an organization renaming itself from a repo being transferred to
-someone else, and the organization that published the evaluated model is the one
-the source names — the same `model_id`/`developer` duality that `meta-llama/…`
-published by `meta` already documents. Nor is a rename extrapolated to repos
-HuggingFace would not confirm: `WizardLM/WizardLM-13B-V1.1` and
-`WizardLMTeam/WizardLM-13B-V1.1` both answer `401`, so guessing the new
-namespace would publish an id that resolves nowhere.
+A rename applies only to the rungs in `HF_GROUNDED_SOURCES`, and is not
+extrapolated to repos HuggingFace would not confirm: `WizardLM/WizardLM-13B-V1.1`
+and `WizardLMTeam/WizardLM-13B-V1.1` both answer `401`, so guessing the new
+namespace would publish an id that resolves nowhere. `developer` does not follow
+the new namespace either, since a redirect cannot distinguish an organization
+renaming itself from a repo transferred to someone else.
 
 Refresh the map with (GET-only, unauthenticated — of 135 published repo ids the
 last sweep confirmed 124 and left 11 as the source spells them, since `401`
@@ -348,76 +311,26 @@ uv run python -m every_eval_ever.converters.alpaca_eval.refresh_hf_canonical_ids
 uv run python -m every_eval_ever.converters.alpaca_eval.refresh_hf_canonical_ids --check
 ```
 
-### What is stable across reruns
+### Reruns
 
-Two runs over the same upstream ref produce the same `evaluation_id`s, the same
-output directories, and identical record contents — with two exceptions that are
-repo-wide conventions rather than adapter choices:
-
-- the **file name**, which is a fresh `uuid4()` per write. `helpers/io.py`
-  requires a v4 UUID (`require_uuid4`), so a name derived from the record's
-  content would have to either lie about its version or be a UUIDv5 the
-  validator rejects. Re-identifying a record uses `evaluation_id`, which *is*
-  content-derived and stable; deciding whether file names should be too is a
-  repo-wide convention change, not something for one adapter to do differently.
-- `retrieved_timestamp`, which is when the run fetched, one value per
-  leaderboard.
-
-So compare two runs on the record contents minus `retrieved_timestamp`, not
+Two runs over the same upstream ref produce the same `evaluation_id`s, output
+directories and record contents, with two repo-wide exceptions: the file name is
+a fresh `uuid4()` per write (`helpers/io.py` requires a v4 UUID, so a
+content-derived name would have to be a UUIDv5 the validator rejects), and
+`retrieved_timestamp` is when the run fetched, one value per leaderboard. So
+compare two runs on record contents minus `retrieved_timestamp`, not
 byte-for-byte on the tree.
 
-### Usage
+### Options
 
-Convert both leaderboards (default):
+Beyond the shared converter arguments:
 
-```bash
-uv run every_eval_ever convert alpaca_eval --output_dir data
-```
-
-Convert one leaderboard:
-
-```bash
-uv run every_eval_ever convert alpaca_eval --version v2 --output_dir data
-uv run every_eval_ever convert alpaca_eval --version v1 --output_dir data
-```
-
-Keep the fetched upstream artefacts, then replay them without touching the
-network — useful for reviewing a diff, and for reproducing a conversion later:
-
-```bash
-uv run every_eval_ever convert alpaca_eval --save_raw_json upstream.json --output_dir data
-uv run every_eval_ever convert alpaca_eval --input_json upstream.json --output_dir data
-```
-
-Full argument list:
-
-```
-usage: every_eval_ever convert alpaca_eval [-h] [--log_path LOG_PATH]
-                                           [--output_dir OUTPUT_DIR]
-                                           [--source_organization_name ...]
-                                           [--evaluator_relationship ...]
-                                           [--source_organization_url ...]
-                                           [--source_organization_logo_url ...]
-                                           [--eval_library_name ...]
-                                           [--eval_library_version ...]
-                                           [--version {v1,v2}] [--ref REF]
-                                           [--save_raw_json SAVE_RAW_JSON]
-                                           [--input_json INPUT_JSON]
-                                           [--no_registry_resolve]
-                                           [--registry_live]
-
-options:
-  --version {v1,v2}            Which leaderboard to convert. Omit to convert both (default).
-  --output_dir OUTPUT_DIR      Base output directory. Defaults to a temporary path,
-                               so a smoke run does not write a data/ tree into the
-                               current directory; pass it explicitly to publish.
-  --ref REF                    Upstream git ref to convert from. Pinning a commit
-                               (the default) keeps evaluation_id stable across
-                               reruns; pass a branch to pick up new submissions.
-  --save_raw_json PATH         Write the fetched upstream artefacts to PATH.
-  --input_json PATH            Convert from such a snapshot, with no network access.
-  --no_registry_resolve        Skip eval-card-registry resolution; records carry the
-                               source-derived spellings, marked registry_disabled.
-  --registry_live              Also query the live registry for values the vendored
-                               snapshot cannot place, in side-effect-free mode=exact.
-```
+| Option | |
+|---|---|
+| `--version {v1,v2}` | Which leaderboard. Omit to convert both. |
+| `--output_dir PATH` | Defaults to a temporary path, so a smoke run does not write a `data/` tree into the current directory. |
+| `--ref REF` | Upstream git ref. Pinning a commit (the default) keeps `evaluation_id` stable across reruns; pass a branch to pick up new submissions. |
+| `--save_raw_json PATH` | Write the fetched upstream artefacts to PATH. |
+| `--input_json PATH` | Convert from such a snapshot, with no network access. |
+| `--no_registry_resolve` | Skip registry resolution; records carry source-derived spellings, marked `registry_disabled`. |
+| `--registry_live` | Also query the live registry for values the snapshot cannot place, in side-effect-free `mode=exact`. |

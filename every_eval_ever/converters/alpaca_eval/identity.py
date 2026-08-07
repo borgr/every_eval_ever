@@ -29,17 +29,11 @@ Rungs, in order:
 Unresolvable rows return ``None`` so the caller can record a failure instead of
 inventing an identity.
 
-Two canonicalization steps run after the ladder, both correcting a repo id the
-source spells in a way HuggingFace does not:
-
-* **casing** — hand-typed repo ids are sometimes miscased
-  (``01-ai/Yi-34b-Chat``); a reference link is a URL that resolves, so a link's
-  spelling wins (:func:`canonical_repo_casing`).
-* **renames** — a repo that has since moved (``WizardLM`` was renamed to
-  ``WizardLMTeam``) still answers under its old id via a redirect, but that id
-  joins with nothing. The vendored :data:`HF_CANONICAL_NAME` map, refreshed by
-  ``refresh_hf_canonical_ids.py``, replaces it with the id HuggingFace serves
-  today and records the referenced spelling on the record.
+Two canonicalization steps then correct a repo id the source spells in a way
+HuggingFace does not — casing (:func:`canonical_repo_casing`) and renames
+(:data:`HF_CANONICAL_NAME`, refreshed by ``refresh_hf_canonical_ids.py``). Both
+change only how a repo is spelled, and record the source's spelling as
+``model_id_as_referenced``.
 """
 
 from __future__ import annotations
@@ -143,24 +137,19 @@ _HOSTED_FNS = {
     'huggingface_completions': 'huggingface',
 }
 
-#: ``fn_completions`` values that name no caller. Upstream spells "absent"
-#: three ways — the key missing, an empty value, and the literal ``null``
-#: (``Samba-CoE-v0.1``) — and only reading the first two leaves the third
-#: looking like a completions function this converter has never heard of.
+#: ``fn_completions`` values that name no caller. Upstream spells "absent" three
+#: ways: the key missing, an empty value, and the literal ``null``
+#: (``Samba-CoE-v0.1``).
 _NO_COMPLETIONS_FN = frozenset({'', 'null', 'none'})
 
 _NON_ALNUM = re.compile(r'[^a-z0-9]+')
 
-#: Identity rungs whose ``model_id`` **is** a HuggingFace repo id — taken from
-#: a reference link, or from a repo id upstream recorded in
-#: ``completions_kwargs``. Only these are looked up in the rename map. The other
-#: rungs *construct* an id from an organization and a slug (the Cohere-API row
-#: becomes ``cohere/command-nightly``), and a constructed id that happens to
-#: collide with a real repo is not evidence that the repo is what ran:
-#: HuggingFace redirects ``cohere/command-nightly`` to
-#: ``CohereLabs/Command-nightly``, but that row was served by Cohere's API under
-#: a rolling ``-nightly`` alias, so adopting the repo id would contradict the
-#: record's own ``model_availability``.
+#: Identity rungs whose ``model_id`` **is** a HuggingFace repo id, and so the
+#: only ones looked up in the rename map. The other rungs *construct* an id from
+#: an organization and a slug, and such an id colliding with a real repo is not
+#: evidence that the repo is what ran: HuggingFace redirects
+#: ``cohere/command-nightly`` to ``CohereLabs/Command-nightly``, but that row was
+#: served by Cohere's API under a rolling alias.
 HF_GROUNDED_SOURCES = frozenset({'hf_model_link', 'upstream_model_name'})
 
 HF_CANONICAL_NAME = 'hf_canonical_ids.json'
@@ -173,10 +162,10 @@ HF_CANONICAL_PATH = (
 )
 
 #: Reference links for entries whose upstream config omits ``link`` but whose
-#: upstream pull request states the developer. Keys are **exact** slugs (a
-#: substring rule here would misfire: ``-evo`` also matches
-#: ``llama-2-chat-7b-evol70k-neft``), and every entry cites the evidence so a
-#: reviewer can check it. These feed the normal ladder rather than bypassing it.
+#: upstream pull request states the developer. Keys are **exact** slugs, since a
+#: substring rule would misfire (``-evo`` also matches
+#: ``llama-2-chat-7b-evol70k-neft``). These feed the normal ladder rather than
+#: bypassing it.
 _LINK_EVIDENCE = {
     # "Evo-7b is fine tuned based on Llama 2. The team worked on this model
     # are from https://evolusion.ai/." — tatsu-lab/alpaca_eval#144
@@ -211,13 +200,9 @@ class ModelIdentity:
     #: from the upstream config itself.
     link_evidence: Optional[str] = None
     #: The repo id the source referenced, set only when it is no longer the id
-    #: HuggingFace serves and :func:`hf_canonical_ids` replaced it. The rewrite
-    #: is recoverable from ``reference_link`` too, but a consumer joining on ids
-    #: should not have to parse a URL to learn that an id was rewritten.
+    #: HuggingFace serves and :func:`hf_canonical_ids` replaced it.
     model_id_as_referenced: Optional[str] = None
-    #: The ``completions_kwargs`` key that decided ``deployment_type``, set only
-    #: where upstream recorded no ``fn_completions`` to read it from — see
-    #: :func:`local_generate_evidence`.
+    #: See :func:`local_generate_evidence`.
     deployment_evidence: Optional[str] = None
 
 
@@ -258,10 +243,8 @@ def base_url(config: Dict[str, Any]) -> str:
 
     Upstream configs spell this three ways depending on when they were written:
     ``client_kwargs.base_url`` (current), a top-level ``base_url``, and the
-    pre-1.0 openai-python ``openai_api_base``. Missing the old spelling matters:
-    the OpenChat entries point ``openai_api_base`` at ``127.0.0.1``, so reading
-    only the modern key makes a locally served open model look like a call to
-    the OpenAI API.
+    pre-1.0 openai-python ``openai_api_base``, which the OpenChat entries point
+    at ``127.0.0.1``.
     """
     kwargs = completions_kwargs(config)
     for holder, key in (
@@ -408,30 +391,19 @@ def _vendor_from_fn(fn: str, custom_base_url: str) -> Optional[str]:
 
 
 def local_generate_evidence(config: Dict[str, Any]) -> Optional[str]:
-    """Why this entry's kwargs show weights loaded in the submitter's process.
+    """The ``completions_kwargs`` key showing weights ran in-process, or ``None``.
 
-    Twenty-eight upstream configs record no usable ``fn_completions`` at all —
-    the key is absent, empty, or the literal string ``null`` — so
-    :func:`_deployment` has nothing to read and the entry publishes
-    ``deployment_type: unknown``. That is the field the model registry uses to
-    tell one deployment of a model from another, so leaving it unknown where the
-    config does say is a gap, not caution.
+    For the 28 configs recording no usable ``fn_completions``, these two kwargs
+    still decide ``deployment_type``, because AlpacaEval's local and API callers
+    take different parameter names:
 
-    Two things in ``completions_kwargs`` are decidable without guessing, both
-    keyed on the fact that AlpacaEval's local and API callers take *different
-    parameter names*:
-
-    - ``model_kwargs.torch_dtype`` — a torch dtype is an argument to
-      ``from_pretrained``. There is no remote API to pass one to.
+    - ``model_kwargs.torch_dtype`` — an argument to ``from_pretrained``, with no
+      remote API to pass it to.
     - ``max_new_tokens`` / ``max_length`` — the ``transformers.generate()``
-      spelling. The API spelling is ``max_tokens``, which is why a config using
-      *that* stays unknown: it says a request was made, not to whom.
+      spelling, where the API spelling is ``max_tokens``.
 
-    Returns the kwarg that decided it, so the published record carries the
-    evidence rather than an unsourced claim, or ``None`` to leave it unknown.
     Says nothing about ``model_availability``: running weights yourself does not
-    make them public, and two of these entries (the Humpback checkpoints) were
-    never released.
+    make them public.
     """
     kwargs = completions_kwargs(config)
     if _mapping(kwargs.get('model_kwargs')).get('torch_dtype'):
@@ -443,21 +415,27 @@ def local_generate_evidence(config: Dict[str, Any]) -> Optional[str]:
 
 
 def _deployment(fn: str, custom_base_url: str, config: Dict[str, Any]) -> tuple:
-    """Return ``(deployment_type, inference_platform, inference_engine)``."""
+    """``(deployment_type, inference_platform, inference_engine, evidence)``.
+
+    ``evidence`` is set only where ``fn_completions`` was unreadable and
+    :func:`local_generate_evidence` decided the deployment instead.
+    """
     if _served_locally(fn, custom_base_url):
-        return 'self_deployed', 'local', _LOCAL_FNS.get(fn)
+        return 'self_deployed', 'local', _LOCAL_FNS.get(fn), None
     if custom_base_url:
         host, _ = _host_and_parts(custom_base_url)
-        return 'externally_managed', host or None, None
+        return 'externally_managed', host or None, None, None
     if fn in _VENDOR_FNS:
-        return 'externally_managed', _VENDOR_FNS[fn], None
+        return 'externally_managed', _VENDOR_FNS[fn], None, None
     if fn in _HOSTED_FNS:
-        return 'externally_managed', _HOSTED_FNS[fn], None
-    if fn.lower() in _NO_COMPLETIONS_FN and local_generate_evidence(config):
-        # The engine stays unset: the kwargs say the weights were held locally,
-        # not whether transformers or vLLM ran them.
-        return 'self_deployed', 'local', None
-    return 'unknown', None, None
+        return 'externally_managed', _HOSTED_FNS[fn], None, None
+    if fn.lower() in _NO_COMPLETIONS_FN:
+        evidence = local_generate_evidence(config)
+        if evidence:
+            # The engine stays unset: the kwargs say the weights were held
+            # locally, not whether transformers or vLLM ran them.
+            return 'self_deployed', 'local', None, evidence
+    return 'unknown', None, None, None
 
 
 def _availability(fn: str, link: str, custom_base_url: str) -> str:
@@ -552,11 +530,8 @@ def resolve_identity(
         link, link_evidence = _LINK_EVIDENCE[slug]
     custom_base_url = base_url(config)
     pretty = config.get('pretty_name')
-    deployment_type, platform, engine = _deployment(fn, custom_base_url, config)
-    deployment_evidence = (
-        local_generate_evidence(config)
-        if fn.lower() in _NO_COMPLETIONS_FN and deployment_type != 'unknown'
-        else None
+    deployment_type, platform, engine, deployment_evidence = _deployment(
+        fn, custom_base_url, config
     )
     availability = _availability(fn, link, custom_base_url)
     hf_repo = hf_repo_from_link(link)
@@ -565,15 +540,11 @@ def resolve_identity(
     )
 
     # Repo ids in ``completions_kwargs`` are hand-typed and sometimes miscased
-    # (``01-ai/Yi-34b-Chat``, ``baai/Infinity-Instruct-…``,
-    # ``FreedomIntelligence/PlatoLM-7b`` — none of which exist on HuggingFace,
-    # and the middle one would additionally split one organization across two
-    # spellings). A reference link, by contrast, is a URL that resolves, so
-    # where a link names the same repo up to case the link's spelling wins.
-    # The entry's own link always corroborates its own spelling; *casing* adds
-    # the links of sibling entries, which is what recovers the canonical
-    # spelling for rows whose link points at something else (the best-of-16
-    # ``pairrm-Yi-34B-Chat`` row links its reward model, not the model served).
+    # (``01-ai/Yi-34b-Chat`` does not exist on HuggingFace), while a reference
+    # link is a URL that resolves, so a link's spelling wins. The entry's own
+    # link corroborates its own spelling; *casing* adds sibling entries' links,
+    # which is what recovers the spelling for a row whose link points elsewhere
+    # (``pairrm-Yi-34B-Chat`` links its reward model, not the model served).
     casing = dict(casing or {})
     if hf_repo:
         casing.setdefault(hf_repo.lower(), hf_repo)
@@ -587,14 +558,10 @@ def resolve_identity(
             model_id = canonical
             developer = canonical.split('/')[0]
 
-        # A renamed repo redirects on HuggingFace, so the old id still *works*
-        # while joining with nothing — the datastore already holds records
-        # under the current id from other sources. ``developer`` deliberately
-        # does not follow the new namespace: an HTTP redirect cannot tell an
-        # organization renaming itself from a repo being transferred to someone
-        # else, and the organization that published the evaluated model is the
-        # one the source names. That divergence is the one ``meta-llama/…``
-        # published by ``meta`` already documents.
+        # A renamed repo redirects, so the old id still works while joining with
+        # nothing. ``developer`` does not follow the new namespace: a redirect
+        # cannot tell an organization renaming itself from a repo transferred to
+        # someone else.
         referenced = None
         if source in HF_GROUNDED_SOURCES:
             current = renames.get(model_id.lower())
@@ -619,14 +586,11 @@ def resolve_identity(
         )
 
     # 0. A hosting provider's namespace and spelling are not the model's
-    # identity: when the entry ran on a third-party API, its own HuggingFace
-    # link outranks the served name. This is what keeps
-    # ``alpaca-7b_concise`` (served as ``togethercomputer/alpaca-7b``) on
-    # ``tatsu-lab/alpaca-7b-wdiff`` like the non-hosted ``alpaca-7b`` row, and
-    # folds host-side aliases (``Llama-3-70b-chat-hf``,
-    # ``OpenHermes-2p5-Mistral-7B``) and serving tiers
-    # (``…-405B-Instruct-Turbo``) back onto the canonical repo — the slug and
-    # ``upstream_model_name`` still record which variant ran.
+    # identity, so for an entry served on a third-party API its own HuggingFace
+    # link outranks the served name. This folds host-side aliases
+    # (``Llama-3-70b-chat-hf``) and serving tiers (``…-405B-Instruct-Turbo``)
+    # back onto the canonical repo; the slug and ``upstream_model_name`` still
+    # record which variant ran.
     if (
         third_party_host
         and hf_repo

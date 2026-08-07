@@ -1,58 +1,27 @@
 """Canonical ids from the eval-card-registry, resolved offline.
 
 The registry (``https://evaleval-entity-registry.hf.space``) is the shared
-canonicalization service for EEE, and this module is how anything in this repo
-reads it — converters deciding what to publish, and the validator deciding what
-to warn about. It answers four questions a source must not answer by hand:
+canonicalization service for EEE. This module answers four questions from it:
 
 - ``model_info.developer`` — the canonical **organization** id. The registry
-  distinguishes the organization from the HuggingFace namespace its models are
-  published under (``meta`` and ``meta-llama``, ``alibaba`` and ``qwen``,
-  ``zai`` and ``zai-org``), and both are real identities for the same
-  organization rather than drift. So ``model_info.id`` keeps the namespace,
-  because that is the repo id that resolves, and ``developer`` carries the
+  records the organization and the HuggingFace namespace its models are
+  published under as two identities for one organization (``meta`` and
+  ``meta-llama``, ``alibaba`` and ``qwen``), so ``model_info.id`` keeps the
+  namespace, which is the repo id that resolves, and ``developer`` carries the
   canonical org id.
 - whether a publisher name is a **second name** for an organization already in
-  the registry (``Mistral`` for ``mistralai``, ``AI2`` for ``allenai``) rather
-  than an identity of its own. The datastore gives each publisher one directory
-  (``data/<collection>/<publisher>/``, taken from the ``model_info.id``
-  namespace and from ``developer`` for an id without one — see
-  :func:`every_eval_ever.helpers.io.datastore_path_components`), so one
-  publisher under two names is two directories and neither listing is complete
-  — see :func:`second_name_of`.
-- the **metric** id and the score bounds that come with it. The registry's
-  ``win-rate`` is declared on ``[0, 100]``, which is the scale the AlpacaEval
-  leaderboard CSV already publishes, so this settles a question two prior
-  implementations of that converter answered differently.
-- the **benchmark** and **harness** ids, for the evaluation name and the
-  library that produced it.
+  the registry (``Mistral`` for ``mistralai``) — see :func:`second_name_of`.
+  The datastore gives each publisher one directory, so one publisher under two
+  names is two directories and neither listing is complete.
+- the **metric** id and the score bounds declared with it.
+- the **benchmark** and **harness** ids.
 
 Resolution reads a vendored snapshot of the registry's read-only list
-endpoints (:data:`SNAPSHOT_PATH`), not its ``/resolve`` endpoint. That is a
-deliberate inversion of the usual "resolve live" advice, for a reason that is
-easy to verify: ``POST /api/v1/resolve`` defaults to ``mode="resolve"``, which
-**auto-creates a draft canonical** for any value it cannot place. Resolving 226
-leaderboard rows that way would add hundreds of draft models to a shared
-registry as a side effect of a read-only conversion, and the registry is already
-18157 draft models to 5298 reviewed ones. A validator calling it would be worse:
-checking a file would write to a shared registry. Reading a snapshot is
-deterministic, needs no network, and cannot write.
-
-``--registry-live`` opts into a live check anyway, and uses ``mode="exact"``,
-which is the one mode that resolves without creating anything. It is never
-fatal: a live failure falls back to the snapshot, and an unresolved value falls
-back to the source-derived spelling marked unverified, so a registry outage
-degrades provenance instead of blocking a conversion.
-
-That last property is deliberate, and it is the half of a two-part contract:
-**conversion is soft, validation is hard.** A converter records what the
-registry said, including that it said nothing, and finishes; the validator is
-where an unresolved id is refused. Putting the refusal in the converter instead
-would mean a registry outage — or a model the registry has not been taught yet
-— destroys a day's extraction rather than marking it, and marking it is enough
-because the record carries ``strategy`` and can be re-resolved from disk. A
-converter that fails closed on a shared network service also cannot be run
-reproducibly against an archived leaderboard, which is most of the point.
+endpoints (:data:`SNAPSHOT_PATH`), not ``POST /api/v1/resolve``, which defaults
+to ``mode="resolve"`` and **auto-creates a draft canonical** for any value it
+cannot place. ``--registry-live`` opts into a live check in ``mode="exact"``,
+the one mode that creates nothing; a live failure or an unresolved value falls
+back to the source-derived spelling marked unverified, never fatally.
 
 Refresh the snapshot with
 ``python -m every_eval_ever.tools.refresh_eval_card_registry``.
@@ -93,16 +62,10 @@ _SECTION_ENTITY_TYPES = {
 def normalize(value: str) -> str:
     """Collapse a name to its punctuation-insensitive identity.
 
-    ``win_rate``, ``Win Rate`` and ``win-rate`` normalize alike, which is what
-    lets a leaderboard column name find a canonical id; so do ``moonshot-ai``,
-    ``Moonshot AI`` and ``moonshotai``. The registry's own ids are inconsistent
-    about punctuation and case (it aims for HuggingFace-true casing, and
-    HuggingFace is not consistent either), so treating those differences as
-    meaningful would produce noise rather than signal.
-
-    Discarding punctuation is a weaker claim than folding case, so
-    :meth:`Registry.org` tries the case-folded spelling first and labels the two
-    outcomes differently rather than treating this as the only key.
+    ``win_rate``, ``Win Rate`` and ``win-rate`` normalize alike; so do
+    ``moonshot-ai``, ``Moonshot AI`` and ``moonshotai``. This is the weakest of
+    the org tiers :meth:`Registry.org` tries, since it discards punctuation the
+    registry may be recording deliberately.
     """
     if not isinstance(value, str):
         return ''
@@ -131,9 +94,8 @@ class Resolution(NamedTuple):
     """One canonical id, and how much weight it deserves.
 
     ``strategy`` and ``review_status`` are published alongside the value they
-    produced: a caller reading a record can tell a ``reviewed`` canonical from a
-    ``draft`` one, and either from a source-derived fallback the registry has
-    never seen.
+    produced, so a record distinguishes a ``reviewed`` canonical from a ``draft``
+    one and either from a source-derived fallback.
     """
 
     raw_value: str
@@ -142,10 +104,9 @@ class Resolution(NamedTuple):
     review_status: Optional[str]
     #: ``snapshot_exact`` | ``snapshot_identifier``
     #: | ``snapshot_alias_identifier`` | ``snapshot_normalized``
-    #: | ``snapshot_alias_normalized`` | ``snapshot`` | ``live_exact``
-    #: | ``no_canonical`` | ``registry_disabled`` | ``registry_unavailable``.
-    #: The org tiers are ordered by how much of the spelling was discarded to
-    #: reach a match — see :meth:`Registry.org`.
+    #: | ``snapshot_alias_normalized`` (see :meth:`Registry.org`) | ``snapshot``
+    #: | ``live_exact`` | ``no_canonical`` | ``registry_disabled``
+    #: | ``registry_unavailable``.
     strategy: str
     record: Dict[str, Any] = {}
 
@@ -212,32 +173,20 @@ class Registry:
     def org(self, slug: str) -> Resolution:
         """Resolve a HuggingFace namespace or org name to a canonical org id.
 
-        Both a canonical id and a namespace the registry records for one resolve
-        here, because both name the same organization.
-
         Five tiers, tried in order of how much of the spelling had to be thrown
-        away to get a match, and ``strategy`` records which one answered:
+        away to get a match, with ``strategy`` recording which one answered:
 
         ``snapshot_exact``
             The value **is** a canonical id. Tried first because two ids can
             collapse to one normalized spelling (``DeepAuto-AI`` and
-            ``deepautoai``) and that spelling is left unowned rather than
-            awarded to one of them, so without this an id would resolve to a
-            different organization or not at all.
+            ``deepautoai``), and such a spelling is left unowned.
         ``snapshot_identifier`` / ``snapshot_alias_identifier``
             A spelling the registry records — a canonical id, a ``hf_org``
             namespace, or a confirmed alias — matched case-insensitively.
         ``snapshot_normalized`` / ``snapshot_alias_normalized``
-            The same, but only after punctuation was discarded as well.
-
-        The split matters because the two are different claims. ``meta-llama``
-        is a namespace Meta declares; ``metallama`` is a spelling nobody
-        declared that merely collapses onto one. Guessing from punctuation is
-        how ``anthropic/claude-2.1`` becomes ``claude-21``, so a reader of a
-        published record is entitled to know which happened. Today no
-        organization on either AlpacaEval leaderboard reaches its canonical id
-        by the normalized tiers; every one of them matches a recorded
-        identifier.
+            The same, but only after punctuation was discarded as well:
+            ``meta-llama`` is a namespace Meta declares, while ``metallama``
+            merely collapses onto one.
         """
         if not self.enabled:
             return _unresolved(slug, 'org', 'registry_disabled')
@@ -251,8 +200,8 @@ class Registry:
                 review_status=snapshot['org_review_status'][exact],
                 strategy='snapshot_exact',
             )
-        # Sections a snapshot taken before the tiers were split does not carry;
-        # such a snapshot resolves by the normalized tiers alone, as it did.
+        # A snapshot predating the identifier sections still resolves, by the
+        # normalized tiers alone.
         folded = exact.lower() if isinstance(exact, str) else ''
         key = normalize(slug)
         for section, lookup, strategy in (
@@ -277,9 +226,8 @@ class Registry:
     def metric(self, name: str) -> Resolution:
         """Resolve a leaderboard column name to a canonical metric entry.
 
-        The entry carries ``min_score``/``max_score``/``lower_is_better``, which
-        is the point: the registry, not this adapter, decides the scale a score
-        is published on.
+        The entry carries ``min_score``/``max_score``/``lower_is_better``, so
+        the registry decides the scale a score is published on.
         """
         return self._keyed('metrics', 'metric', name)
 
@@ -292,10 +240,8 @@ class Registry:
     def _keyed(self, section: str, entity_type: str, name: str) -> Resolution:
         """Look up a value the snapshot stores under its query spelling.
 
-        The snapshot records a ``None`` entry for a query the registry has no
-        canonical for, which is a different fact from "not in the snapshot": the
-        first is a known gap this adapter has already reported, the second means
-        the snapshot needs a refresh. Both fall back, only the second tries the
+        A ``None`` entry is a known gap the refresh already recorded; a missing
+        key means the snapshot has never been asked. Only the latter tries the
         network.
         """
         if not self.enabled:
@@ -323,9 +269,8 @@ class Registry:
             return _unresolved(raw_value, entity_type, 'no_canonical')
         payload, error = self._live_lookup(entity_type, raw_value)
         if payload is None:
-            # This lookup's own outcome, not the run's: ``live_error`` is a
-            # sticky aggregate, and reading it here would relabel every later
-            # clean miss as an outage in the published record.
+            # This lookup's own error, not `live_error`, which is a sticky
+            # run-level aggregate.
             strategy = 'registry_unavailable' if error else 'no_canonical'
             return _unresolved(raw_value, entity_type, strategy)
         return Resolution(
@@ -342,8 +287,8 @@ class Registry:
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """Return ``(payload, error)`` for one lookup — a hit, a miss, or a fault.
 
-        A miss and a fault are both ``payload is None`` and mean different things
-        to a reader of the record, so they are cached and reported separately.
+        A miss and a fault are both ``payload is None``, so they are cached and
+        reported separately.
         """
         cache_key = (entity_type, raw_value)
         if cache_key in self._live_cache:
@@ -406,9 +351,8 @@ def snapshot_gaps(snapshot: Dict[str, Any]) -> List[str]:
 def gaps() -> List[str]:
     """Queries the vendored snapshot records as having no canonical entry.
 
-    These are the registry-side follow-ups a conversion cannot fix on its own:
-    minting a canonical is a lasting namespace decision and belongs in a PR to
-    the registry, not in an adapter.
+    Fixing one means minting a canonical, which is a PR to the registry rather
+    than something an adapter can do.
     """
     return snapshot_gaps(_snapshot())
 
@@ -425,17 +369,12 @@ def second_name_of(slug: str) -> Optional[str]:
     for an organization the registry already knows: ``Mistral`` for
     ``mistralai``, ``AI2`` for ``allenai``, or a model family such as ``glm``
     used where its publisher belongs. Two names for one publisher split it
-    across two datastore directories, so a caller that groups by publisher —
-    or warns a contributor about to create the second one — wants to know.
+    across two datastore directories.
 
-    ``None`` in the three cases where a name is *not* evidence of a split: a
-    canonical id, a HuggingFace namespace the registry records for one
-    (``meta-llama`` is Meta), and a spelling the registry has never seen — no
-    opinion rather than a guess.
-
-    This is the read-side counterpart of :meth:`Registry.org`, which answers
-    "what should this be called" for a converter. Here the question is only
-    "is this a second name", so an identity gets ``None`` rather than itself.
+    ``None`` where a name is not evidence of a split: a canonical id, a
+    HuggingFace namespace the registry records for one (``meta-llama`` is Meta),
+    and a spelling the registry has never seen. Unlike :meth:`Registry.org`,
+    an identity therefore gets ``None`` rather than itself.
     """
     if not isinstance(slug, str):
         return None
@@ -443,11 +382,9 @@ def second_name_of(slug: str) -> Optional[str]:
     if not key:
         return None
     snapshot = _snapshot()
-    # The snapshot builder already drops an alias that normalizes onto an
-    # identity, so this check is redundant against a snapshot it wrote. It is
-    # kept because the guarantee belongs to this function: a caller uses the
-    # answer to warn a contributor, and a hand-edited or older snapshot must
-    # not be able to turn a canonical id into a "second name".
+    # Redundant against a snapshot the builder wrote, which already drops these;
+    # kept so a hand-edited snapshot cannot turn a canonical id into a second
+    # name, since callers use the answer to warn a contributor.
     if slug.strip() in snapshot['org_review_status']:
         return None
     if key in snapshot['org_identities']:

@@ -262,10 +262,9 @@ def _resolve_metrics(
 
     A column the registry cannot place keeps a local ``alpaca_eval.*`` id and
     this adapter's fallback bounds, and says so through ``metric_registry_*`` in
-    ``additional_details``. It is not dropped: three of the four AlpacaEval
-    columns have no canonical yet, and publishing the leaderboard without its
-    length-controlled win rate would lose the metric the benchmark is known for.
-    Minting canonicals for them is a registry-side decision, not an adapter's.
+    ``additional_details``, rather than being dropped — three of the four
+    AlpacaEval columns have no canonical yet, including the length-controlled
+    win rate the benchmark is known for.
     """
     resolved = []
     for spec in METRIC_SPECS:
@@ -329,13 +328,11 @@ def _metric_cell_failure(
 ) -> Optional[str]:
     """Say why a row's metric cells cannot be published, or ``None``.
 
-    An absent cell is not a problem — a leaderboard version that has no
+    An absent cell is not a problem — a leaderboard version with no
     ``discrete_win_rate`` column simply publishes fewer results. A *populated*
-    cell that is not a finite number inside its declared bounds is, and it has
-    to be caught here rather than downstream: the row loop drops such a row with
-    a reason a reader can act on, whereas letting it through either publishes
-    the headline metric silently missing (``'n/a'`` parses as nothing) or aborts
-    the whole leaderboard on one out-of-range score.
+    cell that is not a finite number inside its declared bounds is, and the row
+    loop drops that row with a reason rather than publishing the headline metric
+    silently missing (``'n/a'`` parses as nothing).
     """
     primary = metrics[0]
     if not _cell(row, primary.spec.column):
@@ -644,20 +641,16 @@ def _model_info(
     """Assemble ``model_info``, with the registry naming the organization.
 
     ``id`` is the repo id that resolves on HuggingFace today; ``developer``
-    carries the registry's canonical organization id, which is a different
-    string by design (``meta-llama/…`` published by ``meta``, ``Qwen/…`` by
-    ``alibaba``). Both spellings identify the same organization, so the id's
-    prefix is kept in ``additional_details`` rather than overwritten. When a repo
-    has been renamed the two can also disagree on the *organization*
-    (``WizardLMTeam/…`` published by ``wizardlm``); ``model_id_as_referenced``
-    then records the spelling the source used.
+    carries the registry's canonical organization id, which is a different string
+    by design (``meta-llama/…`` published by ``meta``, ``Qwen/…`` by
+    ``alibaba``), so the id's prefix is kept in ``additional_details`` rather than
+    overwritten. A renamed repo can disagree on the *organization* too
+    (``WizardLMTeam/…`` published by ``wizardlm``), and
+    ``model_id_as_referenced`` then records the spelling the source used.
 
     ``raw_model_id`` and ``raw_model_namespace`` are what the source called this
-    model, under the names the model-registry proposal reserves for exactly that.
-    They are redundant with ``id`` while ``id`` stays a repo id, and stop being
-    redundant the moment a registry owns ``id``: an adapter that already records
-    the raw spelling needs no migration to keep it, and the registry can be
-    re-resolved against these fields without refetching upstream.
+    model, under the names the model-registry proposal reserves, so the registry
+    can be re-resolved against them without refetching upstream.
     """
     engine = (
         InferenceEngine(name=resolved.inference_engine)
@@ -703,13 +696,12 @@ def _evaluator_relationship(
     """Say whether the organization that ran the eval also built the model.
 
     Tatsu Lab's own models are on Tatsu Lab's leaderboard — ``alpaca-7b`` and the
-    two AlpacaFarm PPO checkpoints — so a blanket ``third_party`` claims
-    independent evaluation for the entries where there is none.
+    two AlpacaFarm PPO checkpoints — so a blanket ``third_party`` would claim
+    independent evaluation for entries where there is none.
 
     Canonical ids decide it wherever the registry has both, so two spellings of
-    one organization cannot read as two organizations. ``tatsu-lab`` has no
-    canonical entry today, which is why normalized spellings are the fallback
-    rather than the answer.
+    one organization cannot read as two. ``tatsu-lab`` has no canonical entry
+    today, hence the normalized-spelling fallback.
     """
     left = developer.canonical_id or developer.raw_value
     right = evaluator.canonical_id or evaluator.raw_value

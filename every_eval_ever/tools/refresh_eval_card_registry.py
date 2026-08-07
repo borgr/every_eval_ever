@@ -4,27 +4,17 @@ Run by a maintainer, not by tests or CI::
 
     uv run python -m every_eval_ever.tools.refresh_eval_card_registry
 
-The registry (``https://evaleval-entity-registry.hf.space``) is the shared
-canonicalization service for EEE. This script reads its **read-only list
-endpoints** and writes the snapshot that
-:mod:`every_eval_ever.helpers.eval_card_registry` loads offline, so a conversion
-or a validation is deterministic, needs no network, and cannot write to a shared
-registry as a side effect of reading it.
-
-That last point is not hypothetical: ``POST /api/v1/resolve`` defaults to
-``mode="resolve"``, which **auto-creates a draft canonical** for anything it
-cannot place, so bulk-resolving a leaderboard would silently add hundreds of
-draft models. Only ``mode="exact"`` is side-effect-free, and the converter's
-opt-in live path uses it (see ``helpers/eval_card_registry.py``). This script
-sticks to GETs.
+This reads the **read-only list endpoints** of the registry
+(``https://evaleval-entity-registry.hf.space``) and writes the snapshot that
+:mod:`every_eval_ever.helpers.eval_card_registry` loads offline. GETs only: the
+write-capable ``POST /api/v1/resolve`` is never called here.
 
 The snapshot is **derived**, not a verbatim mirror: it is the vocabulary a
 consumer needs, keyed the way a consumer looks things up. Organizations come out
 whole, because any source can publish any organization; metrics, benchmarks and
-harnesses are keyed by the spellings the converters actually ask about
-(:data:`METRIC_QUERIES` and friends), because a query the registry has no
-canonical for has to be recorded as a known gap rather than mistaken for a stale
-snapshot.
+harnesses are keyed by the spellings the converters ask about
+(:data:`METRIC_QUERIES` and friends), so a query the registry has no canonical
+for is recorded as a known gap rather than mistaken for a stale snapshot.
 
 ``--check`` verifies the committed snapshot still matches the registry without
 writing anything, so drift can be caught in review.
@@ -143,18 +133,11 @@ def _one_owner(claims: Dict[str, set]) -> Dict[str, str]:
 def org_identity_spellings(orgs: List[Dict[str, Any]]) -> Dict[str, str]:
     """``lowercased spelling -> canonical org id``, punctuation intact.
 
-    The same mapping as :func:`org_identities`, keyed by the spelling the
-    registry actually records rather than by its punctuation-stripped form.
-    Consumers try this first, so a resolution can say whether it matched a
-    recorded identifier or only survived after punctuation was discarded —
-    ``meta-llama`` is a namespace Meta declares, while ``metallama`` is a
-    spelling nobody declared that merely collapses onto one.
-
-    Case is still folded. The registry aims for HuggingFace-true casing and
-    HuggingFace is not consistent, so ``Qwen`` and ``qwen`` are one identifier.
-
-    Same one-owner-wins rule as :func:`org_identities`, and for the same
-    reason: this mapping decides a published ``model_info.developer``.
+    :func:`org_identities` keyed by the spelling the registry records rather than
+    by its punctuation-stripped form, which is the stronger of the two tiers
+    :meth:`Registry.org` tries. Case is still folded: the registry aims for
+    HuggingFace-true casing and HuggingFace is not consistent, so ``Qwen`` and
+    ``qwen`` are one identifier. Same one-owner-wins rule.
     """
     claims: Dict[str, set] = {}
     for record in orgs:
@@ -174,15 +157,11 @@ def org_alias_spellings(
 ) -> Dict[str, str]:
     """``lowercased confirmed alias -> canonical org id``, punctuation intact.
 
-    The case-preserving counterpart of :func:`org_second_names`, and it drops
-    toward silence for the same reasons: confirmed only, one organization per
-    spelling, and an identity wins over an alias.
-
-    Unlike :func:`org_second_names` this keeps an alias that merely restates its
-    own organization's name. That function answers "is this a *second* name",
-    where restating an identity carries no information; here the question is
-    "which organization is this", and an alias confirming what an id already
-    says is a fine way to get there.
+    The case-preserving counterpart of :func:`org_second_names`, dropping toward
+    silence for the same reasons: confirmed only, one organization per spelling,
+    and an identity wins over an alias. Unlike that function it keeps an alias
+    restating its own organization's name, since the question here is "which
+    organization is this" rather than "is this a *second* name".
     """
     listed = set(identities.values())
     claims: Dict[str, set] = {}
@@ -202,25 +181,19 @@ def org_alias_spellings(
 def org_identities(orgs: List[Dict[str, Any]]) -> Dict[str, str]:
     """``normalized spelling -> canonical org id`` for every name of record.
 
-    ``hf_org`` is how a canonical org id reaches the HuggingFace namespace
-    models are actually published under (``meta`` -> ``meta-llama``, ``alibaba``
-    -> ``qwen``, ``zai`` -> ``zai-org``). Both spellings are real identities for
-    the same organization, so a consumer needs the mapping in both directions:
-    the namespace is the model id prefix, the canonical id is
-    ``model_info.developer``.
+    ``hf_org`` is how a canonical org id reaches the HuggingFace namespace models
+    are published under (``meta`` -> ``meta-llama``, ``alibaba`` -> ``qwen``),
+    and both spellings are real identities for the same organization.
 
-    A normalized spelling resolves only when **one** organization owns it.
-    Where two canonical ids collapse together the spelling is dropped rather
-    than awarded to whichever sorts first: picking one makes the other id
-    resolve to an organization that is not itself, and this mapping decides a
-    published ``model_info.developer``. Four collisions exist today, three of
-    them registry entries that are really model names (``Gemini-3-Pro(11``) and
-    one a real pair of punctuation twins (``DeepAuto-AI``/``deepautoai``).
-    Dropping the spelling does not strand either id: an exact canonical id is
-    resolved by name, before normalization (see :meth:`Registry.org`).
+    A normalized spelling resolves only when **one** organization owns it, so a
+    spelling two canonical ids collapse onto is dropped rather than awarded to
+    whichever sorts first — four exist today, three of them registry entries that
+    are really model names (``Gemini-3-Pro(11``) and one a genuine pair of
+    punctuation twins (``DeepAuto-AI``/``deepautoai``). Neither id is stranded:
+    an exact canonical id resolves by name, before normalization.
 
-    Canonical ids still win over namespaces, so a namespace that collides with
-    some organization's id names that organization.
+    Canonical ids win over namespaces, so a namespace colliding with some
+    organization's id names that organization.
     """
     claimants: Dict[str, set] = {}
     for record in orgs:

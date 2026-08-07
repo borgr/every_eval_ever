@@ -53,16 +53,13 @@ def resolve_ref(
 ) -> str:
     """Return the commit SHA *ref* names, resolving a branch or tag once.
 
-    A 40-hex ref is already immutable and is returned untouched, which is the
-    only path the default ref takes. Anything else — ``main``, ``v0.6.6`` — moves,
-    and it reaches ``evaluation_id`` and every provenance URL: two runs a week
-    apart would publish different input under one identity, and the URLs in the
-    older records would point at content that no longer matches their scores.
+    A 40-hex ref is already immutable and is returned untouched. Anything else —
+    ``main``, ``v0.6.6`` — moves, and it reaches ``evaluation_id`` and every
+    provenance URL.
 
     Raises:
-        FetchError: If the ref cannot be resolved. A ref that names nothing is
-            worse than an unpinned one — the fetches that follow would 404
-            individually and blame the paths.
+        FetchError: If the ref cannot be resolved, rather than letting the
+            fetches that follow 404 individually and blame the paths.
     """
     if _COMMIT_SHA_RE.match(ref.strip().lower()):
         return ref.strip().lower()
