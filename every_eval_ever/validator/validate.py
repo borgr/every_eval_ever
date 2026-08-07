@@ -109,20 +109,27 @@ def _local_path_context(path: Path) -> tuple[str, _LocalRepositoryFiles]:
 def expand_directory(directory: Path) -> list[Path]:
     """List the EEE data files under one directory, at any depth.
 
-    Dot-prefixed entries *below* the given directory are skipped. A directory
-    argument is expanded recursively, so ``python -m every_eval_ever validate
-    .`` from a checkout would otherwise descend into ``.venv``, ``.git`` and
-    every tool cache and report on the JSON each installed package happens to
-    ship. Nothing under those paths is ever datastore data. Only names below the
-    argument are filtered, so pointing at ``.hidden/`` itself still validates
-    what the caller asked for.
+    Dot-prefixed entries *below* the given directory are pruned, so validating
+    ``.`` from a checkout does not descend into ``.venv``, ``.git`` or a tool
+    cache and report on the JSON an installed package happens to ship. Only
+    names below the argument are filtered, so pointing at ``.hidden/`` itself
+    still validates what the caller asked for.
 
-    The walk prunes those directories instead of filtering them out afterwards,
-    so a checkout-sized ``.venv`` is never entered, and it does not follow
-    directory symlinks, so a link back up the tree cannot make it loop.
+    Directory symlinks are not followed (``os.walk`` default), so a link back up
+    the tree cannot make this loop.
+
+    Raises:
+        OSError: If any directory in the tree cannot be listed. ``os.walk``
+            skips those silently, which would report a partial scan as a clean
+            one.
+        ValueError: If the tree holds no data files.
     """
+
+    def _raise(error: OSError) -> None:
+        raise error
+
     files: list[Path] = []
-    for parent, directories, names in os.walk(directory):
+    for parent, directories, names in os.walk(directory, onerror=_raise):
         directories[:] = [
             name for name in directories if not name.startswith('.')
         ]
@@ -149,12 +156,9 @@ def expand_paths(
 
     A directory expands recursively to the ``.json`` and ``.jsonl`` files under
     it, so ``python -m every_eval_ever validate data/my-source/`` works without
-    the caller knowing how deep the datastore layout is. Validation is
-    read-only, so
-    over-matching costs a longer report and nothing worse; ``on_directory``
-    reports what each directory expanded to, which keeps the explicitness
-    that refusing directories used to buy at the cost of the first command
-    every contributor tries.
+    the caller knowing how deep the datastore layout is. ``on_directory`` is
+    called with each directory and the number of files it expanded to, so the
+    caller can say what is about to be validated.
     """
     result: list[Path] = []
     seen: set[Path] = set()
@@ -290,10 +294,6 @@ def render_report_github(reports: list[ValidationReport]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        # There is no `eee-validate` entry point; the only console script is
-        # `every_eval_ever`. Through the subcommand this prog is overridden
-        # anyway, so it was only ever shown by a direct module run — as a
-        # command that does not exist.
         prog='python -m every_eval_ever validate',
         description='Validate EEE files using strict JSON and bundled schemas',
     )
@@ -330,7 +330,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         file_paths = expand_paths(args.paths, on_directory=report_directory)
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     if not file_paths:

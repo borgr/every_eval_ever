@@ -421,6 +421,25 @@ class TestFileDispatch:
         with pytest.raises(ValueError, match='contains no .json or .jsonl'):
             expand_paths([str(tmp_path)])
 
+    def test_an_unreadable_subdirectory_is_reported_not_skipped(
+        self, tmp_path: Path
+    ):
+        """A partial scan must not read as a clean one.
+
+        ``os.walk`` skips a directory it cannot list without a word, so every
+        record under it would go unvalidated and the report would still say
+        every file passed.
+        """
+        blocked = tmp_path / 'blocked'
+        blocked.mkdir()
+        _write_json(blocked, 'inner.json', VALID_AGGREGATE)
+        blocked.chmod(0o000)
+        try:
+            with pytest.raises(PermissionError):
+                expand_paths([str(blocked)])
+        finally:
+            blocked.chmod(0o755)
+
     def test_cli_accepts_a_directory(self, tmp_path: Path, capsys):
         """The notice about what a directory expanded to stays off stdout.
 
