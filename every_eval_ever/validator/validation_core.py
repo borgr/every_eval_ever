@@ -632,11 +632,11 @@ def check_developer_slug(data: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
     for canonical, (locations, spellings) in declared.items():
         consequence = (
-            'two datastore directories for one publisher, neither listing '
-            'complete'
+            'filing under both puts one publisher in two datastore '
+            'directories, neither listing complete'
             if directory_field in locations
             else 'the id prefix picks the directory here, so this field '
-            'splits none, but anything grouping by developer sees two'
+            'splits none, but anything grouping by developer reads two'
         )
         found = '/'.join(repr(spelling) for spelling in sorted(spellings))
         warnings.append(
