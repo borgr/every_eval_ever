@@ -1,4 +1,4 @@
-"""Tests for the WILD-raw adapter (utils/wild/adapter.py). No network — builds a
+"""Tests for the WILD-raw adapter (every_eval_ever/adapters/wild/adapter.py). No network — builds a
 tiny local parquet and runs the adapter over it."""
 import argparse
 import hashlib
@@ -15,8 +15,8 @@ pytest.importorskip(
 import pyarrow as pa  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 
+from every_eval_ever.adapters.wild import adapter  # noqa: E402
 from every_eval_ever.validate import validate_file  # noqa: E402
-from utils.wild import adapter  # noqa: E402
 
 
 def _synth_parquet(path):

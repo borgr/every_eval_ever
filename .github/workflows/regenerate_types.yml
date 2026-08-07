@@ -7,8 +7,6 @@ on:
     paths:
       - "every_eval_ever/schemas/eval.schema.json"
       - "every_eval_ever/schemas/instance_level_eval.schema.json"
-      - "eval.schema.json"
-      - "instance_level_eval.schema.json"
 
 permissions:
   contents: write
@@ -40,9 +38,17 @@ jobs:
             --output-model-type pydantic_v2.BaseModel \
             --input-file-type jsonschema \
             --formatters ruff-format ruff-check
-          uv run --project .github/ci-types python post_codegen.py
+          uv run --project .github/ci-types python -m every_eval_ever.post_codegen
+          uv run --project .github/ci-types ruff check --fix \
+            every_eval_ever/eval_types.py \
+            every_eval_ever/instance_level_types.py
+          uv run --project .github/ci-types ruff format \
+            every_eval_ever/eval_types.py \
+            every_eval_ever/instance_level_types.py
           PYTHONPATH="${{ github.workspace }}" uv run --project .github/ci-types pytest \
             tests/test_validate.py \
+            tests/test_validation_scope.py \
+            tests/test_inf_serialization.py \
             tests/test_check_duplicate_entries.py
       
       - name: Create or update PR
