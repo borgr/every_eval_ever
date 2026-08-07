@@ -48,6 +48,25 @@ def _output_dir(
     )
 
 
+def _reject_collection_as_base(base_dir: Path, output_dir: Path) -> None:
+    """Refuse a *base_dir* that is already the collection directory.
+
+    ``base_dir/<collection>`` repeating the collection inside a ``data`` tree is
+    the caller having passed ``data/<collection>``, the convention
+    ``EvaluationLogOutput`` uses. A scratch root that happens to share the
+    collection's name is not under ``data``, so it still publishes.
+    """
+    if (
+        base_dir.parent.name == 'data'
+        and output_dir.parent.parent.name == base_dir.name
+    ):
+        raise ValueError(
+            f'base_output_dir {base_dir}/ is a collection directory; pass the '
+            "'data' directory instead, or this batch publishes one level too "
+            f'deep at {output_dir}/'
+        )
+
+
 def _prepare_sample_artifact(
     log: EvaluationLog,
     file_uuid: str,
@@ -156,13 +175,13 @@ def publish_evaluation_logs(
     ``base_output_dir`` is the **``data``** directory, not a collection
     directory: the collection comes from ``collection_override`` or from
     ``evaluation_results[0].source_data.dataset_name``, and the final path is
-    ``base_output_dir/<collection>/<developer>/<model>/<uuid>.json``. Passing
-    ``data/<collection>`` therefore writes
-    ``data/<collection>/<collection>/...``, one level too deep, which surfaces
-    later as a path-depth validation failure rather than an error here.
+    ``base_output_dir/<collection>/<developer>/<model>/<uuid>.json``.
+    ``EvaluationLogOutput.base_dir`` and ``default_failure_report_path`` take
+    the opposite convention, ``data/<collection>``.
 
-    ``EvaluationLogOutput.base_dir`` and ``default_failure_report_path`` use
-    the opposite convention and take ``data/<collection>``.
+    Raises:
+        ValueError: If *base_output_dir* is itself the collection directory of a
+            ``data`` tree, which would publish one level too deep.
     """
 
     logs = list(logs)
@@ -184,6 +203,7 @@ def publish_evaluation_logs(
     for raw_log, file_uuid in zip(logs, file_uuids):
         log = EvaluationLog.model_validate(raw_log.model_dump())
         output_dir = _output_dir(base_output_dir, log, collection_override)
+        _reject_collection_as_base(base_output_dir, output_dir)
         source_data = log.evaluation_results[0].source_data
         route_owner = (
             collection_override or source_data.dataset_name,

@@ -132,19 +132,13 @@ class SourceConversionResult(Generic[_RecordT]):
 class EvaluationLogOutput:
     """One evaluation log and its explicit datastore destination.
 
-    ``base_dir`` is the **collection** directory, ``data/<collection>``, not
-    the ``data`` directory: the final path is
-    ``base_dir/<developer>/<model_name>/<uuid>.json``, and the collection
-    name is read from ``base_dir.name``. Passing ``data`` itself is caught at
-    publication (``collection cannot use the reserved datastore name
-    "data"``), but any other wrong depth is not — ``base_dir`` is trusted, so
-    the component above ``<developer>`` becomes the collection whatever it
-    actually is.
+    ``base_dir`` is the **collection** directory, ``data/<collection>``: the
+    final path is ``base_dir/<developer>/<model_name>/<uuid>.json`` and the
+    collection name is read from ``base_dir.name``. Any depth but ``data``
+    itself is trusted, so a wrong one silently renames the collection.
 
-    ``publish_evaluation_logs`` takes the *other* convention
-    (``base_output_dir`` is the ``data`` directory and derives the collection
-    from the log). Keep the two straight when moving code between the
-    converter and adapter paths.
+    ``publish_evaluation_logs`` takes the *other* convention: its
+    ``base_output_dir`` is the ``data`` directory.
     """
 
     eval_log: EvaluationLog
@@ -405,13 +399,11 @@ def default_failure_report_path(
     A report is not an ``EvaluationLog`` and must never be placed under
     ``data/<collection>/...`` where a PR validator could mistake it for one.
 
-    ``output_dir`` is the **collection** directory, ``data/<collection>`` —
-    the same convention as ``EvaluationLogOutput.base_dir``, and one level
-    deeper than ``publish_evaluation_logs(base_output_dir=...)``. Given
-    ``data/<collection>`` this returns
-    ``adapter_reports/<collection>_failures.json``; the report name is built
-    from the path components below ``data``, so a deeper or shallower
-    argument silently changes the report filename rather than failing.
+    ``output_dir`` is the **collection** directory, ``data/<collection>`` — the
+    same convention as ``EvaluationLogOutput.base_dir``, one level deeper than
+    ``publish_evaluation_logs``. It returns
+    ``adapter_reports/<collection>_failures.json``, naming the report from the
+    components below ``data``, so a wrong depth renames the report.
     """
     output_path = Path(output_dir)
     data_root = next(

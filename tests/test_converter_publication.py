@@ -56,6 +56,30 @@ def test_publish_evaluation_logs_uses_canonical_validated_path(
     assert report.valid, report.errors
 
 
+def test_publisher_rejects_the_collection_directory_as_its_base(
+    tmp_path: Path,
+):
+    """``base_output_dir`` is ``data``, not ``data/<collection>``.
+
+    ``EvaluationLogOutput.base_dir`` takes the collection directory, so the
+    conventions are one level apart; passing the wrong one used to publish a
+    level too deep and surface as a path-depth failure at review time.
+    """
+    log = make_lm_eval_log()
+    collection = log.evaluation_results[0].source_data.dataset_name
+    base = tmp_path / 'data' / collection
+    base.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match='is a collection directory'):
+        publish_evaluation_logs([log], base, [FILE_UUID])
+
+    # A scratch root that merely shares the name is not under 'data'.
+    scratch = tmp_path / collection
+    assert publish_evaluation_logs([log], scratch, [FILE_UUID]) == [
+        output_dir(scratch, log) / f'{FILE_UUID}.json'
+    ]
+
+
 def test_sidecar_and_aggregate_rollback_preserves_competing_file(
     tmp_path: Path, monkeypatch
 ):
