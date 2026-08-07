@@ -9,9 +9,7 @@ The registry is the shared canonicalization service for EEE
 **read-only** list endpoints and writes the derived snapshot that
 ``every_eval_ever.helpers.org_registry`` loads offline.
 
-It deliberately does not touch ``POST /api/v1/resolve``: resolving an unknown
-value auto-creates a ``draft`` canonical, so a bulk resolve would write to a
-shared registry as a side effect of reading it.
+GETs only: the write-capable ``POST /api/v1/resolve`` is never called here.
 
 Use ``--check`` to verify the committed snapshot still matches the registry
 without writing anything.
@@ -60,35 +58,22 @@ def build_snapshot(
 ) -> dict[str, Any]:
     """Derive the offline vocabulary from raw registry records.
 
-    Three groups come out of this, and the split is what makes the vocabulary
-    usable offline:
+    Three groups:
 
     - ``orgs`` — every canonical organization id.
-    - ``hf_orgs`` — HuggingFace namespaces that differ from the canonical id
-      (``meta-llama`` for ``meta``, ``qwen`` for ``alibaba``). These are real
-      identities, not drift: a model id is published under the namespace.
+    - ``hf_orgs`` — HuggingFace namespaces differing from the canonical id
+      (``meta-llama`` for ``meta``). A model id is published under these, so
+      they are identities, not drift.
     - ``second_names`` — confirmed aliases that are a genuinely different name
-      for an organization the registry already knows (``AI2`` for ``allenai``,
-      ``Mistral`` for ``mistralai``, model families such as ``glm`` used where
-      their publisher belongs).
+      for an organization already in ``orgs`` (``AI2`` for ``allenai``, model
+      families such as ``glm`` used where their publisher belongs).
 
-    Two rules decide what an alias has to clear, and both drop toward silence:
-
-    - An identity wins. A spelling that normalizes onto a canonical id or a
-      HuggingFace namespace is dropped, whether it normalizes onto *its own*
-      organization (``Mistral AI`` for ``mistralai`` — no information) or onto a
-      different one. The second case is the interesting one: the registry has
-      ``ai21-labs`` and ``ai21`` as separate canonical ids and confirms
-      ``AI21 Labs`` as an alias of ``ai21``, so the alias would claim a
-      spelling another organization already answers to. Six publishers are in
-      that position today (``ai21``/``ai21-labs``, ``ibm``/``ibm-granite``,
-      ``inception``/``inceptionlabs``, ``LGAI-EXAONE``/``lg-ai``,
-      ``internlm``/``shanghai-ai-lab``, ``LiquidAI``/``liquid``). Until the
-      registry settles which id is primary, saying nothing is the only answer
-      that cannot be wrong.
-    - One spelling per normalized form. Aliases that disagree about the
-      organization are dropped as ambiguous; otherwise the lexicographically
-      smallest spelling is kept so a refresh diffs cleanly.
+    An alias is dropped when it normalizes onto any identity — its own
+    organization's (no information) or another's (the registry has both
+    ``ai21`` and ``ai21-labs`` as canonical ids while confirming ``AI21 Labs``
+    for ``ai21``) — and when two aliases sharing a normalized form disagree
+    about the organization. Otherwise the lexicographically smallest spelling
+    is kept, so a refresh diffs cleanly.
     """
     canonical_ids = sorted({str(org['id']) for org in orgs if org.get('id')})
     identity_norms = {normalize_org_slug(org_id) for org_id in canonical_ids}

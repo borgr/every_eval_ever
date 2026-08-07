@@ -601,14 +601,8 @@ def check_developer_slug(data: dict[str, Any]) -> list[str]:
     Meta), a case or punctuation variant of either, and any name the registry
     has never seen.
 
-    The message names every spelling in play but no destination. The canonical
-    id is an entity id and in this datastore it is regularly the rarer of the
-    two spellings, and which name is primary is one choice for the whole
-    datastore rather than per collection — most publishers under two names use
-    only one of them in any single collection.
-
-    A warning, not an error — the records are published, the fix is a rename
-    that changes join keys, and which name is primary is an editorial call.
+    The message names every spelling in play but no destination: which name is
+    primary is one editorial choice for the whole datastore, not per collection.
     """
     model_info = data.get('model_info')
     if not isinstance(model_info, dict):
@@ -632,9 +626,8 @@ def check_developer_slug(data: dict[str, Any]) -> list[str]:
         locations.append(location)
         spellings.add(value.strip())
 
-    # The id's namespace prefix decides the directory when it has one, and
-    # model_info.developer when the id is flat. The other field still names the
-    # publisher, so it is reported too — with the consequence it really has.
+    # The prefix decides the directory when the id has one, developer when it is
+    # flat. The other field still names the publisher, so it is reported too.
     directory_field = 'model_info.id' if prefix else 'model_info.developer'
     warnings: list[str] = []
     for canonical, (locations, spellings) in declared.items():

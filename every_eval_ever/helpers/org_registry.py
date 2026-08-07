@@ -1,41 +1,25 @@
 """Offline organization vocabulary from the eval-card-registry.
 
 The registry (``https://evaleval-entity-registry.hf.space``) is the shared
-canonicalization service for EEE. Its ``POST /api/v1/resolve`` endpoint answers
-"which organization is this?" live, but it also *creates* a ``draft`` canonical
-for anything it cannot place — so a validator cannot call it: checking a file
-would write to a shared registry as a side effect.
+canonicalization service for EEE. This module reads a snapshot of its two
+read-only list endpoints, bundled as package data, rather than calling
+``POST /api/v1/resolve``, which *creates* a ``draft`` canonical for anything it
+cannot place — a validator must not write to a shared registry to check a file.
+Refresh with ``python -m every_eval_ever.tools.refresh_org_registry``.
 
-This module reads a snapshot of the registry's two read-only list endpoints
-instead, bundled as package data. That keeps validation offline,
-deterministic, and free of write side effects. Refresh it with
-``python -m every_eval_ever.tools.refresh_org_registry``.
-
-The vocabulary distinguishes two things a slug can be, which is the whole point
-of using the registry rather than a hand-kept map:
+A slug is one of two things here:
 
 - an **identity** — a canonical organization id, or a HuggingFace namespace the
-  registry records for one. ``meta`` and ``meta-llama`` are both identities for
-  Meta, ``alibaba`` and ``qwen`` both for Alibaba. Models are published under
-  the namespace, so it is not drift. Only the namespaces the registry has
-  recorded count: it fills in ``hf_org`` for 11 of its 1166 organizations so
-  far, so ``MiniMaxAI`` is a second name for ``minimax`` here rather than an
-  identity, and widening that means filling in ``hf_org`` upstream.
+  registry records for one. ``meta`` and ``meta-llama`` are both Meta, and a
+  model is published under the namespace, so it is not drift. Only recorded
+  namespaces count, so widening this means filling in ``hf_org`` upstream.
 - a **second name** — a confirmed alias that is a genuinely different name for
-  an organization already in the registry: ``AI2`` for ``allenai``, ``Mistral``
-  for ``mistralai``, or a model family such as ``glm`` standing in for its
-  publisher.
+  an organization already in the registry: ``AI2`` for ``allenai``, or a model
+  family such as ``glm`` standing in for its publisher.
 
 Anything else is unknown to the registry and gets no opinion from this module.
-
-The canonical list is taken as-is, including the ``draft`` entries the registry
-auto-created from values it could not place — ``Gemini-3-Flash(12`` and
-``Seed-OSS-36B-Base(w`` are in it, truncated model names rather than
-organizations. Filtering them out would make callers *louder* (an alias that
-normalizes onto one is currently dropped as already-known), and this vocabulary
-is only ever used to hold a warning back, so the untouched list is the
-conservative one. It is also the honest picture of the registry to a maintainer
-reading the diff.
+The canonical list is taken as-is, ``draft`` entries included; this vocabulary
+only ever holds a warning back, so the untouched list is the conservative one.
 """
 
 from __future__ import annotations
@@ -46,10 +30,8 @@ from functools import lru_cache
 from importlib import resources
 from typing import Any, NamedTuple
 
-#: Package-data file the snapshot lives in, under ``helpers/data/``. Reading it
-#: goes through :func:`load_org_snapshot`, which uses ``importlib.resources`` so
-#: an installed or zipped package works as well as a source checkout. Only the
-#: refresh tool needs a filesystem path, and it derives one itself.
+#: Package-data file under ``helpers/data/``, read through
+#: :func:`load_org_snapshot`. Only the refresh tool needs a filesystem path.
 SNAPSHOT_NAME = 'org_registry.json'
 
 
@@ -57,12 +39,10 @@ class OrgVocabulary(NamedTuple):
     """Normalized lookups over one registry snapshot.
 
     Both are keyed by :func:`normalize_org_slug` output, so a lookup is
-    insensitive to case and to ``-``/``_``/``.``/space punctuation. Normalizing
-    is lossy — ``DeepAuto-AI`` and ``deepautoai`` are two canonical ids that
-    collapse to one key — so ``identities`` is a set: the question it answers is
-    "is this spelling already a name of record", and mapping the key back to one
-    of the two ids would pick arbitrarily. ``load_org_snapshot`` still has the
-    unnormalized ids for a caller that needs them.
+    insensitive to case and to ``-``/``_``/``.``/space punctuation. That is
+    lossy — ``DeepAuto-AI`` and ``deepautoai`` are two canonical ids collapsing
+    to one key — so ``identities`` is a set, answering only "is this spelling
+    already a name of record". ``load_org_snapshot`` has the unnormalized ids.
     """
 
     identities: frozenset[str]
@@ -72,11 +52,9 @@ class OrgVocabulary(NamedTuple):
 def normalize_org_slug(value: str) -> str:
     """Collapse an organization slug to its punctuation-insensitive identity.
 
-    ``moonshot-ai``, ``Moonshot AI`` and ``moonshotai`` all normalize alike:
-    the registry's own ids are inconsistent about punctuation and case (it aims
-    for HuggingFace-true casing, and HuggingFace is not consistent either), so
-    treating those differences as meaningful would produce noise rather than
-    signal.
+    ``moonshot-ai``, ``Moonshot AI`` and ``moonshotai`` all normalize alike: the
+    registry aims for HuggingFace-true casing and HuggingFace is not consistent,
+    so these are one name rather than three.
     """
     return re.sub(r'[^a-z0-9]+', '', value.strip().lower())
 
