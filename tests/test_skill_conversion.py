@@ -1,21 +1,16 @@
-"""Keep the eee-dataset-conversion skill honest against the live validator.
+"""Validate the eee-dataset-conversion skill's own output against the live validator.
 
-No agent runs here. The skill's *prescribed output* is frozen twice over:
+Two frozen artifacts, both re-checked through the CLI (semantic checks only run at a
+canonical ``data/<collection>/<developer>/<model>/`` path):
 
 * ``.claude/skills/eee-dataset-conversion/templates/`` — the code the skill tells a
-  contributor (or an agent) to copy. The tests below execute it.
+  contributor to copy. The tests below execute it.
 * ``tests/data/skill_reference_conversion/`` — one committed conversion produced by
-  those templates: the artifact a contributor following the skill would submit.
+  those templates.
 
-Both are re-checked by the real CLI validator, with the semantic checks that only run
-at a canonical ``data/<collection>/<developer>/<model>/`` path. Change the schema, the
-validator, or the publisher and this file goes red, naming the skill as the thing to
-fix — instead of the change surfacing in a contributor's first PR.
-
-What this does NOT catch: a *new* rule that the reference conversion happens to satisfy
-already. Then CI stays green while `reference/datastore-gate.md` quietly goes incomplete.
-So when you add a check to the validator, re-derive that file from `REGISTERED_CHECKS`
-rather than trusting a green run here.
+Scope: this catches drift in what the templates emit. A new validator rule that the
+reference conversion already satisfies leaves it green, so re-derive
+``reference/datastore-gate.md`` from ``REGISTERED_CHECKS`` when adding a check.
 
 Regenerate the frozen conversion after a deliberate change:
 
@@ -73,11 +68,9 @@ def _remedy(what_broke: str, *, where: str, regenerate: bool = True) -> str:
 
 
 def _load_template(name: str) -> types.ModuleType:
-    """Import a skill template by path (they live outside the package tree).
+    """Import a skill template by path, substituting a real slug for its placeholder.
 
-    The templates ship `<src>` placeholders on purpose — the datastore path helpers
-    reject them, so a half-filled-in copy fails loudly. Substituting a real slug is
-    the first edit a contributor makes, so the test makes it too.
+    The datastore path helpers reject `<src>`, so the substitution is required to run.
     """
     path = TEMPLATE_DIR / name
     if not path.is_file():
@@ -142,15 +135,10 @@ def _sample_item() -> types.SimpleNamespace:
 
 
 def _assert_gate_clean(paths: list[Path], capsys) -> None:
-    """Run the real validator CLI over `paths`; require errors AND warnings empty.
-
-    Warnings are asserted deliberately: these files are the exemplar contributors copy,
-    so a warning here is inherited by everyone who follows the skill. If a new warning
-    class turns this red, fix the skill and regenerate the frozen records rather than
-    dropping the assertion. Nothing here blocks a merge, so your change can land first.
-    """
+    """Run the real validator CLI over `paths`; require errors AND warnings empty."""
     exit_code = validate_main([str(path) for path in paths] + ['--format', 'json'])
     reports = json.loads(capsys.readouterr().out)
+    # Warnings count as failures here: fix the skill, don't drop the assertion.
     complaints = [
         {'file': report['file'], 'errors': report['errors'], 'warnings': report['warnings']}
         for report in reports
@@ -286,11 +274,7 @@ def test_frozen_reference_conversion_still_passes_the_gate(capsys):
 
 
 def test_frozen_reference_conversion_matches_the_templates(tmp_path):
-    """The frozen conversion must still be what the templates produce today.
-
-    Without this, editing a template and forgetting to regenerate would leave a stale
-    fixture that keeps passing — and the two frozen artifacts would drift apart.
-    """
+    """The frozen conversion must still be byte-identical to the templates' output."""
     if not _frozen_record_files():
         pytest.skip(f'no frozen reference conversion under {FROZEN_DIR}')
     regenerate_frozen_reference(tmp_path / 'regenerated')
