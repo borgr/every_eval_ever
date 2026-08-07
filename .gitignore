@@ -204,6 +204,12 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Claude Code
+#  `.claude/skills/` is shared and tracked. `settings.local.json` is per-machine
+#  tool-permission state that Claude Code writes as you approve things, so it
+#  differs for every contributor and must never be committed.
+.claude/settings.local.json
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
