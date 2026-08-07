@@ -597,6 +597,14 @@ def main() -> dict:
         resolve_enabled=resolve_enabled, workers=args.workers,
     )
 
+    # Written before publication: it accounts for the conversion, so a publication
+    # that raises must not take the record of what failed to convert with it.
+    if result.failures:
+        report = save_failure_report(
+            result, default_failure_report_path(args.output_dir)
+        )
+        print(f"Unconverted source files: {report}")
+
     stale = existing_records(
         args.output_dir, [(developer, model) for _, developer, model in result.records]
     )
@@ -621,11 +629,6 @@ def main() -> dict:
     ])
     print(f"Wrote {len(written)} logs; {len(result.exclusions)} excluded; "
           f"{len(result.failures)} failed. -> {args.output_dir}")
-    if result.failures:
-        report = save_failure_report(
-            result, default_failure_report_path(args.output_dir)
-        )
-        print(f"Unconverted source files: {report}")
     if flagged:
         print(f"\n  {len(flagged)} model id(s) need registry review "
               "(unresolved / auto-created draft / low-confidence / unreviewed):")

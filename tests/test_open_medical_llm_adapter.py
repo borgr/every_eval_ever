@@ -1,5 +1,8 @@
 """Tests for the Open Medical-LLM Leaderboard adapter. Offline — builds records
 from synthetic lm-evaluation-harness result objects (no network)."""
+import json
+import pathlib
+
 import pytest
 
 from every_eval_ever.adapters.open_medical_llm import adapter
@@ -225,6 +228,26 @@ def test_existing_records_are_reported_before_a_second_copy_is_written(tmp_path)
     assert adapter.existing_records(str(tmp_path), [("acme", "med-x")]) == [
         target / "0d2f9f1e-0000-4000-8000-000000000000.json"]
     assert adapter.existing_records(str(tmp_path), [("acme", "other")]) == []
+
+
+def test_failure_report_survives_a_publication_error(tmp_path, monkeypatch):
+    """The report accounts for the conversion, so publication must not take it down."""
+    paths = ["acme/med-x/results_2024-05-01 00:00:00.json",
+             "acme/empty/results_2024-05-01 00:00:00.json"]
+    objs = {paths[0]: _results_obj(),
+            paths[1]: {"config": {"model_name": "acme/empty"},
+                       "results": {"pubmedqa": {"f1,none": 0.4}}}}
+    monkeypatch.setattr(adapter, "list_result_files", lambda: paths)
+    monkeypatch.setattr(adapter, "fetch_json", lambda path: objs[path])
+    monkeypatch.setattr(adapter, "save_evaluation_logs",
+                        lambda outputs: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr("sys.argv", ["adapter", "--output-dir", str(tmp_path / "data"),
+                                     "--no-registry-resolve", "--workers", "1"])
+    with pytest.raises(RuntimeError):
+        adapter.main()
+    report = json.loads(pathlib.Path(
+        adapter.default_failure_report_path(str(tmp_path / "data"))).read_text())
+    assert [f["source_ref"] for f in report["failed_records"]] == [paths[1]]
 
 
 def test_next_link_parses_rel_next():
