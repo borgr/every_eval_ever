@@ -177,11 +177,13 @@ Example `single_turn` instance:
   "evaluation_id": "math_eval/meta-llama/Llama-2-7b-chat/1706000000",
   "model_id": "meta-llama/Llama-2-7b-chat",
   "evaluation_name": "math_eval",
-  "sample_id": 4,
+  "sample_id": "4",
   "interaction_type": "single_turn",
-  "input": { "raw": "If 2^10 = 4^x, what is the value of x?", "reference": "5" },
-  "output": { "raw": "Rewrite 4 as 2^2, so 4^x = 2^(2x). Since 2^10 = 2^(2x), x = 5." },
-  "answer_attribution": [{ "source": "output.raw", "extracted_value": "5" }],
+  "input": { "raw": "If 2^10 = 4^x, what is the value of x?", "reference": ["5"] },
+  "output": { "raw": ["Rewrite 4 as 2^2, so 4^x = 2^(2x). Since 2^10 = 2^(2x), x = 5."] },
+  "answer_attribution": [
+    { "turn_idx": 0, "source": "output.raw", "extracted_value": "5", "extraction_method": "match", "is_terminal": true }
+  ],
   "evaluation": { "score": 1.0, "is_correct": true }
 }
 ```
@@ -354,6 +356,14 @@ uv run datamodel-codegen --input every_eval_ever/schemas/eval.schema.json --outp
 uv run datamodel-codegen --input every_eval_ever/schemas/instance_level_eval.schema.json --output every_eval_ever/instance_level_types.py --class-name InstanceLevelEvaluationLog --output-model-type pydantic_v2.BaseModel --input-file-type jsonschema --formatters ruff-format ruff-check
 uv run python -m every_eval_ever.post_codegen
 ```
+
+Changing the schema or the validator also changes what a contributor has to produce, so
+`tests/test_skill_conversion.py` re-validates the contributor-facing
+[`eee-dataset-conversion` skill](.claude/skills/eee-dataset-conversion/SKILL.md) — its
+templates and one frozen reference conversion — against the live validator. If it goes
+red, the guidance is what needs updating; the failure message says which file and gives
+the regeneration command. Don't skip it: it is the check that keeps the docs from
+quietly telling the next contributor something untrue.
 
 ## 🔌 Eval Converters
 

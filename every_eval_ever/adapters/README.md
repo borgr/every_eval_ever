@@ -2,6 +2,14 @@
 
 One-off adapter scripts that fetch leaderboard data from external sources and convert it to the Every Eval Ever schema. These are run manually, not via the main CLI.
 
+## Writing a new adapter
+
+Start from the `eee-dataset-conversion` agent skill —
+[`.claude/skills/eee-dataset-conversion/SKILL.md`](../../.claude/skills/eee-dataset-conversion/SKILL.md).
+It carries the field semantics, the merge-gate checks (`reference/datastore-gate.md`),
+runnable templates, and the datastore submission mechanics. `tests/test_skill_conversion.py`
+re-validates those templates against the live validator, so they stay current.
+
 ## Usage
 
 Each adapter is run with `uv run python -m every_eval_ever.adapters.<name>.adapter`.
@@ -26,6 +34,8 @@ Each adapter is run with `uv run python -m every_eval_ever.adapters.<name>.adapt
 | `terminal_bench_2` | tbench.ai | Fetches Terminal-Bench 2.0 agentic coding benchmark results. |
 | `hle` | Scale SEAL leaderboard | Converts the Scale SEAL Humanity's Last Exam leaderboard into `data/hle/`. Emits per-model accuracy (with 95% CI) and calibration error. |
 | `mmlu_pro` | TIGER-Lab leaderboard CSV | Converts the MMLU-Pro leaderboard (`TIGER-Lab/mmlu_pro_leaderboard_submission`) into `data/mmlu-pro/`. Emits per-model overall + 14 per-subject accuracies. |
+| `lexam` | LEXam project website | Converts the LEXam legal-reasoning leaderboard (open-question judge scores + 4-choice MCQ accuracy) into `data/lexam/`. |
+| `vectara_hallucination_leaderboard` | HuggingFace (`vectara/results`) | Converts the Vectara Hallucination Leaderboard result files, pinned to a source commit, into `data/vectara-hallucination-leaderboard/`. Emits 4 aggregate metrics plus per-category and per-text-complexity breakdowns (40 scores per model). |
 
 ### Mercor Evaluation Exports
 
@@ -51,6 +61,49 @@ Records are generated under benchmark-specific datastore directories, for
 example `data/apex-agents/<developer>/<model>/<uuid>.json`. Generated records
 are intended for the Hugging Face datastore submission, not the GitHub adapter
 PR.
+
+### LEXam
+
+```bash
+uv run python -m every_eval_ever.adapters.lexam.adapter --output-dir data
+```
+
+One record per model, with one result per published leaderboard column:
+
+| Metric | Evaluation | Scale | Scope |
+|---|---|---|---|
+| Open Question Judge Score | `lexam.open_question` | `[0,100]` | test split, n=2,541, scored by a pointwise-minimum ensemble of three judges |
+| Multiple-Choice Accuracy | `lexam.mcq_4_choices` | `[0,1]` | n=1,655; the 4-choice config only, not the 8/16/32-choice ones |
+
+The site prints both columns as percentages. Each is emitted on the scale of
+its registry metric, with the published percentage kept in
+`score_details.details`.
+
+Model ids, metric ids, bounds and direction come from the eval-card-registry
+through `registry_snapshot.json`, which vendors the entities this adapter emits
+and is pinned to the registry revision they came from. The tests fail if an
+emitted value drifts from the pin, so regenerate it after a registry change:
+
+```bash
+uv run python -m every_eval_ever.adapters.lexam.refresh_registry_snapshot \
+    --registry /path/to/eval-card-registry
+```
+
+Add `--check` to test the pin without writing: it exits non-zero and names both
+revisions. Metric `review_status` is read from the snapshot, so a metric
+promoted upstream needs a refresh rather than a code change.
+
+Inference settings, serving and standard errors are not on the leaderboard;
+they come from the paper (arXiv:2505.12864v7 §3.3, appendix F, Tables 1 and 10)
+and from LEXam's own runner, `litellm_eval.py`, which names the served model for
+15 of the 36 rows. Each record cites the source it used, and a standard error is
+attached only while the scraped score still equals the published one.
+
+Submission follows the datastore mechanics in the conversion skill. One
+adapter-specific caveat: record filenames are fresh uuids per run, so a second
+`upload_folder` onto an open submission PR adds another copy of every model.
+Update a submission by deleting `data/lexam/` and adding the new records in a
+single `create_commit`.
 
 ## Notes
 
@@ -120,3 +173,35 @@ Validate generated records with:
 uv run python -m every_eval_ever validate \
   '/tmp/eee-vals-ai-smoke/data/vals-ai/*/*/*.json*'
 ```
+
+### Vectara Hallucination Leaderboard
+
+The adapter enumerates every per-model result file in `vectara/results` at the
+pinned `SOURCE_COMMIT` and emits one record per model. Run a live export
+outside the repository:
+
+```bash
+uv run python -m every_eval_ever.adapters.vectara_hallucination_leaderboard.adapter \
+  --output-dir /tmp/eee-vectara/data/vectara-hallucination-leaderboard \
+  --save-raw-json /tmp/eee-vectara-raw.json
+```
+
+Replay the saved snapshot without hitting the network:
+
+```bash
+uv run python -m every_eval_ever.adapters.vectara_hallucination_leaderboard.adapter \
+  --input-json /tmp/eee-vectara-raw.json \
+  --output-dir /tmp/eee-vectara-replay/data/vectara-hallucination-leaderboard
+```
+
+Bump `SOURCE_COMMIT` to pick up a newer leaderboard run. The evaluated corpus
+is private, so the log records the public result file as provenance rather than
+a redistributable dataset. The pinned files record no serving platform, so
+`deployment_type` stays `unknown`; `model_availability` is derived from the
+source's `accessibility` annotation.
+
+Provenance that is constant for a run — the source file, commit, resolve URL,
+scoring model and temperature policy — lives once in `source_metadata`. Each of
+the 40 results carries only what varies, because repeating the constants on
+every result doubled the size of each record. That invariant is pinned by
+`test_constant_provenance_is_not_repeated_per_result`.
