@@ -590,37 +590,27 @@ def check_model_identity_path(
     Nothing reports it today: the path check only looks at the path's shape, and
     the record is perfectly valid where it sits.
 
-    An identity that names no directory at all — a flat id with no
+    An identity that names no directory at all — a blank id, a flat id with no
     ``developer``, a developer of ``unknown``, a name that is not a portable
     path component — is the same disagreement seen from the other side, and is
-    reported with the reason the publisher gives.
+    reported with the reason :func:`datastore_path_components` gives.
 
     The message names both directories and asks for agreement without saying
-    which side moves, because a per-file check has no basis for choosing. The
-    published datastore has no single naming convention to appeal to — 515 of
-    its 884 developer directories are lowercase and 369 are cased, 3947 of 6596
-    model directories carry uppercase and 2371 carry a dot, and 15 collections
-    use both conventions for developers at once. Over one published aggregate
-    from each of 500 (collection, developer) groups, 54 warn: 46 addressing a
-    directory other than the one they sit in, and 8 naming none. *Not one* of
-    the 46 addresses a directory that already exists, and 30 name a developer
-    directory absent from their collection, so telling those records to move
-    would add a second directory for a model that already has one — the split
-    this check exists to report.
-
-    Warnings, not errors, because already-published records would fail.
+    which side moves: the published datastore mixes cased and lowercase
+    spellings for developers and models alike, so a per-file check has no
+    convention to appeal to. Warnings, not errors, because already-published
+    records would fail.
     """
-    parts = repo_path.split('/')
-    if len(parts) != _EXPECTED_PATH_PARTS:
-        return []  # the path-structure check already reported this
+    if check_path_structure(repo_path):
+        return []  # the path-structure check already reported this path
     model_info = data.get('model_info')
     if not isinstance(model_info, dict):
         return []
     model_id = model_info.get('id')
-    if not isinstance(model_id, str) or not model_id.strip():
-        return []  # the schema already requires model_info.id
+    if not isinstance(model_id, str):
+        return []  # a non-string id is a schema error
 
-    collection, developer, model = parts[1], parts[2], parts[3]
+    collection, developer, model = repo_path.split('/')[1:4]
     try:
         # Ask the publisher where this identity files, so the check cannot
         # drift from datastore_output_dir. Only the developer and model

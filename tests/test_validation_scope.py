@@ -484,18 +484,27 @@ def test_a_collection_directory_is_never_reported_under_model_info():
 def test_model_identity_path_defers_to_the_schema_on_a_missing_id():
     """A file with no ``model_info.id`` already fails; do not warn as well."""
     data = valid_aggregate()
-    for missing in ({'name': 'model'}, {'name': 'model', 'id': '  '}):
-        data['model_info'] = missing
-        assert check_model_identity_path(AGGREGATE_REPO_PATH, data) == []
+    data['model_info'] = {'name': 'model'}
+    assert check_model_identity_path(AGGREGATE_REPO_PATH, data) == []
+
+
+def test_a_blank_id_is_reported_because_the_schema_accepts_it():
+    """``id`` is required but unconstrained, so ``'  '`` reaches the datastore.
+
+    It names no directory, which is the disagreement this check reports seen
+    from the other side.
+    """
+    data = valid_aggregate()
+    data['model_info'] = {'name': 'model', 'id': '  '}
+    warning = check_model_identity_path(AGGREGATE_REPO_PATH, data)[0]
+    assert 'names no datastore directory' in warning
 
 
 def test_the_drift_warning_names_both_directories_without_choosing_one():
     """Neither side of the disagreement is presumed correct.
 
-    Over a 500-file sample of the published datastore, not one flagged record's
-    identity names a directory that already exists, so a message that told the
-    record where it "belongs" would be asking for a second directory for a model
-    that already has one — the split this check reports.
+    A message telling the record where it "belongs" would ask for a second
+    directory for a model that already has one — the split this check reports.
     """
     data = valid_aggregate()
     data['model_info']['id'] = 'dev-labs/model'
@@ -507,11 +516,18 @@ def test_the_drift_warning_names_both_directories_without_choosing_one():
 
 
 def test_model_identity_path_defers_to_the_path_structure_check():
-    """Malformed paths get one complaint, from the check that owns them."""
-    assert (
-        check_model_identity_path('data/bench/model.json', valid_aggregate())
-        == []
-    )
+    """Malformed paths get one complaint, from the check that owns them.
+
+    Every path that check rejects, not only the wrong-depth ones: a warning
+    about which directory the identity addresses is noise on a path that is not
+    a datastore path at all.
+    """
+    for path in (
+        'data/bench/model.json',
+        'notdata/bench/dev/model/f82b2807-fb31-4e42-a4a4-497d7d7a7e61.json',
+        'data/bench/data/model/f82b2807-fb31-4e42-a4a4-497d7d7a7e61.json',
+    ):
+        assert check_model_identity_path(path, valid_aggregate()) == [], path
 
 
 def test_identity_path_drift_warns_without_failing_validation(tmp_path):
