@@ -21,6 +21,15 @@ convert external eval sources into it.
 - Validate: `python -m every_eval_ever validate <files-or-glob>` (`.json`→aggregate,
   `.jsonl`→instance; directories are rejected).
 
+## Principles (tie-breakers, for when the conventions below don't decide)
+- **Report, don't interpret.** The job is the most correct data in a unified form. Record
+  what the source states; never infer or tidy a value to make a record look complete. An
+  unknown is data; a guess is corruption. If the source is ambiguous, ask in the PR.
+- **Prefer a check to an instruction.** If a test or a CI job can enforce a rule, add that
+  instead of writing the rule down — and delete the prose it replaces.
+- **Don't spend a contributor's attention on what a machine can verify.** No checklist
+  item for something CI could check.
+
 ## Conventions (non-negotiable)
 - **The schemas are the source of truth.** When a doc and a schema disagree, the schema wins.
 - **Validating ≠ correct.** Everything must pass `validate`, but spot-check *content*
@@ -28,6 +37,12 @@ convert external eval sources into it.
 - **Tests/lint**: add an offline, fixture-based `tests/test_<name>_adapter.py`, guard
   optional deps so the `core` CI matrix skips cleanly, and keep `ruff check` green —
   see the skill's `reference/verification.md` and `reference/gotchas.md` for the exact mechanics.
+- **Docstrings say what, not why-I-changed-it.** A docstring documents what the function
+  does and what a caller must know. Rationale for a change, what it replaced, and notes
+  aimed at a reviewer belong in the **PR description** — a maintainer reads that once,
+  instead of reading it every time they open the file. Where a future editor really would
+  break something, leave a one-line `#` comment at that line, not a paragraph in the
+  docstring. If it needs a paragraph, it needs the PR.
 - **Publish through the repo, not by hand**: `converters.common.publication.publish_evaluation_logs`
   writes records atomically; `SourceConversionResult` + `save_failure_report` + a non-zero
   exit account for every source row you could not convert.

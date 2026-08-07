@@ -1,0 +1,269 @@
+{
+  "google/gemini-2.5-flash-lite/results_2025-12-10 14:57:20.585062.json": {
+    "category_results": {
+      "business": {
+        "answer_rate": 99.857,
+        "average_summary_length": 90.459,
+        "hallucination_rate": 3.429
+      },
+      "education": {
+        "answer_rate": 99.623,
+        "average_summary_length": 102.82,
+        "hallucination_rate": 1.009
+      },
+      "finance": {
+        "answer_rate": 99.873,
+        "average_summary_length": 76.632,
+        "hallucination_rate": 3.295
+      },
+      "law": {
+        "answer_rate": 99.052,
+        "average_summary_length": 88.645,
+        "hallucination_rate": 2.751
+      },
+      "medicine": {
+        "answer_rate": 99.441,
+        "average_summary_length": 89.639,
+        "hallucination_rate": 0.985
+      },
+      "politics": {
+        "answer_rate": 99.724,
+        "average_summary_length": 109.824,
+        "hallucination_rate": 2.075
+      },
+      "science": {
+        "answer_rate": 100.0,
+        "average_summary_length": 89.666,
+        "hallucination_rate": 2.144
+      },
+      "sports": {
+        "answer_rate": 99.495,
+        "average_summary_length": 88.581,
+        "hallucination_rate": 3.756
+      },
+      "stocks": {
+        "answer_rate": 99.257,
+        "average_summary_length": 88.247,
+        "hallucination_rate": 5.24
+      },
+      "technology": {
+        "answer_rate": 99.289,
+        "average_summary_length": 130.212,
+        "hallucination_rate": 7.757
+      }
+    },
+    "config": {
+      "model_dtype": "float16",
+      "model_name": "google/gemini-2.5-flash-lite-",
+      "model_sha": "main"
+    },
+    "model_annotations": {
+      "accessibility": "commercial",
+      "model_size": "large"
+    },
+    "results": {
+      "answer_rate": {
+        "answer_rate": 99.5
+      },
+      "average_summary_length": {
+        "average_summary_length": 95.7
+      },
+      "factual_consistency_rate": {
+        "factual_consistency_rate": 96.7
+      },
+      "hallucination_rate": {
+        "hallucination_rate": 3.3
+      }
+    },
+    "text_complexity_results": {
+      "high_complexity_text": {
+        "answer_rate": 99.645,
+        "average_summary_length": 110.969,
+        "hallucination_rate": 3.796
+      },
+      "low_complexity_text": {
+        "answer_rate": 99.446,
+        "average_summary_length": 79.788,
+        "hallucination_rate": 2.784
+      }
+    }
+  },
+  "microsoft/Phi-4/results_2025-12-10 14:57:16.944171.json": {
+    "category_results": {
+      "business": {
+        "answer_rate": 63.481,
+        "average_summary_length": 120.643,
+        "hallucination_rate": 4.045
+      },
+      "education": {
+        "answer_rate": 64.322,
+        "average_summary_length": 125.67,
+        "hallucination_rate": 1.758
+      },
+      "finance": {
+        "answer_rate": 79.114,
+        "average_summary_length": 114.656,
+        "hallucination_rate": 2.24
+      },
+      "law": {
+        "answer_rate": 74.289,
+        "average_summary_length": 112.34,
+        "hallucination_rate": 2.871
+      },
+      "medicine": {
+        "answer_rate": 76.224,
+        "average_summary_length": 123.594,
+        "hallucination_rate": 1.101
+      },
+      "politics": {
+        "answer_rate": 97.103,
+        "average_summary_length": 123.571,
+        "hallucination_rate": 4.688
+      },
+      "science": {
+        "answer_rate": 81.011,
+        "average_summary_length": 122.529,
+        "hallucination_rate": 2.836
+      },
+      "sports": {
+        "answer_rate": 99.697,
+        "average_summary_length": 116.58,
+        "hallucination_rate": 5.471
+      },
+      "stocks": {
+        "answer_rate": 99.406,
+        "average_summary_length": 123.931,
+        "hallucination_rate": 6.129
+      },
+      "technology": {
+        "answer_rate": 70.853,
+        "average_summary_length": 129.473,
+        "hallucination_rate": 3.344
+      }
+    },
+    "config": {
+      "model_dtype": "float16",
+      "model_name": "microsoft/Phi-4-",
+      "model_sha": "main"
+    },
+    "model_annotations": {
+      "accessibility": "open",
+      "model_size": "small"
+    },
+    "results": {
+      "answer_rate": {
+        "answer_rate": 80.7
+      },
+      "average_summary_length": {
+        "average_summary_length": 120.9
+      },
+      "factual_consistency_rate": {
+        "factual_consistency_rate": 96.3
+      },
+      "hallucination_rate": {
+        "hallucination_rate": 3.7
+      }
+    },
+    "text_complexity_results": {
+      "high_complexity_text": {
+        "answer_rate": 63.595,
+        "average_summary_length": 127.301,
+        "hallucination_rate": 3.593
+      },
+      "low_complexity_text": {
+        "answer_rate": 98.523,
+        "average_summary_length": 116.651,
+        "hallucination_rate": 3.694
+      }
+    }
+  },
+  "qwen/qwen3-8b/results_2025-12-10 14:57:15.832674.json": {
+    "category_results": {
+      "business": {
+        "answer_rate": 100.0,
+        "average_summary_length": 78.91,
+        "hallucination_rate": 5.991
+      },
+      "education": {
+        "answer_rate": 100.0,
+        "average_summary_length": 89.456,
+        "hallucination_rate": 2.136
+      },
+      "finance": {
+        "answer_rate": 100.0,
+        "average_summary_length": 82.594,
+        "hallucination_rate": 7.342
+      },
+      "law": {
+        "answer_rate": 99.882,
+        "average_summary_length": 79.732,
+        "hallucination_rate": 2.966
+      },
+      "medicine": {
+        "answer_rate": 99.72,
+        "average_summary_length": 83.602,
+        "hallucination_rate": 2.384
+      },
+      "politics": {
+        "answer_rate": 100.0,
+        "average_summary_length": 85.71,
+        "hallucination_rate": 3.172
+      },
+      "science": {
+        "answer_rate": 100.0,
+        "average_summary_length": 80.155,
+        "hallucination_rate": 3.675
+      },
+      "sports": {
+        "answer_rate": 100.0,
+        "average_summary_length": 77.159,
+        "hallucination_rate": 4.545
+      },
+      "stocks": {
+        "answer_rate": 100.0,
+        "average_summary_length": 85.6,
+        "hallucination_rate": 9.807
+      },
+      "technology": {
+        "answer_rate": 99.763,
+        "average_summary_length": 93.8,
+        "hallucination_rate": 6.651
+      }
+    },
+    "config": {
+      "model_dtype": "float16",
+      "model_name": "qwen/qwen3-8b-",
+      "model_sha": "main"
+    },
+    "model_annotations": {
+      "accessibility": "open",
+      "model_size": "small"
+    },
+    "results": {
+      "answer_rate": {
+        "answer_rate": 99.9
+      },
+      "average_summary_length": {
+        "average_summary_length": 83.6
+      },
+      "factual_consistency_rate": {
+        "factual_consistency_rate": 95.2
+      },
+      "hallucination_rate": {
+        "hallucination_rate": 4.8
+      }
+    },
+    "text_complexity_results": {
+      "high_complexity_text": {
+        "answer_rate": 99.975,
+        "average_summary_length": 87.704,
+        "hallucination_rate": 5.053
+      },
+      "low_complexity_text": {
+        "answer_rate": 99.895,
+        "average_summary_length": 79.375,
+        "hallucination_rate": 4.593
+      }
+    }
+  }
+}
