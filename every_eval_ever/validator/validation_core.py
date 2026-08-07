@@ -13,7 +13,7 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from every_eval_ever.eval_types import EvaluationLog
-from every_eval_ever.helpers.org_registry import second_name_of
+from every_eval_ever.helpers.eval_card_registry import second_name_of
 from every_eval_ever.instance_level_types import InstanceLevelEvaluationLog
 from every_eval_ever.schema import (
     get_schema_fingerprint as get_schema_fingerprint,
