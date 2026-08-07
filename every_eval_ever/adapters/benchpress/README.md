@@ -20,7 +20,7 @@ It is handled like the `llm_stats` adapter — `source_type=documentation`,
 Live export (fetches the current data from HuggingFace), writing outside the repo:
 
 ```bash
-uv run python -m utils.benchpress.adapter \
+uv run python -m every_eval_ever.adapters.benchpress.adapter \
   --output-dir /tmp/eee-benchpress \
   --save-raw-json /tmp/eee-benchpress-raw.json
 ```
@@ -34,7 +34,7 @@ uv run python -m every_eval_ever validate /tmp/eee-benchpress
 Replay a saved payload without hitting the network:
 
 ```bash
-uv run python -m utils.benchpress.adapter \
+uv run python -m every_eval_ever.adapters.benchpress.adapter \
   --input-json /tmp/eee-benchpress-raw.json \
   --output-dir /tmp/eee-benchpress-replay
 ```
@@ -51,10 +51,29 @@ adapter uses it as the version anchor: `generated_at_utc` becomes
 in every record's `source_metadata.additional_details`, so consumers can detect a
 new snapshot (the commit/timestamp changes) and re-run.
 
+`main` moves and the export is four separate files, so a run resolves the
+dataset's commit sha once and reads all four at it, recording it as
+`benchpress_dataset_revision`. Pass `--revision <sha>` to reproduce an earlier
+snapshot.
+
 ## Notes / mapping
 
 - `retrieved_timestamp` comes from `metadata.generated_at_utc` (override with
   `--retrieved-timestamp`).
+- Only the rows BenchPress itself accepts are exported: `audit_status` in
+  `{verified, verified_third_party}`. `dropped`, `needs_review` and `flagged`
+  rows are outside its own canonical matrix and are reported as exclusions;
+  `--include-unaccepted` exports them anyway.
+- `evaluator_relationship` is `third_party` for an independent `source_type`
+  (leaderboard, aggregator, academic paper) and `first_party` for a
+  provider-authored one (model card, blog, tech report) **only when every score
+  citing that URL belongs to one provider**. A provider-authored document
+  routinely carries a comparison table of competitors, and BenchPress scrapes
+  those cells too, so a citation spanning several providers is `other` rather
+  than a claim about who ran the eval.
+- A score outside the range its own benchmark declares (the export mixes scales
+  within a benchmark — `mt_bench_101` declares 1–10 and carries values up to
+  90.2) is reported as an unconvertible source row, not rescaled by guess.
 - `model_info.id` = `<provider-slug>/<benchpress-slug>` (e.g. `openai/gpt-oss-120b`);
   the raw slug is kept in `model_info.additional_details.benchpress_model_id`. The
   eval-card-registry resolves these to canonical ids downstream.
@@ -63,11 +82,10 @@ new snapshot (the commit/timestamp changes) and re-run.
   the citation host.
 - Metric bounds are the metric's TRUE bounds: a declared `range` wins; otherwise
   per-family bounds with `±inf` where genuinely unbounded (elo/rating/index/raw →
-  `[-inf, inf]`; dollars/wer → `[0, inf]`; pct/bleu → `[0, 100]`). EEE has no
-  unbounded `score_type`, so the adapter writes `inf` as the JSON `Infinity` token
-  (`json.dumps(allow_nan=True)`); EEE's loader (`json.loads` + pydantic) reads it
-  back as `float('inf')`. (Note: pydantic's `model_dump_json` would null `inf`, so
-  the adapter serializes the records itself — see `write_log`.)
+  `[-inf, inf]`; dollars/wer → `[0, inf]`; pct/bleu → `[0, 100]`). `MetricConfig`
+  bounds are the one place EEE accepts an unbounded value; it is written as the
+  JSON *string* `"Infinity"`, so these records publish through the shared
+  `save_evaluation_logs` like every other adapter's.
 - `eval_library` is the aggregator (`BenchPress`); the per-score harness is kept in
   `evaluation_results[].metric_config.additional_details`.
 - The public CSV mirror does not expose per-cell `candidates` (only the count) or

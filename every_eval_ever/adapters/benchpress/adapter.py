@@ -15,11 +15,13 @@ source commit, and matrix construction metadata" per the dataset README). This
 adapter reads it as the version anchor: ``generated_at_utc`` becomes the record
 ``retrieved_timestamp``, and ``source_git_commit`` / ``generated_at_utc`` are
 recorded on every record so a consumer can tell which BenchPress snapshot it came
-from and re-run when the manifest changes.
+from and re-run when the manifest changes. The four files are read at one pinned
+dataset commit, which is recorded alongside them; ``--revision`` replays an
+earlier snapshot.
 
 Run
 ---
-    uv run python -m utils.benchpress.adapter --output-dir /tmp/eee-benchpress
+    uv run python -m every_eval_ever.adapters.benchpress.adapter --output-dir /tmp/eee-benchpress
     uv run python -m every_eval_ever validate /tmp/eee-benchpress
 """
 from __future__ import annotations
@@ -27,11 +29,9 @@ from __future__ import annotations
 import argparse
 import json
 import time
-import uuid
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -50,30 +50,39 @@ from every_eval_ever.eval_types import (
 )
 from every_eval_ever.helpers import (
     SCHEMA_VERSION,
+    EvaluationLogOutput,
+    SourceConversionResult,
+    SourceRecordExclusion,
+    SourceRecordFailure,
+    default_failure_report_path,
     fetch_csv,
     fetch_json,
-    generate_output_path,
+    save_evaluation_logs,
+    save_failure_report,
 )
 
 HF_REPO = 'microsoft/benchpress-score-matrix'
-HF_BASE = f'https://huggingface.co/datasets/{HF_REPO}/raw/main'
 ATTRIBUTION_URL = f'https://huggingface.co/datasets/{HF_REPO}'
 PAPER_URL = 'https://arxiv.org/abs/2606.24020'
 DEFAULT_OUTPUT_DIR = 'data/benchpress'
 
-# BenchPress score.source_type -> EEE evaluator_relationship (derived per score).
-# Provider-authored sources are first_party; independent ones third_party;
-# blank/unknown -> other.
-RELATIONSHIP_BY_SOURCE_TYPE = {
-    'official_blog': 'first_party',
-    'tech_report': 'first_party',
-    'official_paper': 'first_party',
-    'model_card': 'first_party',
-    'leaderboard': 'third_party',
-    'third_party': 'third_party',
-    'third_party_aggregator': 'third_party',
-    'academic_paper': 'third_party',
-}
+# BenchPress score.audit_status -> whether BenchPress itself accepts the row.
+# `dropped`, `needs_review` and `flagged` rows are excluded from its canonical
+# matrix, so they are excluded here too unless --include-unaccepted is passed.
+ACCEPTED_AUDIT_STATUSES = frozenset({'verified', 'verified_third_party'})
+
+# BenchPress source_type values whose *document* is published by a model's own
+# provider. That makes the document provider-authored; it does not by itself make
+# the score first_party -- see relationship_from_score.
+PROVIDER_AUTHORED_SOURCE_TYPES = frozenset({
+    'official_blog', 'official_paper', 'model_card', 'tech_report',
+})
+
+# source_types whose evaluator is independent of the scored model's provider,
+# whatever else the citation contains.
+INDEPENDENT_SOURCE_TYPES = frozenset({
+    'leaderboard', 'third_party', 'third_party_aggregator', 'academic_paper',
+})
 
 # metric_type -> EEE metric_unit.
 METRIC_UNIT = {
@@ -82,9 +91,8 @@ METRIC_UNIT = {
 }
 
 # The metric's TRUE mathematical bounds; +/-inf where unbounded. A benchmark's
-# declared `range` overrides these. inf is serialized as the JSON `Infinity`
-# token (see _write_log) which EEE's loader (json.loads + pydantic) reads back as
-# float('inf').
+# declared `range` overrides these. Bounds are the one place EEE allows an
+# unbounded value: MetricConfig serializes inf as the JSON string "Infinity".
 INF = float('inf')
 METRIC_BOUNDS = {
     'pct': (0.0, 100.0),     # bounded percentage
@@ -217,17 +225,32 @@ def _parse_scores(rows: list[dict]) -> list[dict]:
     } for r in rows]
 
 
-def fetch_payload() -> dict[str, Any]:
-    """Fetch the live BenchPress CSV mirror + metadata.json from HuggingFace."""
-    try:
-        metadata = fetch_json(f'{HF_BASE}/metadata.json')
-    except Exception:  # noqa: BLE001 - metadata is best-effort (version anchor only)
-        metadata = {}
+def resolve_revision() -> str:
+    """The dataset's current commit SHA, so one run reads one snapshot."""
+    info = fetch_json(f'https://huggingface.co/api/datasets/{HF_REPO}')
+    sha = info.get('sha')
+    if not sha:
+        raise RuntimeError(
+            f'{HF_REPO} returned no commit sha; pass --revision to pin one'
+        )
+    return sha
+
+
+def fetch_payload(revision: str | None = None) -> dict[str, Any]:
+    """Fetch the BenchPress CSV mirror + metadata.json at one pinned commit.
+
+    ``main`` moves, and the four files are four requests, so reading them at the
+    branch tip can mix revisions. The commit is resolved once and every file is
+    read at it; ``--revision`` reproduces an earlier snapshot.
+    """
+    revision = revision or resolve_revision()
+    base = f'https://huggingface.co/datasets/{HF_REPO}/resolve/{revision}'
+    metadata = fetch_json(f'{base}/metadata.json')
     return {
-        'models': _parse_models(fetch_csv(f'{HF_BASE}/data/models.csv')),
-        'benchmarks': _parse_benchmarks(fetch_csv(f'{HF_BASE}/data/benchmarks.csv')),
-        'scores': _parse_scores(fetch_csv(f'{HF_BASE}/data/scores_all.csv')),
-        'metadata': metadata,
+        'models': _parse_models(fetch_csv(f'{base}/data/models.csv')),
+        'benchmarks': _parse_benchmarks(fetch_csv(f'{base}/data/benchmarks.csv')),
+        'scores': _parse_scores(fetch_csv(f'{base}/data/scores_all.csv')),
+        'metadata': {**metadata, 'dataset_revision': revision},
     }
 
 
@@ -242,8 +265,42 @@ def load_payload(input_json: Path) -> dict[str, Any]:
 # record construction
 # --------------------------------------------------------------------------- #
 
-def relationship_from_score(score: dict) -> str:
-    return RELATIONSHIP_BY_SOURCE_TYPE.get(score.get('source_type') or '', 'other')
+def citation_provider_counts(scores: list[dict],
+                             models: dict[str, dict]) -> dict[str, int]:
+    """How many distinct providers each ``reference_url`` reports scores for.
+
+    A citation covering several providers is a comparison table, not one
+    provider's report of its own model. See relationship_from_score.
+    """
+    providers: dict[str, set[str]] = defaultdict(set)
+    for score in scores:
+        url = score.get('reference_url')
+        model = models.get(score['model_id'])
+        if url and model:
+            providers[url].add(model.get('provider') or 'unknown')
+    return {url: len(names) for url, names in providers.items()}
+
+
+def relationship_from_score(score: dict, citation_breadth: dict[str, int]) -> str:
+    """Who evaluated the model, as far as the BenchPress export can establish it.
+
+    A provider-authored document type (a model card, blog post or tech report)
+    only means the *document* is a provider's; it does not say whose. Those
+    documents routinely carry a comparison table of competitors' scores, and
+    BenchPress scrapes those cells too: a Claude score cited to
+    ``arxiv.org/abs/2412.19437`` came out of DeepSeek's V3 report, not Anthropic's.
+    So a provider-authored citation is ``first_party`` only when every score it
+    supplies belongs to one provider. When it spans several, which one published
+    it is not recoverable from the export, and neither claim is made.
+    """
+    source_type = score.get('source_type') or ''
+    if source_type in INDEPENDENT_SOURCE_TYPES:
+        return 'third_party'
+    if source_type in PROVIDER_AUTHORED_SOURCE_TYPES:
+        url = score.get('reference_url')
+        if url and citation_breadth.get(url, 0) == 1:
+            return 'first_party'
+    return 'other'
 
 
 def normalize_model_info(model: dict) -> tuple[ModelInfo, str, str]:
@@ -286,6 +343,17 @@ def metric_bounds(benchmark: dict) -> tuple[float, float, str]:
         lo, hi = METRIC_BOUNDS[metric_type]
         return lo, hi, 'metric_family_bounds'
     return -INF, INF, 'unbounded_default'
+
+
+def _within_bounds(score: float, bounds: MetricConfig) -> bool:
+    """Whether a score sits inside the bounds the record itself declares.
+
+    BenchPress's ``canonical_setting.range`` is the benchmark's documented scale,
+    but the export mixes scales inside one benchmark -- ``mt_bench_101`` declares
+    1-10 and carries values up to 90.2. The validator rejects such a record, so
+    the disagreement is reported as a failed source row rather than guessed at.
+    """
+    return bounds.min_score <= score <= bounds.max_score
 
 
 def _generation_config(reported: dict) -> GenerationConfig | None:
@@ -412,12 +480,21 @@ def source_metadata(relationship: str, version: dict) -> SourceMetadata:
             'benchpress_source_git_commit': version.get('source_git_commit'),
             'benchpress_generated_at_utc': version.get('generated_at_utc'),
             'benchpress_source_data_dirty': version.get('source_data_dirty'),
+            # The manifest can lag the CSVs, so the commit every file was read
+            # at is recorded too -- that is what --revision reproduces.
+            'benchpress_dataset_revision': version.get('dataset_revision'),
         }),
     )
 
 
+def _score_ref(score: dict) -> str:
+    return f'{score.get("model_id")}/{score.get("benchmark_id")}'
+
+
 def make_logs(payload: dict[str, Any],
-              retrieved_timestamp: str | None = None) -> list[LogBundle]:
+              retrieved_timestamp: str | None = None,
+              include_unaccepted: bool = False,
+              ) -> SourceConversionResult[LogBundle]:
     models = {m['id']: m for m in payload['models']}
     benchmarks = {b['id']: b for b in payload['benchmarks']}
     version = payload.get('metadata') or {}
@@ -427,18 +504,42 @@ def make_logs(payload: dict[str, Any],
         timestamp = _iso_to_epoch_str(version['generated_at_utc'])
     timestamp = timestamp or str(time.time())
 
+    citation_breadth = citation_provider_counts(payload['scores'], models)
+    exclusions: list[SourceRecordExclusion] = []
+    failures: list[SourceRecordFailure] = []
     groups: dict[tuple[str, str, str], list[EvaluationResult]] = defaultdict(list)
     model_infos: dict[tuple[str, str, str], ModelInfo] = {}
     for score in payload['scores']:
+        audit_status = score.get('audit_status') or 'missing'
+        if not include_unaccepted and audit_status not in ACCEPTED_AUDIT_STATUSES:
+            exclusions.append(SourceRecordExclusion(
+                source_ref=_score_ref(score),
+                reason=(f'BenchPress audit_status={audit_status!r} is outside its '
+                        'own accepted set; pass --include-unaccepted to export it'),
+            ))
+            continue
         model = models.get(score['model_id'])
         benchmark = benchmarks.get(score['benchmark_id'])
-        if model is None or benchmark is None or score.get('score') is None:
-            continue
-        result = make_evaluation_result(score, benchmark)
+        result = (make_evaluation_result(score, benchmark)
+                  if model is not None and benchmark is not None else None)
         if result is None:
+            failures.append(SourceRecordFailure(
+                source_ref=_score_ref(score),
+                reason='no score, or the model/benchmark id is not in this export',
+            ))
+            continue
+        bounds = result.metric_config
+        if not _within_bounds(result.score_details.score, bounds):
+            failures.append(SourceRecordFailure(
+                source_ref=_score_ref(score),
+                reason=(f'score {result.score_details.score} is outside the '
+                        f'benchmark\'s declared range '
+                        f'[{bounds.min_score}, {bounds.max_score}], so the two '
+                        'disagree about the scale and neither can be trusted'),
+            ))
             continue
         model_info, org, slug = normalize_model_info(model)
-        key = (org, slug, relationship_from_score(score))
+        key = (org, slug, relationship_from_score(score, citation_breadth))
         groups[key].append(result)
         model_infos[key] = model_info
 
@@ -464,41 +565,30 @@ def make_logs(payload: dict[str, Any],
             evaluation_results=deduped,
         )
         bundles.append(LogBundle(log=log, developer=org, model=slug))
-    return bundles
+    return SourceConversionResult(
+        source_name='BenchPress score matrix',
+        total_records=len(payload['scores']),
+        records=bundles,
+        failures=failures,
+        exclusions=exclusions,
+    )
 
 
 # --------------------------------------------------------------------------- #
 # output
 # --------------------------------------------------------------------------- #
 
-def _json_default(obj: Any) -> Any:
-    if isinstance(obj, Enum):
-        return obj.value
-    raise TypeError(f'Not JSON serializable: {type(obj).__name__}')
-
-
-def write_log(log: EvaluationLog, base_dir: Path, developer: str, model: str) -> Path:
-    """Write one log as ``<base>/<dev>/<model>/<uuid>.json``.
-
-    Mirrors helpers.save_evaluation_log's layout, but serializes with
-    ``allow_nan=True`` so unbounded metric bounds (``float('inf')``) are written
-    as the ``Infinity`` token. EEE's loader (json.loads + pydantic) reads those
-    back as ``float('inf')``; pydantic's ``model_dump_json`` would instead null
-    them, which is why this adapter writes the JSON itself.
-    """
-    dir_path = generate_output_path(base_dir, developer, model)
-    dir_path.mkdir(parents=True, exist_ok=True)
-    filepath = dir_path / f'{uuid.uuid4()}.json'
-    data = log.model_dump(mode='python', exclude_none=True)
-    filepath.write_text(
-        json.dumps(data, indent=2, allow_nan=True, default=_json_default),
-        encoding='utf-8',
-    )
-    return filepath
-
-
 def export_logs(bundles: list[LogBundle], output_dir: Path) -> list[Path]:
-    return [write_log(b.log, output_dir, b.developer, b.model) for b in bundles]
+    """Publish every log in one batch, so a late failure leaves no partial tree."""
+    return save_evaluation_logs([
+        EvaluationLogOutput(
+            eval_log=bundle.log,
+            base_dir=output_dir,
+            developer=bundle.developer,
+            model_name=bundle.model,
+        )
+        for bundle in bundles
+    ])
 
 
 # --------------------------------------------------------------------------- #
@@ -514,6 +604,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--output-dir', type=Path, default=Path(DEFAULT_OUTPUT_DIR))
     parser.add_argument('--retrieved-timestamp', default=None,
                         help='Override the epoch timestamp (default: metadata.generated_at_utc).')
+    parser.add_argument('--revision', default=None,
+                        help='Dataset commit to read (default: the current one).')
+    parser.add_argument('--include-unaccepted', action='store_true',
+                        help='Also export scores BenchPress marks dropped, '
+                             'needs_review or flagged (excluded by default).')
     return parser.parse_args()
 
 
@@ -528,14 +623,29 @@ def _is_subpath(child: Path, parent: Path) -> bool:
 def run(args: argparse.Namespace) -> int:
     if args.save_raw_json is not None and _is_subpath(args.save_raw_json, args.output_dir):
         raise SystemExit('--save-raw-json must point outside --output-dir.')
-    payload = load_payload(args.input_json) if args.input_json else fetch_payload()
+    payload = (load_payload(args.input_json) if args.input_json
+               else fetch_payload(args.revision))
     if args.save_raw_json is not None:
         args.save_raw_json.parent.mkdir(parents=True, exist_ok=True)
         args.save_raw_json.write_text(json.dumps(payload, indent=2), encoding='utf-8')
-    bundles = make_logs(payload, retrieved_timestamp=args.retrieved_timestamp)
-    paths = export_logs(bundles, args.output_dir)
+    result = make_logs(
+        payload,
+        retrieved_timestamp=args.retrieved_timestamp,
+        include_unaccepted=args.include_unaccepted,
+    )
+    paths = export_logs(result.records, args.output_dir)
     for path in paths:
         print(path)
+    print(f'{result.total_records} source scores -> {len(paths)} log(s); '
+          f'{len(result.exclusions)} excluded, {len(result.failures)} failed')
+    if result.failures:
+        # Valid records are already published; the report and the non-zero exit
+        # are what keep the rejected rows from passing as a clean run.
+        report = save_failure_report(
+            result, default_failure_report_path(args.output_dir)
+        )
+        print(f'Rejected source rows: {report}')
+        result.raise_if_incomplete()
     return len(paths)
 
 
