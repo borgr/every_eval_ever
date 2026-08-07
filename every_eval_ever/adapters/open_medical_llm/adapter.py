@@ -18,12 +18,12 @@ import argparse
 import concurrent.futures as cf
 import json
 import re
-import sys
 import time
 import urllib.parse
 import urllib.request
 from collections import defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 
@@ -43,7 +43,13 @@ from every_eval_ever.eval_types import (
 )
 from every_eval_ever.helpers import (
     SCHEMA_VERSION,
-    save_evaluation_log,
+    EvaluationLogOutput,
+    SourceConversionResult,
+    SourceRecordExclusion,
+    SourceRecordFailure,
+    default_failure_report_path,
+    save_evaluation_logs,
+    save_failure_report,
 )
 
 REPO = "openlifescienceai/results"
@@ -57,6 +63,10 @@ SRC = "open-medical-llm-leaderboard"
 RESOLVER_URL = "https://evaleval-entity-registry.hf.space/api/v1/resolve"
 # below this the resolver's alias is treated as unverified (flag for review):
 RESOLVE_CONFIDENCE_FLOOR = 0.9
+
+# HF resolves a renamed/aliased repo id to its current one on GET. Used only to
+# adjudicate a path/config disagreement — see evaluated_model_repo.
+HF_MODEL_API = "https://huggingface.co/api/models/"
 
 # task name -> (human display name, verified HF dataset repo)
 TASKS = {
@@ -210,6 +220,69 @@ def _needs_registry_review(prov: dict | None) -> bool:
     return isinstance(conf, (int, float)) and conf < RESOLVE_CONFIDENCE_FLOOR
 
 
+def pretrained_repo(config: dict) -> str | None:
+    """``model_args.pretrained`` — the checkpoint lm-evaluation-harness loaded."""
+    args = config.get("model_args")
+    if isinstance(args, dict):
+        value = args.get("pretrained")
+    else:
+        match = re.search(r"pretrained=([^,]+)", str(args or ""))
+        value = match.group(1) if match else None
+    if isinstance(value, str) and value.strip(" \"'"):
+        return value.strip(" \"'")
+    return None
+
+
+def config_model_repo(config: dict) -> str | None:
+    """The model id the run itself recorded: ``pretrained``, else ``model_name``."""
+    name = config.get("model_name")
+    fallback = name.strip(" \"'") if isinstance(name, str) else ""
+    return pretrained_repo(config) or fallback or None
+
+
+def canonical_hf_repo(repo: str, *, timeout: float = 15.0) -> str | None:
+    """The repo id HF's alias redirect lands on, or ``None`` if it cannot be read."""
+    try:
+        resp = requests.get(f"{HF_MODEL_API}{repo}", timeout=timeout)
+        resp.raise_for_status()
+        return resp.json().get("id") or None
+    except Exception:  # noqa: BLE001 — an unreadable alias is reported, not guessed
+        return None
+
+
+def evaluated_model_repo(
+    model_repo: str, config: dict, *, check_aliases: bool = True
+) -> tuple[str | None, dict]:
+    """Which model the scores belong to, or ``None`` with the reason it is unclear.
+
+    Returns ``(repo, provenance)``. The dataset path and the run config normally
+    agree, and the path is used. When they disagree either one can be the typo, so
+    both are resolved through HuggingFace's alias redirect: two spellings of one
+    repo (``aaditya/OpenBioLLM-Llama3-70B`` and ``aaditya/OpenBioLLMLlama-70B``
+    both resolve to ``aaditya/Llama3-OpenBioLLM-70B``) give a single answer, and
+    genuinely different repos mean the evaluated model is not recoverable from the
+    export. Nothing is picked by preference, because a wrong pick attributes one
+    model's scores to another.
+    """
+    config_repo = config_model_repo(config)
+    if not config_repo or config_repo == model_repo:
+        return model_repo, {"model_identity_source": "dataset_path"}
+
+    provenance = {
+        "model_identity_dataset_path": model_repo,
+        "model_identity_run_config": config_repo,
+        "name_path_divergence": True,
+    }
+    if not check_aliases:
+        return None, {**provenance, "model_identity_source": "unresolved_offline"}
+    resolved = {repo: canonical_hf_repo(repo) for repo in (model_repo, config_repo)}
+    if None in resolved.values():
+        return None, {**provenance, "model_identity_source": "unresolved_unreachable"}
+    if resolved[model_repo] != resolved[config_repo]:
+        return None, {**provenance, "model_identity_source": "conflicting_repos"}
+    return resolved[model_repo], {**provenance, "model_identity_source": "hf_alias"}
+
+
 def latest_per_model(paths: list[str]) -> tuple[dict[str, str], list[str]]:
     """Group 3-segment ``developer/model/results_*.json`` paths, latest file per model.
 
@@ -271,7 +344,9 @@ def make_result(task: str, metrics: dict, eval_ts_iso: str | None) -> Evaluation
                 f"Accuracy on the {display} medical QA benchmark as reported by the "
                 "Open Medical-LLM Leaderboard."
             ),
-            metric_id=f"{SRC}.{task}.accuracy",
+            # The registry's canonical global metric: accuracy on a 4-choice MCQ
+            # set is `accuracy`. The benchmark is kept apart by evaluation_name.
+            metric_id="accuracy",
             metric_name="accuracy",
             metric_kind="accuracy",
             metric_unit="proportion",
@@ -295,12 +370,13 @@ def make_log(
 ) -> tuple[EvaluationLog, str, str] | None:
     """Build one aggregate log for ``developer/model``.
 
-    ``model_id`` is the registry-canonical id for ``model_info.id`` (the join
-    key); pass ``None`` for path-mode (id == source repo). ``evaluation_id`` is
-    ALWAYS keyed on the raw source repo, never on ``model_id`` — see
-    resolve_model_id for why (idempotency vs. a movable canonical id). Offline
-    unit tests call this directly without a resolver, so it never touches the
-    network.
+    ``model_repo`` is the evaluated model as established by evaluated_model_repo,
+    and it drives the developer/model routing, the record identity and the model
+    metadata. ``model_id`` is the registry-canonical id for ``model_info.id`` (the
+    join key); pass ``None`` for path-mode (id == source repo). ``evaluation_id``
+    is keyed on ``model_repo``, never on ``model_id`` — see resolve_model_id for
+    why (idempotency vs. a movable canonical id). Offline unit tests call this
+    directly without a resolver, so it never touches the network.
     """
     developer, model = model_repo.split("/", 1)
     config = obj.get("config", {}) or {}
@@ -338,6 +414,11 @@ def make_log(
     raw_slug = model_repo.replace("/", "_")
 
     md_details: dict = {
+        # `pretrained=<hf repo>` is lm-evaluation-harness loading a checkpoint
+        # locally, so both axes are evidenced by the run config. Without it the
+        # placeholders stand rather than being asserted from the repo name.
+        "deployment_type": "self_deployed" if pretrained_repo(config) else None,
+        "model_availability": "open_weights" if pretrained_repo(config) else None,
         "model_sha": config.get("model_sha"),
         "model_dtype": config.get("model_dtype"),
         "model_args": config.get("model_args"),
@@ -348,16 +429,9 @@ def make_log(
         md_details.update(resolution_details)
     if resolved_id != model_repo:
         md_details["source_model_repo"] = model_repo  # keep the raw->canonical mapping visible
-    config_name = config.get("model_name")
-    if config_name and config_name != model_repo:
-        # config's model_name and the repo path disagree (either can be the typo);
-        # id follows the chosen source consistently — record BOTH so the maintainer
-        # can adjudicate rather than trusting one silently.
-        md_details["config_model_name"] = config_name
-        md_details["name_path_divergence"] = True
 
     model_info = ModelInfo(
-        name=config_name or model_repo,
+        name=model_repo,
         id=resolved_id,
         developer=developer,
         additional_details=clean_details(md_details),
@@ -393,6 +467,95 @@ def make_log(
     return log, developer, model
 
 
+def convert(
+    chosen: dict[str, str],
+    baselines: list[str],
+    retrieved_ts: str,
+    *,
+    resolve_enabled: bool = True,
+    workers: int = 8,
+) -> tuple[SourceConversionResult[tuple[EvaluationLog, str, str]], list[tuple[str, dict]]]:
+    """Convert every selected result file, accounting for each one.
+
+    Also returns the models whose registry id needs review. A selected file that
+    yields no record is a failure, not a skip: it was chosen as this
+    leaderboard's latest result for a model, so an empty conversion means the
+    export is incomplete.
+    """
+    flagged: list[tuple[str, dict]] = []
+    records: list[tuple[EvaluationLog, str, str]] = []
+    failures: list[SourceRecordFailure] = []
+
+    def worker(model_repo: str):
+        # make_log is INSIDE the try: a malformed record must not escape ex.map()
+        # and abort the whole run — it becomes a per-model failure instead.
+        try:
+            obj = fetch_json(chosen[model_repo])
+            evaluated, identity = evaluated_model_repo(
+                model_repo, obj.get("config") or {}, check_aliases=resolve_enabled
+            )
+            if evaluated is None:
+                return ("ERR", model_repo,
+                        f'the dataset path and the run config name different models '
+                        f'({identity["model_identity_dataset_path"]} vs '
+                        f'{identity["model_identity_run_config"]}) and they could not '
+                        f'be reconciled ({identity["model_identity_source"]}), so '
+                        f'which model was evaluated is unknown', None)
+            model_id, prov = resolve_model_id(evaluated, enabled=resolve_enabled)
+            built = make_log(evaluated, obj, chosen[model_repo], retrieved_ts,
+                             model_id=model_id,
+                             resolution_details={**identity, **prov})
+        except Exception as e:  # noqa: BLE001
+            return ("ERR", model_repo, str(e), None)
+        if built is None:
+            return ("ERR", model_repo,
+                    'none of the leaderboard tasks carry an `acc,none` score', None)
+        return ("OK", model_repo, built, prov)
+
+    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
+        for status, model_repo, payload, prov in ex.map(worker, sorted(chosen)):
+            if status == "OK":
+                records.append(payload)
+                if resolve_enabled and _needs_registry_review(prov):
+                    flagged.append((model_repo, prov))
+            else:
+                failures.append(SourceRecordFailure(
+                    source_ref=chosen[model_repo], reason=payload,
+                ))
+                print(f"  ERROR {model_repo}: {payload}")
+
+    exclusions = [
+        SourceRecordExclusion(
+            source_ref=path,
+            reason=('a hand-curated closed-model baseline (bare `acc`, no '
+                    '`acc_stderr`/`model_args`), not an lm-evaluation-harness run'),
+        )
+        for path in sorted(baselines)
+    ]
+    return SourceConversionResult(
+        source_name='Open Medical-LLM Leaderboard results',
+        total_records=len(chosen) + len(baselines),
+        records=records,
+        failures=failures,
+        exclusions=exclusions,
+    ), flagged
+
+
+def existing_records(
+    output_dir: str, routes: list[tuple[str, str]]
+) -> list[Path]:
+    """Records already published for the models this run is about to write.
+
+    Filenames are fresh uuid4s, so publishing over a populated target would add
+    a second copy of the same evaluation_id rather than replace it.
+    """
+    return sorted(
+        path
+        for developer, model in routes
+        for path in Path(output_dir).joinpath(developer, model).glob('*.json')
+    )
+
+
 def main() -> dict:
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-dir", default="data/open-medical-llm")
@@ -402,7 +565,16 @@ def main() -> dict:
         "--no-registry-resolve",
         action="store_true",
         help="Skip the eval-card-registry lookup and use the path-derived HF id as "
-             "model_info.id (faster / offline / deterministic, but NOT canonicalized).",
+             "model_info.id (faster / offline / deterministic, but NOT canonicalized). "
+             "Also skips the HuggingFace alias check used to reconcile a "
+             "path/config model-name disagreement.",
+    )
+    ap.add_argument(
+        "--replace-existing",
+        action="store_true",
+        help="Delete the records already published for these models before "
+             "writing. Without it a populated output directory is an error, "
+             "because a re-run would add a second copy of every record.",
     )
     args = ap.parse_args()
     resolve_enabled = not args.no_registry_resolve
@@ -410,10 +582,9 @@ def main() -> dict:
     retrieved_ts = str(time.time())
     paths = list_result_files()
     chosen, baselines = latest_per_model(paths)
-    models = sorted(chosen)
     if args.limit:
-        models = models[: args.limit]
-    print(f"Models to process: {len(models)}")
+        chosen = {model: chosen[model] for model in sorted(chosen)[: args.limit]}
+    print(f"Models to process: {len(chosen)}")
     print(
         f"Skipped {len(baselines)} hand-curated baseline entries (different provenance): "
         + ", ".join(sorted(p.split('/')[0] for p in baselines))
@@ -421,36 +592,40 @@ def main() -> dict:
     if not resolve_enabled:
         print("  NOTE: --no-registry-resolve set; model_info.id is path-derived and NOT registry-verified.")
 
-    def worker(model_repo: str):
-        # make_log is INSIDE the try: a malformed record must not escape ex.map()
-        # and abort the whole run — it becomes a per-model error instead.
-        try:
-            obj = fetch_json(chosen[model_repo])
-            model_id, prov = resolve_model_id(model_repo, enabled=resolve_enabled)
-            built = make_log(model_repo, obj, chosen[model_repo], retrieved_ts,
-                             model_id=model_id, resolution_details=prov)
-        except Exception as e:  # noqa: BLE001
-            return ("ERR", model_repo, str(e), None)
-        if built is None:
-            return ("SKIP", model_repo, "no medical results", None)
-        return ("OK", model_repo, built, prov)
+    result, flagged = convert(
+        chosen, baselines, retrieved_ts,
+        resolve_enabled=resolve_enabled, workers=args.workers,
+    )
 
-    written = errors = skipped = 0
-    flagged: list[tuple[str, dict]] = []
-    with cf.ThreadPoolExecutor(max_workers=args.workers) as ex:
-        for status, model_repo, payload, prov in ex.map(worker, models):
-            if status == "OK":
-                log, developer, model = payload
-                save_evaluation_log(log, args.output_dir, developer, model)
-                written += 1
-                if resolve_enabled and _needs_registry_review(prov):
-                    flagged.append((model_repo, prov))
-            elif status == "SKIP":
-                skipped += 1
-            else:
-                errors += 1
-                print(f"  ERROR {model_repo}: {payload}")
-    print(f"Wrote {written} logs; skipped {skipped}; errors {errors}. -> {args.output_dir}")
+    stale = existing_records(
+        args.output_dir, [(developer, model) for _, developer, model in result.records]
+    )
+    if stale and not args.replace_existing:
+        raise SystemExit(
+            f'{len(stale)} record(s) are already published under '
+            f'{args.output_dir} for these models, e.g. {stale[0]}. Record '
+            'filenames are fresh uuid4s, so writing now would add a second copy '
+            'of each evaluation_id. Pass --replace-existing to replace them.'
+        )
+    for path in stale:
+        path.unlink()
+
+    written = save_evaluation_logs([
+        EvaluationLogOutput(
+            eval_log=log,
+            base_dir=args.output_dir,
+            developer=developer,
+            model_name=model,
+        )
+        for log, developer, model in result.records
+    ])
+    print(f"Wrote {len(written)} logs; {len(result.exclusions)} excluded; "
+          f"{len(result.failures)} failed. -> {args.output_dir}")
+    if result.failures:
+        report = save_failure_report(
+            result, default_failure_report_path(args.output_dir)
+        )
+        print(f"Unconverted source files: {report}")
     if flagged:
         print(f"\n  {len(flagged)} model id(s) need registry review "
               "(unresolved / auto-created draft / low-confidence / unreviewed):")
@@ -461,9 +636,14 @@ def main() -> dict:
                   f"created_new={prov.get('model_id_created_new')} "
                   f"review_status={prov.get('model_id_review_status')}")
         print("  -> record these in the PR decision log and prepare a registry alias PR.")
-    return {"written": written, "errors": errors, "skipped": skipped, "flagged": len(flagged)}
+    result.raise_if_incomplete()
+    return {
+        "written": len(written),
+        "failures": len(result.failures),
+        "exclusions": len(result.exclusions),
+        "flagged": len(flagged),
+    }
 
 
 if __name__ == "__main__":            # run:  uv run python -m every_eval_ever.adapters.open_medical_llm.adapter
-    summary = main()
-    sys.exit(1 if summary["errors"] else 0)   # non-zero on partial failure (was always 0)
+    main()
