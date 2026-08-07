@@ -238,6 +238,18 @@ generation settings from, recording which rung of its evidence ladder fired as
 `identity_source`. Entries it cannot resolve are reported as failures rather
 than published under a guessed name.
 
+`deployment_type` and `inference_platform` normally come from the config's
+`fn_completions`, but 28 configs record none — the key is absent, empty, or the
+literal `null`. For those the `completions_kwargs` still decide it, because
+AlpacaEval's local and API callers take different parameter names: a
+`model_kwargs.torch_dtype` is an argument to `from_pretrained` and cannot be sent
+to a remote API, and `max_new_tokens`/`max_length` are the
+`transformers.generate()` spellings where the API spelling is `max_tokens`. The
+kwarg that decided it is published as `deployment_evidence`; a config with only
+`max_tokens` says a request was made but not to whom, so it stays `unknown`.
+None of this touches `model_availability` — running weights yourself does not
+make them public, and the Humpback checkpoints were never released.
+
 Metrics converted per model:
 
 | Metric | Unit | Description |
@@ -267,6 +279,15 @@ speaks the same vocabulary as the rest of EEE:
 - Values the registry has no canonical for keep a namespaced `alpaca_eval.*` id
   and say so through `*_registry_strategy` in `additional_details`. The CLI
   prints the current gap list on every run.
+- `*_registry_strategy` also says **how much of the spelling had to be discarded**
+  to reach the canonical id, because that is the difference between reading an
+  identifier and guessing. `snapshot_exact` is a canonical id verbatim;
+  `snapshot_identifier` / `snapshot_alias_identifier` matched a spelling the
+  registry records (a canonical id, an `hf_org` namespace, a confirmed alias)
+  case-insensitively; `snapshot_normalized` / `snapshot_alias_normalized` matched
+  only after punctuation was dropped too — which is how `anthropic/claude-2.1`
+  would become `claude-21`. Every organization on both leaderboards currently
+  matches a recorded identifier, and a test fails if that stops being true.
 
 Resolution goes through `helpers/eval_card_registry.py`, which every consumer in
 this repo shares, and it reads a vendored snapshot of the registry's read-only

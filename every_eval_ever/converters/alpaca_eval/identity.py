@@ -143,6 +143,12 @@ _HOSTED_FNS = {
     'huggingface_completions': 'huggingface',
 }
 
+#: ``fn_completions`` values that name no caller. Upstream spells "absent"
+#: three ways — the key missing, an empty value, and the literal ``null``
+#: (``Samba-CoE-v0.1``) — and only reading the first two leaves the third
+#: looking like a completions function this converter has never heard of.
+_NO_COMPLETIONS_FN = frozenset({'', 'null', 'none'})
+
 _NON_ALNUM = re.compile(r'[^a-z0-9]+')
 
 #: Identity rungs whose ``model_id`` **is** a HuggingFace repo id — taken from
@@ -209,6 +215,10 @@ class ModelIdentity:
     #: is recoverable from ``reference_link`` too, but a consumer joining on ids
     #: should not have to parse a URL to learn that an id was rewritten.
     model_id_as_referenced: Optional[str] = None
+    #: The ``completions_kwargs`` key that decided ``deployment_type``, set only
+    #: where upstream recorded no ``fn_completions`` to read it from — see
+    #: :func:`local_generate_evidence`.
+    deployment_evidence: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +407,42 @@ def _vendor_from_fn(fn: str, custom_base_url: str) -> Optional[str]:
     return None
 
 
-def _deployment(fn: str, custom_base_url: str) -> tuple:
+def local_generate_evidence(config: Dict[str, Any]) -> Optional[str]:
+    """Why this entry's kwargs show weights loaded in the submitter's process.
+
+    Twenty-eight upstream configs record no usable ``fn_completions`` at all —
+    the key is absent, empty, or the literal string ``null`` — so
+    :func:`_deployment` has nothing to read and the entry publishes
+    ``deployment_type: unknown``. That is the field the model registry uses to
+    tell one deployment of a model from another, so leaving it unknown where the
+    config does say is a gap, not caution.
+
+    Two things in ``completions_kwargs`` are decidable without guessing, both
+    keyed on the fact that AlpacaEval's local and API callers take *different
+    parameter names*:
+
+    - ``model_kwargs.torch_dtype`` — a torch dtype is an argument to
+      ``from_pretrained``. There is no remote API to pass one to.
+    - ``max_new_tokens`` / ``max_length`` — the ``transformers.generate()``
+      spelling. The API spelling is ``max_tokens``, which is why a config using
+      *that* stays unknown: it says a request was made, not to whom.
+
+    Returns the kwarg that decided it, so the published record carries the
+    evidence rather than an unsourced claim, or ``None`` to leave it unknown.
+    Says nothing about ``model_availability``: running weights yourself does not
+    make them public, and two of these entries (the Humpback checkpoints) were
+    never released.
+    """
+    kwargs = completions_kwargs(config)
+    if _mapping(kwargs.get('model_kwargs')).get('torch_dtype'):
+        return 'model_kwargs.torch_dtype'
+    for key in ('max_new_tokens', 'max_length'):
+        if kwargs.get(key) is not None:
+            return key
+    return None
+
+
+def _deployment(fn: str, custom_base_url: str, config: Dict[str, Any]) -> tuple:
     """Return ``(deployment_type, inference_platform, inference_engine)``."""
     if _served_locally(fn, custom_base_url):
         return 'self_deployed', 'local', _LOCAL_FNS.get(fn)
@@ -408,6 +453,10 @@ def _deployment(fn: str, custom_base_url: str) -> tuple:
         return 'externally_managed', _VENDOR_FNS[fn], None
     if fn in _HOSTED_FNS:
         return 'externally_managed', _HOSTED_FNS[fn], None
+    if fn.lower() in _NO_COMPLETIONS_FN and local_generate_evidence(config):
+        # The engine stays unset: the kwargs say the weights were held locally,
+        # not whether transformers or vLLM ran them.
+        return 'self_deployed', 'local', None
     return 'unknown', None, None
 
 
@@ -503,7 +552,12 @@ def resolve_identity(
         link, link_evidence = _LINK_EVIDENCE[slug]
     custom_base_url = base_url(config)
     pretty = config.get('pretty_name')
-    deployment_type, platform, engine = _deployment(fn, custom_base_url)
+    deployment_type, platform, engine = _deployment(fn, custom_base_url, config)
+    deployment_evidence = (
+        local_generate_evidence(config)
+        if fn.lower() in _NO_COMPLETIONS_FN and deployment_type != 'unknown'
+        else None
+    )
     availability = _availability(fn, link, custom_base_url)
     hf_repo = hf_repo_from_link(link)
     third_party_host = bool(custom_base_url) and not _is_local_url(
@@ -561,6 +615,7 @@ def resolve_identity(
             upstream_model_name=model_name or None,
             link_evidence=link_evidence,
             model_id_as_referenced=referenced,
+            deployment_evidence=deployment_evidence,
         )
 
     # 0. A hosting provider's namespace and spelling are not the model's

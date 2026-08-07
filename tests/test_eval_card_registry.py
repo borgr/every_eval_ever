@@ -16,7 +16,9 @@ from every_eval_ever.helpers.eval_card_registry import (
     snapshot_meta,
 )
 from every_eval_ever.tools.refresh_eval_card_registry import (
+    org_alias_spellings,
     org_identities,
+    org_identity_spellings,
     org_second_names,
 )
 
@@ -65,6 +67,52 @@ def test_a_namespace_does_not_claim_a_contested_spelling():
     )
 
     assert 'deepautoai' not in identities
+
+
+def test_identity_spellings_keep_the_punctuation_the_registry_records():
+    """``meta-llama`` is a declared namespace; ``metallama`` is nobody's name."""
+    spellings = org_identity_spellings(
+        [_org('meta', 'meta-llama'), _org('Qwen'), _org('DeepAuto-AI')]
+    )
+
+    assert spellings['meta-llama'] == 'meta'
+    assert 'metallama' not in spellings
+    # Case is still folded: the registry aims for HuggingFace-true casing and
+    # HuggingFace is not consistent, so these are one identifier.
+    assert spellings['qwen'] == 'Qwen'
+    # Punctuation twins stay distinct here, so neither has to be dropped.
+    assert spellings['deepauto-ai'] == 'DeepAuto-AI'
+
+
+def test_a_spelling_two_organizations_record_is_dropped_here_too():
+    orgs = [_org('acme', 'shared-ns'), _org('other', 'Shared-NS')]
+
+    assert org_identity_spellings(orgs) == {
+        'acme': 'acme',
+        'other': 'other',
+    }
+
+
+def test_alias_spellings_keep_an_alias_that_restates_its_own_name():
+    """The read-side ``second_name_of`` drops these; resolution wants them.
+
+    ``second_name_of`` answers "is this a *second* name", where an alias
+    restating its organization's own id carries no information. Here the question
+    is "which organization is this", and such an alias is a fine way to get
+    there.
+    """
+    spellings = org_identity_spellings([_org('mistralai'), _org('allenai')])
+    aliases = org_alias_spellings(
+        [
+            _alias('Mistral AI', 'mistralai'),
+            _alias('AI2', 'allenai'),
+            _alias('Guess', 'allenai', status='pending'),
+            _alias('Stale', 'an-org-the-registry-dropped'),
+        ],
+        spellings,
+    )
+
+    assert aliases == {'mistral ai': 'mistralai', 'ai2': 'allenai'}
 
 
 def test_second_names_keep_only_a_genuinely_different_name():
@@ -142,10 +190,66 @@ def test_org_resolution_reads_namespaces_and_second_names_alike():
     registry = Registry()
 
     assert registry.org('meta-llama').canonical_id == 'meta'
-    assert registry.org('meta-llama').strategy == 'snapshot'
+    assert registry.org('meta-llama').strategy == 'snapshot_identifier'
     assert registry.org('AI2').canonical_id == 'allenai'
-    assert registry.org('AI2').strategy == 'snapshot_alias'
+    assert registry.org('AI2').strategy == 'snapshot_alias_identifier'
     assert registry.org('meta-llama').reviewed
+
+
+def test_a_recorded_spelling_outranks_a_punctuation_collapse():
+    """The two are different claims, and the record has to say which was used.
+
+    ``meta-llama`` is a namespace Meta declares; ``metallama`` is a spelling
+    nobody declared that merely collapses onto one. Publishing both as
+    ``snapshot`` hid the difference behind the stronger of the two, and
+    punctuation guessing is how ``anthropic/claude-2.1`` becomes ``claude-21``.
+    """
+    registry = Registry()
+
+    assert registry.org('meta-llama').strategy == 'snapshot_identifier'
+    assert registry.org('META-LLAMA').strategy == 'snapshot_identifier'
+    assert registry.org('metallama').strategy == 'snapshot_normalized'
+    assert registry.org('Moonshot AI').strategy == 'snapshot_alias_identifier'
+    assert registry.org('moonshot-ai').strategy == 'snapshot_normalized'
+    # Same answer either way; only the strength of the claim differs.
+    assert registry.org('metallama').canonical_id == 'meta'
+
+
+def test_no_alpaca_eval_publisher_needs_the_normalized_tiers():
+    """Every organization on either leaderboard matches a recorded identifier.
+
+    This is the measurement behind publishing punctuation-insensitive matches at
+    all: the fallback exists, and today it decides nothing. If a future upstream
+    row lands on it, this test fails and the spelling gets looked at rather than
+    resolved by coincidence.
+    """
+    registry = Registry()
+    namespaces = (
+        'meta-llama',
+        'Qwen',
+        'HuggingFaceH4',
+        'NousResearch',
+        'baichuan-inc',
+        'deepseek-ai',
+        'zai-org',
+        'Nanbeige',
+        'WizardLM',
+        'WizardLMTeam',
+        'mistralai',
+        'lmsys',
+        'openai',
+        'anthropic',
+    )
+    weak = {'snapshot_normalized', 'snapshot_alias_normalized'}
+    resolved = {
+        namespace: registry.org(namespace) for namespace in namespaces
+    }
+
+    assert not [
+        namespace
+        for namespace, res in resolved.items()
+        if res.resolved and res.strategy in weak
+    ]
 
 
 def test_a_canonical_id_always_resolves_to_itself():

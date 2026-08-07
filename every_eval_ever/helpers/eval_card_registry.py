@@ -44,6 +44,16 @@ fatal: a live failure falls back to the snapshot, and an unresolved value falls
 back to the source-derived spelling marked unverified, so a registry outage
 degrades provenance instead of blocking a conversion.
 
+That last property is deliberate, and it is the half of a two-part contract:
+**conversion is soft, validation is hard.** A converter records what the
+registry said, including that it said nothing, and finishes; the validator is
+where an unresolved id is refused. Putting the refusal in the converter instead
+would mean a registry outage — or a model the registry has not been taught yet
+— destroys a day's extraction rather than marking it, and marking it is enough
+because the record carries ``strategy`` and can be re-resolved from disk. A
+converter that fails closed on a shared network service also cannot be run
+reproducibly against an archived leaderboard, which is most of the point.
+
 Refresh the snapshot with
 ``python -m every_eval_ever.tools.refresh_eval_card_registry``.
 """
@@ -89,6 +99,10 @@ def normalize(value: str) -> str:
     about punctuation and case (it aims for HuggingFace-true casing, and
     HuggingFace is not consistent either), so treating those differences as
     meaningful would produce noise rather than signal.
+
+    Discarding punctuation is a weaker claim than folding case, so
+    :meth:`Registry.org` tries the case-folded spelling first and labels the two
+    outcomes differently rather than treating this as the only key.
     """
     if not isinstance(value, str):
         return ''
@@ -126,8 +140,12 @@ class Resolution(NamedTuple):
     entity_type: str
     canonical_id: Optional[str]
     review_status: Optional[str]
-    #: ``snapshot`` | ``snapshot_alias`` | ``live_exact`` | ``no_canonical``
-    #: | ``registry_disabled`` | ``registry_unavailable``
+    #: ``snapshot_exact`` | ``snapshot_identifier``
+    #: | ``snapshot_alias_identifier`` | ``snapshot_normalized``
+    #: | ``snapshot_alias_normalized`` | ``snapshot`` | ``live_exact``
+    #: | ``no_canonical`` | ``registry_disabled`` | ``registry_unavailable``.
+    #: The org tiers are ordered by how much of the spelling was discarded to
+    #: reach a match — see :meth:`Registry.org`.
     strategy: str
     record: Dict[str, Any] = {}
 
@@ -197,11 +215,29 @@ class Registry:
         Both a canonical id and a namespace the registry records for one resolve
         here, because both name the same organization.
 
-        An exact canonical id is answered by name, before normalization. Two ids
-        can collapse to one normalized spelling (``DeepAuto-AI`` and
-        ``deepautoai``), and that spelling is left unowned rather than awarded to
-        one of them, so without this an id would resolve to a different
-        organization or not at all.
+        Five tiers, tried in order of how much of the spelling had to be thrown
+        away to get a match, and ``strategy`` records which one answered:
+
+        ``snapshot_exact``
+            The value **is** a canonical id. Tried first because two ids can
+            collapse to one normalized spelling (``DeepAuto-AI`` and
+            ``deepautoai``) and that spelling is left unowned rather than
+            awarded to one of them, so without this an id would resolve to a
+            different organization or not at all.
+        ``snapshot_identifier`` / ``snapshot_alias_identifier``
+            A spelling the registry records — a canonical id, a ``hf_org``
+            namespace, or a confirmed alias — matched case-insensitively.
+        ``snapshot_normalized`` / ``snapshot_alias_normalized``
+            The same, but only after punctuation was discarded as well.
+
+        The split matters because the two are different claims. ``meta-llama``
+        is a namespace Meta declares; ``metallama`` is a spelling nobody
+        declared that merely collapses onto one. Guessing from punctuation is
+        how ``anthropic/claude-2.1`` becomes ``claude-21``, so a reader of a
+        published record is entitled to know which happened. Today no
+        organization on either AlpacaEval leaderboard reaches its canonical id
+        by the normalized tiers; every one of them matches a recorded
+        identifier.
         """
         if not self.enabled:
             return _unresolved(slug, 'org', 'registry_disabled')
@@ -215,21 +251,26 @@ class Registry:
                 review_status=snapshot['org_review_status'][exact],
                 strategy='snapshot_exact',
             )
+        # Sections a snapshot taken before the tiers were split does not carry;
+        # such a snapshot resolves by the normalized tiers alone, as it did.
+        folded = exact.lower() if isinstance(exact, str) else ''
         key = normalize(slug)
-        canonical = snapshot['org_identities'].get(key)
-        strategy = 'snapshot'
-        if canonical is None:
-            canonical = snapshot['org_aliases'].get(key)
-            strategy = 'snapshot_alias'
-        if canonical is None:
-            return self._live('org', slug)
-        return Resolution(
-            raw_value=slug,
-            entity_type='org',
-            canonical_id=canonical,
-            review_status=snapshot['org_review_status'].get(canonical),
-            strategy=strategy,
-        )
+        for section, lookup, strategy in (
+            ('org_identity_spellings', folded, 'snapshot_identifier'),
+            ('org_alias_spellings', folded, 'snapshot_alias_identifier'),
+            ('org_identities', key, 'snapshot_normalized'),
+            ('org_aliases', key, 'snapshot_alias_normalized'),
+        ):
+            canonical = (snapshot.get(section) or {}).get(lookup)
+            if canonical is not None:
+                return Resolution(
+                    raw_value=slug,
+                    entity_type='org',
+                    canonical_id=canonical,
+                    review_status=snapshot['org_review_status'].get(canonical),
+                    strategy=strategy,
+                )
+        return self._live('org', slug)
 
     # -- metrics / benchmarks / harnesses ---------------------------------
 

@@ -131,6 +131,74 @@ def _named_entry(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _one_owner(claims: Dict[str, set]) -> Dict[str, str]:
+    """Keep only the spellings exactly one organization claims."""
+    return {
+        key: next(iter(owners))
+        for key, owners in claims.items()
+        if len(owners) == 1
+    }
+
+
+def org_identity_spellings(orgs: List[Dict[str, Any]]) -> Dict[str, str]:
+    """``lowercased spelling -> canonical org id``, punctuation intact.
+
+    The same mapping as :func:`org_identities`, keyed by the spelling the
+    registry actually records rather than by its punctuation-stripped form.
+    Consumers try this first, so a resolution can say whether it matched a
+    recorded identifier or only survived after punctuation was discarded —
+    ``meta-llama`` is a namespace Meta declares, while ``metallama`` is a
+    spelling nobody declared that merely collapses onto one.
+
+    Case is still folded. The registry aims for HuggingFace-true casing and
+    HuggingFace is not consistent, so ``Qwen`` and ``qwen`` are one identifier.
+
+    Same one-owner-wins rule as :func:`org_identities`, and for the same
+    reason: this mapping decides a published ``model_info.developer``.
+    """
+    claims: Dict[str, set] = {}
+    for record in orgs:
+        org_id = record.get('id')
+        if not isinstance(org_id, str) or not org_id.strip():
+            continue
+        for spelling in (org_id, record.get('hf_org')):
+            if isinstance(spelling, str) and spelling.strip():
+                claims.setdefault(spelling.strip().lower(), set()).add(
+                    org_id.strip()
+                )
+    return _one_owner(claims)
+
+
+def org_alias_spellings(
+    org_aliases: List[Dict[str, Any]], identities: Dict[str, str]
+) -> Dict[str, str]:
+    """``lowercased confirmed alias -> canonical org id``, punctuation intact.
+
+    The case-preserving counterpart of :func:`org_second_names`, and it drops
+    toward silence for the same reasons: confirmed only, one organization per
+    spelling, and an identity wins over an alias.
+
+    Unlike :func:`org_second_names` this keeps an alias that merely restates its
+    own organization's name. That function answers "is this a *second* name",
+    where restating an identity carries no information; here the question is
+    "which organization is this", and an alias confirming what an id already
+    says is a fine way to get there.
+    """
+    listed = set(identities.values())
+    claims: Dict[str, set] = {}
+    for record in org_aliases:
+        raw, canonical = record.get('raw_value'), record.get('canonical_id')
+        if record.get('status') != 'confirmed':
+            continue
+        if not isinstance(raw, str) or canonical not in listed:
+            continue
+        key = raw.strip().lower()
+        if not key or key in identities:
+            continue
+        claims.setdefault(key, set()).add(canonical)
+    return _one_owner(claims)
+
+
 def org_identities(orgs: List[Dict[str, Any]]) -> Dict[str, str]:
     """``normalized spelling -> canonical org id`` for every name of record.
 
@@ -160,11 +228,7 @@ def org_identities(orgs: List[Dict[str, Any]]) -> Dict[str, str]:
         if isinstance(org_id, str) and normalize(org_id):
             claimants.setdefault(normalize(org_id), set()).add(org_id)
 
-    identities: Dict[str, str] = {
-        key: next(iter(owners))
-        for key, owners in claimants.items()
-        if len(owners) == 1
-    }
+    identities: Dict[str, str] = _one_owner(claimants)
     for record in sorted(orgs, key=lambda record: str(record.get('id', ''))):
         namespace, org_id = record.get('hf_org'), record.get('id')
         if isinstance(namespace, str) and isinstance(org_id, str):
@@ -253,6 +317,8 @@ def build_snapshot(base_url: str = REGISTRY_BASE_URL) -> Dict[str, Any]:
     identities = org_identities(orgs)
     second_names = org_second_names(aliases, identities)
     review_status = org_review_status(orgs)
+    spellings = org_identity_spellings(orgs)
+    alias_spellings = org_alias_spellings(aliases, spellings)
 
     return {
         '_meta': {
@@ -269,8 +335,11 @@ def build_snapshot(base_url: str = REGISTRY_BASE_URL) -> Dict[str, Any]:
                 'Regenerate with '
                 'python -m every_eval_ever.tools.refresh_eval_card_registry. '
                 'Do not edit by hand. Derived, not a verbatim mirror: org '
-                'spellings are normalized, and an alias is dropped when it '
-                'restates an identity or points at two organizations. '
+                'spellings are recorded twice, once case-folded and once also '
+                'punctuation-stripped, so a consumer can tell a recorded '
+                'identifier from a spelling that only collapses onto one; an '
+                'alias is dropped when it restates an identity or points at '
+                'two organizations. '
                 'Authoritative at snapshot time: entries added to the '
                 'registry later resolve here only after a refresh.'
             ),
@@ -281,11 +350,15 @@ def build_snapshot(base_url: str = REGISTRY_BASE_URL) -> Dict[str, Any]:
                 'orgs': len(orgs),
                 'org_aliases_confirmed': len(second_names),
                 'org_identities': len(identities),
+                'org_identity_spellings': len(spellings),
+                'org_alias_spellings': len(alias_spellings),
                 'metrics': len(metrics),
                 'benchmarks': len(benchmarks),
                 'harnesses': len(harnesses),
             },
         },
+        'org_identity_spellings': dict(sorted(spellings.items())),
+        'org_alias_spellings': dict(sorted(alias_spellings.items())),
         'org_identities': dict(sorted(identities.items())),
         'org_aliases': dict(sorted(second_names.items())),
         'org_review_status': dict(sorted(review_status.items())),

@@ -819,6 +819,101 @@ def test_identity_reads_the_legacy_openai_api_base_as_local_serving():
     assert resolved.model_availability == 'open_weights'
 
 
+@pytest.mark.parametrize(
+    'kwargs,evidence',
+    [
+        # A torch dtype is an argument to from_pretrained; there is no remote
+        # API to pass one to.
+        (
+            {'model_kwargs': {'torch_dtype': 'bfloat16'}, 'max_new_tokens': 4},
+            'model_kwargs.torch_dtype',
+        ),
+        # transformers.generate() spellings. The API spelling is max_tokens.
+        ({'max_new_tokens': 4096}, 'max_new_tokens'),
+        ({'max_length': 2048}, 'max_length'),
+    ],
+)
+def test_local_generate_kwargs_settle_a_missing_completions_fn(
+    kwargs, evidence
+):
+    """28 upstream configs record no ``fn_completions``; the kwargs still say.
+
+    ``deployment_type`` is what the model registry uses to tell one deployment
+    of a model from another, so publishing ``unknown`` where the config does say
+    is a gap rather than caution.
+    """
+    config = {'completions_kwargs': dict(kwargs, model_name='some/model')}
+    resolved = identity_mod.resolve_identity('some-model', config)
+
+    assert resolved.deployment_type == 'self_deployed'
+    assert resolved.inference_platform == 'local'
+    # The claim carries the kwarg it rests on, and does not invent an engine:
+    # the kwargs say the weights were held locally, not what ran them.
+    assert resolved.deployment_evidence == evidence
+    assert resolved.inference_engine is None
+
+
+def test_the_literal_string_null_is_read_as_no_completions_fn():
+    """``Samba-CoE-v0.1`` spells an absent ``fn_completions`` as ``null``.
+
+    Reading only a missing key and an empty string leaves that one looking like
+    a completions function this converter has never heard of, so the entry keeps
+    ``deployment_type: unknown`` even though its kwargs settle it.
+    """
+    config = {
+        'fn_completions': 'null',
+        'completions_kwargs': {
+            'model_name': 'sambanovasystems/Samba-CoE-v0.1',
+            'model_kwargs': {'torch_dtype': 'bfloat16'},
+            'max_new_tokens': 4096,
+        },
+    }
+    resolved = identity_mod.resolve_identity('Samba-CoE-v0.1', config)
+
+    assert resolved.deployment_type == 'self_deployed'
+
+
+def test_an_api_shaped_request_stays_unknown():
+    """``max_tokens`` says a request was made, not to whom.
+
+    The MoA entries (``Together-MoA``, ``TOA``, ``blendaxai-…``) are all this
+    shape. Reading the API spelling as local serving would claim these ran on
+    hardware the submitter controlled, which the config does not say.
+    """
+    config = {
+        'completions_kwargs': {
+            'model_name': 'Together-MoA',
+            'max_tokens': 2048,
+        },
+        'link': 'https://github.com/togethercomputer/MoA',
+    }
+    resolved = identity_mod.resolve_identity('Together-MoA', config)
+
+    assert identity_mod.local_generate_evidence(config) is None
+    assert resolved.deployment_type == 'unknown'
+    assert resolved.inference_platform is None
+    assert resolved.deployment_evidence is None
+
+
+def test_running_weights_locally_does_not_make_them_public():
+    """The Humpback checkpoints were run locally and never released.
+
+    ``deployment_type`` and ``model_availability`` are independent axes, so the
+    kwargs-based rule sets the first and leaves the second to the link evidence.
+    """
+    config = {
+        'completions_kwargs': {
+            'model_name': 'humpback-llama-65b',
+            'max_length': 2048,
+        },
+        'link': 'https://arxiv.org/abs/2308.06259',
+    }
+    resolved = identity_mod.resolve_identity('humpback-llama-65b', config)
+
+    assert resolved.deployment_type == 'self_deployed'
+    assert resolved.model_availability == 'unknown'
+
+
 def test_identity_returns_none_without_evidence():
     assert identity_mod.resolve_identity('mystery-model', None) is None
 
@@ -975,7 +1070,8 @@ def test_published_record_reports_the_namespace_and_the_referenced_id():
     details = log.model_info.additional_details
 
     assert log.model_info.id == 'WizardLMTeam/WizardLM-13B-V1.2'
-    assert details['model_id_prefix'] == 'WizardLMTeam'
+    assert details['raw_model_namespace'] == 'WizardLMTeam'
+    assert details['raw_model_id'] == 'WizardLMTeam/WizardLM-13B-V1.2'
     assert details['model_id_as_referenced'] == 'WizardLM/WizardLM-13B-V1.2'
     # The registry canonicalizes the organization the source named, not the
     # namespace the repo has since moved to.
@@ -1287,7 +1383,7 @@ def test_developer_is_the_registrys_canonical_organization():
     assert log.model_info.id.startswith('meta-llama/')
     assert log.model_info.developer == 'meta'
     details = log.model_info.additional_details
-    assert details['model_id_prefix'] == 'meta-llama'
+    assert details['raw_model_namespace'] == 'meta-llama'
     assert details['developer_registry_id'] == 'meta'
     assert details['developer_registry_review_status'] == 'reviewed'
 

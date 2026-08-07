@@ -651,6 +651,13 @@ def _model_info(
     has been renamed the two can also disagree on the *organization*
     (``WizardLMTeam/…`` published by ``wizardlm``); ``model_id_as_referenced``
     then records the spelling the source used.
+
+    ``raw_model_id`` and ``raw_model_namespace`` are what the source called this
+    model, under the names the model-registry proposal reserves for exactly that.
+    They are redundant with ``id`` while ``id`` stays a repo id, and stop being
+    redundant the moment a registry owns ``id``: an adapter that already records
+    the raw spelling needs no migration to keep it, and the registry can be
+    re-resolved against these fields without refetching upstream.
     """
     engine = (
         InferenceEngine(name=resolved.inference_engine)
@@ -669,8 +676,10 @@ def _model_info(
                 # silently fill them with 'unknown'.
                 'deployment_type': resolved.deployment_type,
                 'model_availability': resolved.model_availability,
+                'deployment_evidence': resolved.deployment_evidence,
                 'identity_source': resolved.identity_source,
-                'model_id_prefix': resolved.model_id.split('/')[0],
+                'raw_model_id': resolved.model_id,
+                'raw_model_namespace': resolved.model_id.split('/')[0],
                 **developer.provenance('developer'),
                 'leaderboard_slug': resolved.slug,
                 'model_id_as_referenced': resolved.model_id_as_referenced,
