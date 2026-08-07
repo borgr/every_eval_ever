@@ -163,22 +163,12 @@ def list_result_files() -> list[str]:
 
 def resolve_model_id(raw_repo: str, *, enabled: bool = True, timeout: float = 15.0) -> tuple[str, dict]:
     """Canonicalize an HF ``developer/model`` id via the hosted eval-card-registry
-    resolver. Returns ``(model_id, provenance)``.
+    resolver, for use as ``model_info.id``. Returns ``(model_id, provenance)``.
 
-    Design (mirrors the skill's reference/registry.md + fields.md model_info):
-    - DEFAULT resolves against the registry so ``model_info.id`` is the shared
-      canonical JOIN key. Uses ``requests`` (already a dep) — no new dependency,
-      so ``--no-registry-resolve`` is purely a speed/offline/determinism opt-out.
-    - ``evaluation_id`` is deliberately NOT keyed on this value (see make_log):
-      the registry may later re-map a freshly auto-created draft, and a moving
-      canonical id would break re-ingest idempotency. Resolved id = join key,
-      raw path = record identity.
-    - The resolver's last strategy is *auto-create draft*, so ``created_new`` /
-      ``review_status`` / ``confidence`` are surfaced; main() summarizes the ones
-      that need registry review (the skill's "creating a new canonical id" is an
-      operator-policy call — here we make it visible rather than block a batch).
-    - Never fatal: opt-out or any network error falls back to the path id and
-      records why (``offline`` / ``unreachable``).
+    Never fatal: the opt-out and any network error fall back to the path id and
+    record which (``offline`` / ``unreachable``). The resolver's last strategy is
+    to auto-create a draft, so ``created_new`` / ``review_status`` / ``confidence``
+    come back in the provenance for ``_needs_registry_review`` to judge.
     """
     if not enabled:
         return raw_repo, {"model_id_resolution": "offline"}
@@ -253,16 +243,12 @@ def canonical_hf_repo(repo: str, *, timeout: float = 15.0) -> str | None:
 def evaluated_model_repo(
     model_repo: str, config: dict, *, check_aliases: bool = True
 ) -> tuple[str | None, dict]:
-    """Which model the scores belong to, or ``None`` with the reason it is unclear.
+    """Which model the scores belong to, as ``(repo, provenance)``.
 
-    Returns ``(repo, provenance)``. The dataset path and the run config normally
-    agree, and the path is used. When they disagree either one can be the typo, so
-    both are resolved through HuggingFace's alias redirect: two spellings of one
-    repo (``aaditya/OpenBioLLM-Llama3-70B`` and ``aaditya/OpenBioLLMLlama-70B``
-    both resolve to ``aaditya/Llama3-OpenBioLLM-70B``) give a single answer, and
-    genuinely different repos mean the evaluated model is not recoverable from the
-    export. Nothing is picked by preference, because a wrong pick attributes one
-    model's scores to another.
+    Uses the dataset path when it agrees with the run config. When they disagree,
+    both are resolved through HuggingFace's alias redirect and the shared target
+    wins; two genuinely different repos give ``(None, ...)``, because picking one by
+    preference would attribute one model's scores to another.
     """
     config_repo = config_model_repo(config)
     if not config_repo or config_repo == model_repo:
@@ -373,10 +359,10 @@ def make_log(
     ``model_repo`` is the evaluated model as established by evaluated_model_repo,
     and it drives the developer/model routing, the record identity and the model
     metadata. ``model_id`` is the registry-canonical id for ``model_info.id`` (the
-    join key); pass ``None`` for path-mode (id == source repo). ``evaluation_id``
-    is keyed on ``model_repo``, never on ``model_id`` — see resolve_model_id for
-    why (idempotency vs. a movable canonical id). Offline unit tests call this
-    directly without a resolver, so it never touches the network.
+    join key); pass ``None`` for path-mode (id == source repo). ``evaluation_id`` is
+    keyed on ``model_repo``, never on ``model_id``: the registry can re-map a draft
+    canonical, and a moving id would break re-ingest idempotency. Offline unit tests
+    call this directly without a resolver, so it never touches the network.
     """
     developer, model = model_repo.split("/", 1)
     config = obj.get("config", {}) or {}
@@ -407,10 +393,7 @@ def make_log(
         # re-runs. evaluation_timestamp is left None (the run time is unknown).
         ts_token = re.sub(r"[^0-9A-Za-z._-]+", "-", path.rsplit("/", 1)[-1].removesuffix(".json"))
 
-    # model_info.id = registry-canonical join key (or the source repo in path-mode).
-    # evaluation_id stays keyed on the RAW repo below, so re-ingest is idempotent
-    # even if the registry later re-maps a draft canonical id.
-    resolved_id = model_id or model_repo
+    resolved_id = model_id or model_repo  # join key; raw_slug keys evaluation_id
     raw_slug = model_repo.replace("/", "_")
 
     md_details: dict = {
