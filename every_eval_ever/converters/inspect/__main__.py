@@ -1,27 +1,19 @@
 from __future__ import annotations
 
-import json
 import logging
-import uuid
 from argparse import ArgumentParser
-from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 
 try:
-    from inspect_ai.log import list_eval_logs
-
     from every_eval_ever.converters.inspect.adapter import InspectAIAdapter
-    from every_eval_ever.converters.inspect.supplemental_eval_details import (
-        SupplementalEvalDetails,
-    )
 except ImportError as exc:
     raise SystemExit(
         "The 'inspect-ai' package is required to use the Inspect AI converter.\n"
         'Install it with: uv sync --extra inspect'
     ) from exc
 
-from every_eval_ever.eval_types import EvaluationLog, EvaluatorRelationship
+from every_eval_ever.eval_types import EvaluationLog
 from every_eval_ever.instance_level_types import InstanceLevelEvaluationLog
 
 logger = logging.getLogger(__name__)
@@ -80,13 +72,6 @@ def parse_args():
     return args
 
 
-class EnumEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, Enum):
-            return obj.value
-        return super().default(obj)
-
-
 class InspectEvalLogConverter:
     def __init__(
         self,
@@ -118,127 +103,13 @@ class InspectEvalLogConverter:
                 self.log_path, metadata_args=metadata_args
             )
 
-    def save_to_file(
-        self,
-        unified_eval_log: EvaluationLog,
-        output_filedir: str,
-        output_filepath: str,
-    ) -> bool:
-        try:
-            json_str = unified_eval_log.model_dump_json(
-                indent=4, exclude_none=True
-            )
+def main() -> int:
+    logging.basicConfig(level=logging.INFO)
+    args = parse_args()
+    from every_eval_ever.cli import _cmd_convert_inspect
 
-            unified_eval_log_dir = Path(f'{self.output_dir}/{output_filedir}')
-            unified_eval_log_dir.mkdir(parents=True, exist_ok=True)
-
-            unified_eval_path = f'{unified_eval_log_dir}/{output_filepath}'
-            with open(unified_eval_path, 'w') as json_file:
-                json_file.write(json_str)
-
-            logger.info(
-                'Unified eval log was successfully saved to %s path.',
-                unified_eval_path,
-            )
-        except Exception as e:
-            logger.exception(
-                'Problem with saving unified eval log to file: %s', e
-            )
-            raise e
-
-
-def save_evaluation_log(
-    unified_output: EvaluationLog,
-    inspect_converter: InspectEvalLogConverter,
-    file_uuid: str,
-) -> bool:
-    try:
-        model_developer, model_name = unified_output.model_info.id.split('/')
-        filedir = f'{unified_output.evaluation_results[0].source_data.dataset_name}/{model_developer}/{model_name}'
-        filename = f'{file_uuid}.json'
-        inspect_converter.save_to_file(unified_output, filedir, filename)
-        return True
-    except Exception as e:
-        logger.error(
-            'Failed to save eval log %s to file. %s',
-            unified_output.evaluation_id,
-            str(e),
-        )
-        return False
+    return _cmd_convert_inspect(args)
 
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
-    args = parse_args()
-
-    inspect_converter = InspectEvalLogConverter(
-        log_path=args.log_path, output_dir=args.output_dir
-    )
-
-    base_metadata_args = {
-        'source_organization_name': args.source_organization_name,
-        'source_organization_url': args.source_organization_url,
-        'source_organization_logo_url': args.source_organization_logo_url,
-        'evaluator_relationship': EvaluatorRelationship(
-            args.evaluator_relationship
-        ),
-        'parent_eval_output_dir': args.output_dir,
-        'eval_library_name': args.eval_library_name,
-        'eval_library_version': args.eval_library_version,
-    }
-    if args.supplemental_eval_details_path:
-        with open(args.supplemental_eval_details_path, 'r', encoding='utf-8') as f:
-            base_metadata_args["supplemental_eval_details"] = (
-                SupplementalEvalDetails.model_validate(json.load(f))
-            )
-
-    if inspect_converter.is_log_path_directory:
-        log_paths: List[Path] = list_eval_logs(
-            inspect_converter.log_path.absolute().as_posix()
-        )
-        if not log_paths:
-            logger.warning('Missing evaluations logs to convert!')
-        else:
-            file_uuids = [str(uuid.uuid4()) for _ in log_paths]
-            metadata_args = {
-                **base_metadata_args,
-                'file_uuids': file_uuids,
-            }
-            unified_output = inspect_converter.convert_to_unified_schema(
-                metadata_args
-            )
-            if unified_output and isinstance(unified_output, List):
-                if len(unified_output) != len(file_uuids):
-                    raise RuntimeError(
-                        'Inspect conversion produced a different number of '
-                        'logs than the generated UUID list.'
-                    )
-                for single_unified_output, file_uuid in zip(
-                    unified_output, file_uuids
-                ):
-                    save_evaluation_log(
-                        single_unified_output,
-                        inspect_converter,
-                        file_uuid,
-                    )
-            else:
-                logger.warning('Missing unified schema result!')
-    else:
-        file_uuid = str(uuid.uuid4())
-        metadata_args = {
-            **base_metadata_args,
-            'file_uuid': file_uuid,
-        }
-
-        unified_output = inspect_converter.convert_to_unified_schema(
-            metadata_args
-        )
-
-        if unified_output:
-            save_evaluation_log(
-                unified_output,
-                inspect_converter,
-                file_uuid,
-            )
-        else:
-            logger.warning('Missing unified schema result!')
+    raise SystemExit(main())

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -11,6 +12,7 @@ from every_eval_ever.eval_types import (
     Format,
     HashAlgorithm,
 )
+from every_eval_ever.helpers.io import datastore_repo_file_path
 from every_eval_ever.instance_level_types import (
     AnswerAttributionItem,
     Evaluation,
@@ -55,15 +57,36 @@ class LMEvalInstanceLevelAdapter:
         task_name: str,
         output_dir: Optional[Union[str, Path]] = None,
         file_uuid: Optional[str] = None,
+        collection: Optional[str] = None,
+        developer: Optional[str] = None,
     ) -> Optional[DetailedEvaluationResults]:
         """Transform samples and save to JSONL, returning a DetailedEvaluationResults pointer.
 
         If output_dir is None, returns None (skips instance-level output).
-        If file_uuid is provided, the output file is named {file_uuid}_samples.jsonl
-        so it shares the UUID of the corresponding evaluation result file.
+        Otherwise file_uuid and collection are required so the samples file
+        shares the aggregate UUID and declares its canonical location under
+        data/.
         """
         if output_dir is None:
             return None
+        if file_uuid is None:
+            raise ValueError(
+                'file_uuid is required when writing lm-eval samples'
+            )
+        try:
+            parsed_uuid = uuid.UUID(file_uuid)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError(f'invalid file_uuid: {file_uuid!r}') from exc
+        if parsed_uuid.version != 4:
+            raise ValueError(f'file_uuid must be UUIDv4: {file_uuid!r}')
+        file_uuid = str(parsed_uuid)
+        expected_name = f'{file_uuid}_samples.jsonl'
+        repository_file_path = datastore_repo_file_path(
+            collection,
+            model_id,
+            developer,
+            expected_name,
+        )
 
         logs = self.transform_samples(
             samples_path, evaluation_id, model_id, task_name
@@ -73,23 +96,22 @@ class LMEvalInstanceLevelAdapter:
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        if file_uuid:
-            out_file = output_dir / f'{file_uuid}_samples.jsonl'
-        else:
-            out_file = output_dir / f'samples_{task_name}.jsonl'
-
-        with open(out_file, 'w') as f:
-            for log in logs:
-                f.write(
-                    json.dumps(log.model_dump(mode='json'), ensure_ascii=False)
-                    + '\n'
-                )
+        out_file = output_dir / expected_name
+        serialized = '\n'.join(
+            json.dumps(
+                log.model_dump(mode='json'),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+            for log in logs
+        )
+        out_file.write_text(serialized + '\n', encoding='utf-8')
 
         file_hash = hashlib.sha256(out_file.read_bytes()).hexdigest()
 
         return DetailedEvaluationResults(
             format=Format.jsonl,
-            file_path=str(out_file),
+            file_path=repository_file_path,
             hash_algorithm=HashAlgorithm.sha256,
             checksum=file_hash,
             total_rows=len(logs),

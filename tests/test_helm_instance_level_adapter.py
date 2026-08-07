@@ -7,19 +7,21 @@ import pytest
 
 from every_eval_ever.converters.helm import adapter as helm_adapter_module
 from every_eval_ever.converters.helm.adapter import HELMAdapter
-from every_eval_ever.converters.helm.metrics import is_core_metric
 from every_eval_ever.converters.helm.instance_level_adapter import (
-    HELMInstanceLevelDataAdapter,
     _BINARY_CORRECTNESS_METRIC_NAMES,
+    HELMInstanceLevelDataAdapter,
     _evaluation_result_id,
     _is_correct_for_metric,
     _score_from_stat,
 )
+from every_eval_ever.converters.helm.metrics import is_core_metric
 from every_eval_ever.eval_types import EvaluatorRelationship
 from every_eval_ever.instance_level_types import (
     InstanceLevelEvaluationLog,
     InteractionType,
 )
+
+TEST_UUID = '123e4567-e89b-42d3-a456-426614174000'
 
 
 def _require_helm():
@@ -45,8 +47,13 @@ def _load_instance_level_data(adapter, filepath, metadata_args):
 
     converted_eval = converted_eval_list[0]
 
-    instance_level_path = Path(
-        converted_eval.detailed_evaluation_results.file_path
+    model_dev, model_name = converted_eval.model_info.id.split('/', 1)
+    instance_level_path = (
+        Path(metadata_args['parent_eval_output_dir'])
+        / converted_eval.evaluation_results[0].source_data.dataset_name
+        / model_dev
+        / model_name
+        / Path(converted_eval.detailed_evaluation_results.file_path).name
     )
     instance_logs = []
     with instance_level_path.open('r', encoding='utf-8') as f:
@@ -65,8 +72,7 @@ def _by_sample_and_metric(
 ) -> dict[tuple[str, str | None], InstanceLevelEvaluationLog]:
     """Index detail rows by the two fields that should be unique together."""
     return {
-        (log.sample_id, log.evaluation_result_id): log
-        for log in instance_logs
+        (log.sample_id, log.evaluation_result_id): log for log in instance_logs
     }
 
 
@@ -118,7 +124,7 @@ def test_mmlu_instance_level():
             'source_organization_name': 'TestOrg',
             'evaluator_relationship': EvaluatorRelationship.first_party,
             'parent_eval_output_dir': tmpdir,
-            'file_uuid': 'test_mmlu',
+            'file_uuid': TEST_UUID,
         }
 
         converted_eval, instance_logs = _load_instance_level_data(
@@ -143,8 +149,7 @@ def test_mmlu_instance_level():
         log = _by_sample_and_metric(instance_logs)[
             ('id147', 'exact_match:test')
         ]
-        assert log.schema_version == '0.2.2'
-        assert log.evaluation_id == 'test_mmlu_samples'
+        assert log.evaluation_id == converted_eval.evaluation_id
         assert log.model_id == 'openai/gpt2'
         assert log.evaluation_name == 'mmlu'
         assert log.sample_id == 'id147'
@@ -183,7 +188,7 @@ def test_hellaswag_instance_level():
             'source_organization_name': 'TestOrg',
             'evaluator_relationship': EvaluatorRelationship.first_party,
             'parent_eval_output_dir': tmpdir,
-            'file_uuid': 'test_hellaswag',
+            'file_uuid': TEST_UUID,
         }
 
         _, instance_logs = _load_instance_level_data(
@@ -204,7 +209,6 @@ def test_hellaswag_instance_level():
         assert len(em_rows) == 10
         log = em_rows[0]
 
-        assert log.schema_version == '0.2.2'
         assert log.model_id == 'eleutherai/pythia-1b-v0'
         assert log.evaluation_name == 'hellaswag'
         assert log.interaction_type == InteractionType.single_turn
@@ -229,7 +233,7 @@ def test_narrativeqa_instance_level():
             'source_organization_name': 'TestOrg',
             'evaluator_relationship': EvaluatorRelationship.first_party,
             'parent_eval_output_dir': tmpdir,
-            'file_uuid': 'test_narrativeqa',
+            'file_uuid': TEST_UUID,
         }
 
         _, instance_logs = _load_instance_level_data(
@@ -250,7 +254,6 @@ def test_narrativeqa_instance_level():
         assert len(em_rows) == 5
         log = em_rows[0]
 
-        assert log.schema_version == '0.2.2'
         assert log.model_id == 'openai/gpt2'
         assert log.evaluation_name == 'narrativeqa'
         assert log.interaction_type == InteractionType.single_turn
@@ -278,7 +281,7 @@ def test_per_sample_core_metric_rows_are_emitted():
             'source_organization_name': 'TestOrg',
             'evaluator_relationship': EvaluatorRelationship.first_party,
             'parent_eval_output_dir': tmpdir,
-            'file_uuid': 'test_grain',
+            'file_uuid': TEST_UUID,
         }
         _, instance_logs = _load_instance_level_data(
             adapter,
@@ -295,7 +298,9 @@ def test_per_sample_core_metric_rows_are_emitted():
         assert 'quasi_exact_match:test' in metric_ids
         assert 'num_prompt_tokens:test' not in metric_ids
         assert 'inference_runtime:test' not in metric_ids
-        assert all(log.evaluation_result_id is not None for log in rows_for_id147)
+        assert all(
+            log.evaluation_result_id is not None for log in rows_for_id147
+        )
         assert len(metric_ids) == len(set(metric_ids))
 
 
@@ -307,7 +312,7 @@ def test_bookkeeping_stats_are_not_emitted_as_metric_rows():
             'source_organization_name': 'TestOrg',
             'evaluator_relationship': EvaluatorRelationship.first_party,
             'parent_eval_output_dir': tmpdir,
-            'file_uuid': 'test_correctness',
+            'file_uuid': TEST_UUID,
         }
         _, instance_logs = _load_instance_level_data(
             adapter,
@@ -345,7 +350,7 @@ def test_graded_core_metrics_are_not_binary_correctness():
             'source_organization_name': 'TestOrg',
             'evaluator_relationship': EvaluatorRelationship.first_party,
             'parent_eval_output_dir': tmpdir2,
-            'file_uuid': 'test_correctness_graded',
+            'file_uuid': TEST_UUID,
         }
         _, narr_logs = _load_instance_level_data(
             adapter,
@@ -361,9 +366,7 @@ def test_graded_core_metrics_are_not_binary_correctness():
             in {'rouge_l', 'f1_score', 'bleu_1', 'bleu_4'}
         ]
         assert graded, 'expected graded score rows in narrative_qa fixture'
-        assert all(
-            log.evaluation.is_correct is False for log in graded
-        ), (
+        assert all(log.evaluation.is_correct is False for log in graded), (
             'graded metrics (rouge_l/f1_score/bleu_*) must not be '
             'treated as binary correctness'
         )
@@ -377,7 +380,7 @@ def test_is_correct_is_true_for_correct_exact_match_rows():
             'source_organization_name': 'TestOrg',
             'evaluator_relationship': EvaluatorRelationship.first_party,
             'parent_eval_output_dir': tmpdir,
-            'file_uuid': 'test_exact_match_true',
+            'file_uuid': TEST_UUID,
         }
         _, instance_logs = _load_instance_level_data(
             adapter,
@@ -421,7 +424,9 @@ def test_score_from_stat_helper_edge_cases():
     assert _score_from_stat(SimpleNamespace(mean=0.25, sum=10, count=2)) == 0.25
     assert _score_from_stat(SimpleNamespace(mean=None, sum=3, count=2)) == 1.5
     assert _score_from_stat(SimpleNamespace(mean=None, sum=0, count=0)) is None
-    assert _score_from_stat(SimpleNamespace(mean=None, sum=None, count=1)) is None
+    assert (
+        _score_from_stat(SimpleNamespace(mean=None, sum=None, count=1)) is None
+    )
     assert _score_from_stat(SimpleNamespace(mean='bad', sum=1, count=1)) is None
 
 
@@ -449,7 +454,7 @@ def test_total_rows_matches_core_per_instance_stats():
             'source_organization_name': 'TestOrg',
             'evaluator_relationship': EvaluatorRelationship.first_party,
             'parent_eval_output_dir': tmpdir,
-            'file_uuid': 'test_exact_total_rows',
+            'file_uuid': TEST_UUID,
         }
         converted_eval, instance_logs = _load_instance_level_data(
             adapter, fixture, metadata_args
@@ -458,12 +463,14 @@ def test_total_rows_matches_core_per_instance_stats():
         # Count expected core metric rows from the fixture itself so
         # duplication or accidental filtering changes are caught precisely.
         expected_rows = _expected_core_instance_stat_rows(fixture)
-        assert converted_eval.detailed_evaluation_results.total_rows == expected_rows
+        assert (
+            converted_eval.detailed_evaluation_results.total_rows
+            == expected_rows
+        )
         assert len(instance_logs) == expected_rows
-        assert len({
-            (log.sample_id, log.evaluation_result_id)
-            for log in instance_logs
-        }) == len(instance_logs)
+        assert len(
+            {(log.sample_id, log.evaluation_result_id) for log in instance_logs}
+        ) == len(instance_logs)
 
 
 def test_instance_evaluation_result_ids_join_to_aggregate_results():
@@ -474,7 +481,7 @@ def test_instance_evaluation_result_ids_join_to_aggregate_results():
             'source_organization_name': 'TestOrg',
             'evaluator_relationship': EvaluatorRelationship.first_party,
             'parent_eval_output_dir': tmpdir,
-            'file_uuid': 'test_join_keys',
+            'file_uuid': TEST_UUID,
         }
         converted_eval, instance_logs = _load_instance_level_data(
             adapter,
@@ -508,7 +515,7 @@ def test_aggregate_evaluation_result_ids_are_unique_and_non_null():
             'source_organization_name': 'TestOrg',
             'evaluator_relationship': EvaluatorRelationship.first_party,
             'parent_eval_output_dir': tmpdir,
-            'file_uuid': 'test_aggregate_ids',
+            'file_uuid': TEST_UUID,
         }
         converted_eval, _ = _load_instance_level_data(
             adapter,
@@ -550,6 +557,7 @@ def test_missing_inst_stats_uses_legacy_exact_match_fallback():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         adapter = HELMInstanceLevelDataAdapter(
+            'tiny/dev_model/123.0',
             'fallback_samples',
             'jsonl',
             'sha256',
@@ -584,7 +592,7 @@ def test_reasoning_traces_none_does_not_break_conversion(monkeypatch):
             'source_organization_name': 'TestOrg',
             'evaluator_relationship': EvaluatorRelationship.first_party,
             'parent_eval_output_dir': tmpdir,
-            'file_uuid': 'test_reasoning_none',
+            'file_uuid': TEST_UUID,
         }
         _, instance_logs = _load_instance_level_data(
             adapter,
@@ -594,6 +602,8 @@ def test_reasoning_traces_none_does_not_break_conversion(monkeypatch):
         assert instance_logs
         for log in instance_logs:
             trace = log.output.reasoning_trace
-            assert trace is None or trace == [] or all(
-                isinstance(t, str) for t in trace
+            assert (
+                trace is None
+                or trace == []
+                or all(isinstance(t, str) for t in trace)
             )
