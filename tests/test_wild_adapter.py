@@ -16,6 +16,7 @@ import pyarrow as pa  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 
 from every_eval_ever.adapters.wild import adapter  # noqa: E402
+from every_eval_ever.helpers.io import SourceRecordsError  # noqa: E402
 from every_eval_ever.validate import validate_file  # noqa: E402
 
 
@@ -41,11 +42,17 @@ def _synth_parquet(path):
     pq.write_table(pa.Table.from_pylist(rows), str(path))
 
 
+def _out(tmp_path):
+    # the adapter publishes into <base>/wild/<developer>/<model>, deriving <base>
+    # from the output dir's parent, so the output dir must be a `data/<collection>`.
+    return tmp_path / "data" / "wild"
+
+
 def _args(parquet, out, **kw):
     base = dict(parquet=[str(parquet)], output_dir=out, limit_shards=None,
                 models=None, include_instances=False, max_instances=None,
                 retrieved_timestamp="1700000000.0", evaluation_timestamp="1780000000.0",
-                revision=None)
+                revision=None, replace_existing=False)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -53,7 +60,7 @@ def _args(parquet, out, **kw):
 def test_aggregates(tmp_path):
     pqt = tmp_path / "w.parquet"
     _synth_parquet(pqt)
-    out = tmp_path / "out"
+    out = _out(tmp_path)
     n = adapter.run(_args(pqt, out))
     assert n == 2  # 2 models x 1 benchmark
     files = list(out.rglob("*.json"))
@@ -65,6 +72,9 @@ def test_aggregates(tmp_path):
     names = {r["evaluation_name"] for r in log["evaluation_results"]}
     assert names == {"wild.mmlu", "wild.mmlu.algebra", "wild.mmlu.logic"}
     overall = next(r for r in log["evaluation_results"] if r["evaluation_name"] == "wild.mmlu")
+    # the registry's canonical global metric on every result; the task lives in
+    # evaluation_name, so a cross-source accuracy join stays joinable
+    assert {r["metric_config"]["metric_id"] for r in log["evaluation_results"]} == {"accuracy"}
     assert overall["metric_config"]["score_type"] == "continuous"
     assert (overall["metric_config"]["min_score"], overall["metric_config"]["max_score"]) == (0.0, 1.0)
     assert abs(overall["score_details"]["score"] - 2 / 3) < 1e-9
@@ -95,7 +105,7 @@ def test_single_subtask_dedup(tmp_path):
             for i in range(4)]
     pqt = tmp_path / "w.parquet"
     pq.write_table(pa.Table.from_pylist(rows), str(pqt))
-    out = tmp_path / "out"
+    out = _out(tmp_path)
     adapter.run(_args(pqt, out, include_instances=True))
     log = json.loads(next(out.rglob("*.json")).read_text())
     names = [r["evaluation_name"] for r in log["evaluation_results"]]
@@ -113,7 +123,7 @@ def test_single_subtask_dedup(tmp_path):
 def test_instances(tmp_path):
     pqt = tmp_path / "w.parquet"
     _synth_parquet(pqt)
-    out = tmp_path / "out"
+    out = _out(tmp_path)
     adapter.run(_args(pqt, out, include_instances=True))
     samples = list(out.rglob("*_samples.jsonl"))
     assert len(samples) == 2
@@ -138,6 +148,118 @@ def test_instances(tmp_path):
     assert ev != full[0]                              # generation != extracted answer (regression guard)
     # sample_hash uses the canonical cross-adapter recipe over (input.raw, reference)
     assert inst["sample_hash"] == adapter._sample_hash(inst["input"]["raw"], inst["input"]["reference"])
+    # the sidecar link is the full repository-relative path, not the basename
+    assert det["file_path"] == (
+        f"data/wild/openai/gpt-x/{agg.stem}_samples.jsonl")
+    assert det["checksum"] == hashlib.sha256(
+        agg.with_name(f"{agg.stem}_samples.jsonl").read_bytes()).hexdigest()
+
+
+def test_rerun_needs_replace_existing(tmp_path):
+    # filenames are fresh uuid4s, so a second run into the same directory would add a
+    # duplicate copy of every evaluation_id instead of replacing it
+    pqt = tmp_path / "w.parquet"
+    _synth_parquet(pqt)
+    out = _out(tmp_path)
+    adapter.run(_args(pqt, out, include_instances=True))
+    published = sorted(p.name for p in out.rglob("*.json*"))
+    with pytest.raises(SystemExit, match="--replace-existing"):
+        adapter.run(_args(pqt, out, include_instances=True))
+    assert sorted(p.name for p in out.rglob("*.json*")) == published  # untouched
+    adapter.run(_args(pqt, out, include_instances=True, replace_existing=True))
+    replaced = sorted(p.name for p in out.rglob("*.json*"))
+    assert len(replaced) == len(published)          # replaced, not accumulated
+    assert replaced != published                    # fresh uuids
+
+
+def test_a_failed_publication_leaves_no_partial_output(tmp_path, monkeypatch):
+    # a mid-batch failure must not leave half a refresh behind
+    pqt = tmp_path / "w.parquet"
+    _synth_parquet(pqt)
+    out = _out(tmp_path)
+    real = adapter.publish_evaluation_logs
+    calls = []
+
+    def flaky(*a, **kw):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("boom")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(adapter, "publish_evaluation_logs", flaky)
+    with pytest.raises(RuntimeError):
+        adapter.run(_args(pqt, out, include_instances=True))
+    assert not list(out.rglob("*.json*"))
+
+
+def _unusable_score_parquet(path):
+    convo = json.dumps([{"role": "user", "content": "Q?"},
+                        {"role": "assistant", "content": "A"}])
+    rows = [dict(model="openai/gpt-x", task="gsm8k", subtask="main",
+                 item_id=f"i{i}", score=score, input_tokens=in_tok,
+                 output_tokens=out_tok, conversation=convo, stop_reason="stop",
+                 target="4", answer="4",
+                 scores=json.dumps({"match": {"value": "C", "answer": "4"}}))
+            for i, (score, in_tok, out_tok) in enumerate(
+                [(1, 10, 2), (0, 20, 4), (None, 30, 6), (1, None, 8)])]
+    pq.write_table(pa.Table.from_pylist(rows), str(path))
+
+
+def test_unusable_score_is_reported_not_counted(tmp_path):
+    # a missing score is not a wrong answer: it must leave the denominator, be named
+    # in the failure report, skip the sidecar, and make the run exit non-zero
+    pqt = tmp_path / "w.parquet"
+    _unusable_score_parquet(pqt)
+    out = _out(tmp_path)
+    with pytest.raises(SourceRecordsError):
+        adapter.run(_args(pqt, out, include_instances=True))
+    log = json.loads(next(out.rglob("*.json")).read_text())
+    overall = log["evaluation_results"][0]
+    assert overall["score_details"]["uncertainty"]["num_samples"] == 3   # not 4
+    assert abs(overall["score_details"]["score"] - 2 / 3) < 1e-9
+    report = json.loads(
+        adapter.default_failure_report_path(out).read_text())
+    assert report["total_source_records"] == 4
+    assert len(report["failed_records"]) == 1
+    assert report["failed_records"][0]["source_ref"].endswith("gpt-x/gsm8k/i2")
+    lines = next(out.rglob("*_samples.jsonl")).read_text().splitlines()
+    assert [json.loads(line)["sample_id"] for line in lines] == ["i0", "i1", "i3"]
+    assert log["detailed_evaluation_results"]["total_rows"] == 3
+
+
+def test_incomplete_token_usage_is_omitted_not_zeroed(tmp_path):
+    pqt = tmp_path / "w.parquet"
+    _unusable_score_parquet(pqt)
+    out = _out(tmp_path)
+    with pytest.raises(SourceRecordsError):
+        adapter.run(_args(pqt, out, include_instances=True))
+    details = json.loads(next(out.rglob("*.json")).read_text())[
+        "evaluation_results"][0]["metric_config"]["additional_details"]
+    # i3 carries no input_tokens, so it is out of the mean rather than a zero in it
+    assert details["n_items_with_token_usage"] == "2"
+    assert details["mean_input_tokens"] == "15.0"
+    rows = {json.loads(line)["sample_id"]: json.loads(line)
+            for line in next(out.rglob("*_samples.jsonl")).read_text().splitlines()}
+    assert "token_usage" not in rows["i3"]
+    assert rows["i0"]["token_usage"]["total_tokens"] == 12
+
+
+def test_iter_batches_bounds_rows_per_read(tmp_path):
+    # the cap must bound the allocation too: a WILD shard is one 500k-row row group,
+    # so reads are batched rather than per row group
+    pqt = tmp_path / "w.parquet"
+    _synth_parquet(pqt)
+    sizes = [len(batch["model"]) for _, batch in adapter.iter_batches(
+        [str(pqt)], ["model"], batch_size=4)]
+    assert sizes == [4, 4, 4]
+
+
+def test_missing_evaluation_timestamp_is_an_error():
+    # evaluation_id is keyed on it, so a now() fallback would give identical reruns
+    # different logical identities
+    with pytest.raises(SystemExit, match="--evaluation-timestamp"):
+        adapter.resolve_eval_timestamp(None, None)
+    assert adapter.resolve_eval_timestamp(None, "1780000000.0") == "1780000000.0"
 
 
 def test_sample_hash_is_canonical():
@@ -161,7 +283,7 @@ def test_local_run_provenance_no_false_revision(tmp_path):
     # a local --parquet run must NOT stamp dataset_revision='main' (false remote provenance)
     pqt = tmp_path / "w.parquet"
     _synth_parquet(pqt)
-    out = tmp_path / "out"
+    out = _out(tmp_path)
     adapter.run(_args(pqt, out))
     log = json.loads(next((out / "openai" / "gpt-x").glob("*.json")).read_text())
     ad = log["source_metadata"]["additional_details"]

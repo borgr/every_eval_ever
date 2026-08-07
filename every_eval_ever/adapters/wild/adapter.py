@@ -1,27 +1,14 @@
 #!/usr/bin/env python3
-"""Convert the WILD-raw item-level evaluation dataset into Every Eval Ever records.
+"""Convert kensho/WILD-raw (arXiv:2604.01418) into Every Eval Ever records.
 
-WILD-raw (`kensho/WILD-raw`, arXiv:2604.01418) is **item-level** evaluation data:
-~7.5M (model, item) rows for 65 models across 27 benchmarks (109,566 items), each
-row a single item response — conversation, model answer, target, binary score,
-token usage, and scorer output. It is an `evaluation_run` source (Kensho ran the
-evals), so `evaluator_relationship = third_party`.
-
-Mapping:
-- One aggregate `EvaluationLog` per (model, benchmark): `evaluation_results` = the
-  benchmark overall accuracy (`wild.<task>`) plus one per subtask
-  (`wild.<task>.<subtask>`), each a `continuous` [0,1] accuracy (mean of the binary
-  item scores), with item counts + mean token usage in `additional_details`.
-- With `--include-instances`, the per-item rows are written to a
-  `<uuid>_samples.jsonl` instance sidecar (instance_level schema) referenced by the
-  aggregate's `detailed_evaluation_results` — the faithful use of the *raw* dataset.
-
-Reads parquet directly from HuggingFace (streamed per row group, never the full
-7GB) or from local `--parquet` paths.
+WILD-raw is item-level evaluation data: ~7.5M (model, item) rows for 65 models
+across 27 benchmarks, run by Kensho with Inspect AI. One aggregate log per
+(model, benchmark) holds the overall accuracy plus one result per subtask;
+`--include-instances` also writes the per-item instance sidecar. See README.md.
 
 Run:
-    uv run python -m every_eval_ever.adapters.wild.adapter --output-dir /tmp/eee-wild --limit-shards 1
-    uv run python -m every_eval_ever validate /tmp/eee-wild
+    uv run python -m every_eval_ever.adapters.wild.adapter --output-dir /tmp/eee-wild/data/wild --limit-shards 1
+    uv run python -m every_eval_ever validate '/tmp/eee-wild/data/wild/*/*/*.json*'
 """
 from __future__ import annotations
 
@@ -29,7 +16,9 @@ import argparse
 import hashlib
 import json
 import math
+import tempfile
 import time
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import timezone
@@ -38,6 +27,9 @@ from typing import Iterator
 
 import pyarrow.parquet as pq
 
+from every_eval_ever.converters.common.publication import (
+    publish_evaluation_logs,
+)
 from every_eval_ever.eval_types import (
     DetailedEvaluationResults,
     EvalLibrary,
@@ -54,7 +46,15 @@ from every_eval_ever.eval_types import (
     SourceDataPrivate,
     SourceMetadata,
 )
-from every_eval_ever.helpers import SCHEMA_VERSION, save_evaluation_log
+from every_eval_ever.helpers import SCHEMA_VERSION
+from every_eval_ever.helpers.io import (
+    SourceConversionResult,
+    SourceRecordFailure,
+    datastore_output_dir,
+    datastore_repo_file_path,
+    default_failure_report_path,
+    save_failure_report,
+)
 from every_eval_ever.instance_level_types import (
     AnswerAttributionItem,
     Evaluation,
@@ -68,18 +68,17 @@ from every_eval_ever.instance_level_types import (
 HF_REPO_ID = 'kensho/WILD-raw'
 HF_REVISION = 'main'
 N_SHARDS = 15
-DEFAULT_OUTPUT_DIR = 'data/wild'
+BATCH_ROWS = 20_000     # rows held in memory per read; see iter_batches
+COLLECTION = 'wild'
+DEFAULT_OUTPUT_DIR = f'data/{COLLECTION}'
 SOURCE_NAME = 'WILD-raw'
 SOURCE_ORGANIZATION = 'Kensho'
 HF_DATASET_URL = f'https://huggingface.co/datasets/{HF_REPO_ID}'
 PAPER_URL = 'https://arxiv.org/abs/2604.01418'
 
-# WILD task -> the benchmark's source dataset HF repo (each verified to exist on
-# HF). `source_data` names the *dataset the eval ran on*, NOT kensho/WILD-raw
-# (which holds the results -> that is source_metadata). Tasks with no clean public
-# repo use the `other` variant. Canonicalizing the benchmark id (incl. arc -> AI2
-# ARC `ai2-reasoning-challenge-arc`, not ARC-AGI) is the eval-card-registry's job;
-# see README for the alias/new-canonical follow-ups.
+# WILD task -> the dataset the eval ran on (each verified to exist on HF), NOT
+# kensho/WILD-raw, which holds the results. Tasks with no clean public repo use the
+# `other` variant. Canonicalizing the benchmark id is the eval-card-registry's job.
 WILD_DATASET_REPO = {
     'arc_easy': 'allenai/ai2_arc', 'arc_challenge': 'allenai/ai2_arc',
     'bbh': 'lukaemon/bbh', 'bigcodebench': 'bigcode/bigcodebench',
@@ -99,14 +98,14 @@ WILD_DATASET_REPO = {
 # aime's two subtasks come from different repos (the exact ones Inspect Evals loads).
 AIME_REPO_BY_SUBTASK = {'2024': 'Maxwell-Jia/AIME_2024', '2025': 'math-ai/aime25'}
 
-AGG_COLUMNS = ['model', 'task', 'subtask', 'score', 'input_tokens', 'output_tokens']
-INSTANCE_COLUMNS = AGG_COLUMNS + ['item_id', 'conversation', 'target', 'answer',
+# item_id is read in the aggregate pass too, to name an unusable row in the report.
+AGG_COLUMNS = ['model', 'task', 'subtask', 'item_id', 'score',
+               'input_tokens', 'output_tokens']
+INSTANCE_COLUMNS = AGG_COLUMNS + ['conversation', 'target', 'answer',
                                   'scores', 'stop_reason']
 
 
-# --------------------------------------------------------------------------- #
-# parquet streaming (HF or local), per row group, column-projected
-# --------------------------------------------------------------------------- #
+# parquet streaming (HF or local), batched, column-projected
 
 def _shard_handles(parquet: list[str] | None, limit_shards: int | None,
                    revision: str | None = None):
@@ -133,19 +132,22 @@ def _shard_handles(parquet: list[str] | None, limit_shards: int | None,
 
 def iter_batches(parquet: list[str] | None, columns: list[str],
                  limit_shards: int | None = None,
-                 revision: str | None = None) -> Iterator[dict[str, list]]:
-    """Yield column-projected row groups as {col: [values]} dicts."""
+                 revision: str | None = None,
+                 batch_size: int = BATCH_ROWS) -> Iterator[tuple[str, dict[str, list]]]:
+    """Yield ``(shard_label, {col: [values]})`` in batches of ``batch_size`` rows.
+
+    A WILD shard is a single row group of 500,000 rows, so reading whole row groups
+    would hold every selected column for all of them at once — several GB for the
+    instance columns, even when ``--max-instances`` stops after the first few.
+    """
     for label, opener in _shard_handles(parquet, limit_shards, revision):
         with opener() as fh:
             pf = pq.ParquetFile(fh)
-            for rg in range(pf.num_row_groups):
-                tbl = pf.read_row_group(rg, columns=columns)
-                yield {c: tbl.column(c).to_pylist() for c in columns}
+            for batch in pf.iter_batches(batch_size=batch_size, columns=columns):
+                yield label, {c: batch.column(c).to_pylist() for c in columns}
 
 
-# --------------------------------------------------------------------------- #
 # aggregation
-# --------------------------------------------------------------------------- #
 
 @dataclass
 class Agg:
@@ -153,34 +155,62 @@ class Agg:
     correct: float = 0.0
     in_tok: int = 0
     out_tok: int = 0
+    tok_n: int = 0          # rows with complete token usage — the token-mean divisor
 
-    def add(self, score, in_t, out_t):
+    def add(self, score: float, in_t, out_t):
         self.n += 1
-        self.correct += float(score or 0)
-        self.in_tok += int(in_t or 0)
-        self.out_tok += int(out_t or 0)
+        self.correct += score
+        if in_t is not None and out_t is not None:
+            self.in_tok += int(in_t)
+            self.out_tok += int(out_t)
+            self.tok_n += 1
+
+
+def item_score(raw) -> float | None:
+    """The row's binary correctness, or ``None`` when it carries no usable one — a
+    missing score is not a wrong answer, so it must not be counted as 0."""
+    if raw is None:
+        return None
+    try:
+        score = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(score) or score not in (0.0, 1.0):
+        return None
+    return score
 
 
 def aggregate(parquet, limit_shards, models: set[str] | None,
               revision: str | None = None):
-    """Return {(model, task): {subtask|None: Agg}}. None key = benchmark overall."""
+    """Aggregate item rows into ``{(model, task): {subtask|None: Agg}}``, the ``None``
+    key being the benchmark overall. Returns ``(groups, total_rows, failures)``: a row
+    without a usable 0/1 score is reported, never counted into a denominator."""
     groups: dict[tuple[str, str], dict[str | None, Agg]] = defaultdict(
         lambda: defaultdict(Agg))
-    for batch in iter_batches(parquet, AGG_COLUMNS, limit_shards, revision):
-        for model, task, subtask, score, in_t, out_t in zip(
+    failures: list[SourceRecordFailure] = []
+    total = 0
+    for label, batch in iter_batches(parquet, AGG_COLUMNS, limit_shards, revision):
+        for model, task, subtask, item_id, raw, in_t, out_t in zip(
                 batch['model'], batch['task'], batch['subtask'],
-                batch['score'], batch['input_tokens'], batch['output_tokens']):
+                batch['item_id'], batch['score'],
+                batch['input_tokens'], batch['output_tokens']):
             if models and model not in models:
+                continue
+            total += 1
+            score = item_score(raw)
+            if score is None:
+                failures.append(SourceRecordFailure(
+                    source_ref=f'{label}#{model}/{task}/{item_id}',
+                    reason=f'score {raw!r} is not a usable binary correctness value',
+                ))
                 continue
             g = groups[(model, task)]
             g[None].add(score, in_t, out_t)                       # benchmark overall
             g[subtask if subtask not in (None, '') else '_'].add(score, in_t, out_t)
-    return groups
+    return groups, total, failures
 
 
-# --------------------------------------------------------------------------- #
 # record construction
-# --------------------------------------------------------------------------- #
 
 def _source_data(task: str, n: int, subtask: str | None = None):
     """The dataset the eval ran on (not WILD-raw, which holds the results)."""
@@ -194,6 +224,17 @@ def _source_data(task: str, n: int, subtask: str | None = None):
         dataset_name=task, source_type='other',
         additional_details={'note': 'no single public HF dataset repo for this WILD '
                                     'task/subtask; results are in ' + HF_REPO_ID})
+
+
+def metric_details(agg: Agg) -> dict[str, str]:
+    """Item counts, plus token means over the rows that carried token usage — a row
+    without token counts leaves the mean rather than averaging in as a zero."""
+    details = {'n_items': str(agg.n), 'n_correct': str(int(agg.correct))}
+    if agg.tok_n:
+        details['n_items_with_token_usage'] = str(agg.tok_n)
+        details['mean_input_tokens'] = f'{agg.in_tok / agg.tok_n:.1f}'
+        details['mean_output_tokens'] = f'{agg.out_tok / agg.tok_n:.1f}'
+    return details
 
 
 def _result(task: str, subtask: str | None, agg: Agg) -> EvaluationResult:
@@ -211,7 +252,9 @@ def _result(task: str, subtask: str | None, agg: Agg) -> EvaluationResult:
         metric_config=MetricConfig(
             evaluation_description=(
                 f'Mean binary item correctness on {name} (WILD-raw).'),
-            metric_id=f'{name}.accuracy',
+            # The registry's canonical global metric: `evaluation_name` keeps the
+            # tasks apart, so the cross-source accuracy join stays whole.
+            metric_id='accuracy',
             metric_name='accuracy',
             metric_kind='accuracy',
             metric_unit='proportion',
@@ -220,12 +263,7 @@ def _result(task: str, subtask: str | None, agg: Agg) -> EvaluationResult:
             min_score=0.0,
             max_score=1.0,
             metric_parameters={'aggregation_level': level, 'aggregation': 'micro'},
-            additional_details={
-                'n_items': str(agg.n),
-                'n_correct': str(int(agg.correct)),
-                'mean_input_tokens': f'{agg.in_tok / agg.n:.1f}' if agg.n else '0',
-                'mean_output_tokens': f'{agg.out_tok / agg.n:.1f}' if agg.n else '0',
-            },
+            additional_details=metric_details(agg),
         ),
         score_details=ScoreDetails(
             score=accuracy,
@@ -243,17 +281,15 @@ def build_log(model: str, task: str, subs: dict[str | None, Agg],
     model_slug = model.split('/')[-1]
     sanitized = model.replace('/', '_')
     real_subs = sorted(k for k in subs if k is not None)
-    # If a benchmark has 0 or 1 distinct subtask, the overall == that lone subtask,
-    # so emit only the overall (avoids byte-identical duplicate results, e.g. the
-    # 17 tasks whose only subtask is "general"). Split into subtasks only when >1.
+    # With ≤1 distinct subtask the overall IS that subtask, so emit only the overall
+    # (17 WILD tasks have "general" as their only subtask).
     results = [_result(task, None, subs[None])]
     if len(real_subs) > 1:
         for sub in real_subs:
             results.append(_result(task, sub, subs[sub]))
-    # Provenance: only claim a dataset_revision for REMOTE reads (a pinned commit).
-    # For local --parquet runs `revision` is None (resolve_source_revision) — we do
-    # NOT know which WILD-raw revision the file came from, so stamping 'main' would be
-    # a FALSE remote-provenance claim. Record a local marker instead.
+    # Only claim a dataset_revision for remote reads (a pinned commit). A local
+    # --parquet run's revision is unknown, so it gets a local marker instead of a
+    # false remote-provenance claim.
     source_details = {
         'dataset_url': HF_DATASET_URL,
         'paper_url': PAPER_URL,
@@ -266,8 +302,7 @@ def build_log(model: str, task: str, subs: dict[str | None, Agg],
             'local parquet file(s); source WILD-raw revision unknown (not stamped)')
     log = EvaluationLog(
         schema_version=SCHEMA_VERSION,
-        # id keyed on the (stable) evaluation time, so reruns are idempotent;
-        # retrieved_timestamp records when WE built the record (now).
+        # keyed on the stable evaluation time, so reruns are idempotent
         evaluation_id=f'wild/{sanitized}/{task}/{eval_ts}',
         retrieved_timestamp=retrieved_ts,
         evaluation_timestamp=eval_ts,
@@ -292,28 +327,23 @@ def build_log(model: str, task: str, subs: dict[str | None, Agg],
     return log, developer, model_slug
 
 
-# --------------------------------------------------------------------------- #
 # instance-level (--include-instances)
-# --------------------------------------------------------------------------- #
 
 def _sample_hash(raw: str, reference: list[str]) -> str:
-    """Canonical cross-adapter sample hash — MUST match the skill recipe
-    (templates/instance_sidecar._sample_hash / utils/openeval): sha256 over canonical
-    JSON of {"raw", "reference"}. A bespoke string concatenation (the earlier
-    `raw + '\\n' + '\\n'.join(reference)`) silently fails to join with other adapters'
-    instances for the same item, defeating the cross-adapter sample_hash key."""
+    """Canonical cross-adapter sample hash: sha256 over canonical JSON of
+    {"raw", "reference"}. Any other spelling stops joining with the other adapters'
+    instances for the same item (`every_eval_ever/adapters/openeval`)."""
     payload = json.dumps({'raw': raw, 'reference': reference},
                          sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
 
 def _split_conversation(raw: str | None) -> tuple[str, list[str]]:
-    """Split the `conversation` column into (prompt, generation_turns):
-    - prompt = the user + system turns only -> input.raw. Model-INDEPENDENT and
-      answer-FREE, so it hashes identically across models (cross-model join).
-    - generation_turns = the assistant turn content(s) -> output.raw. This is the
-      model's FULL generation; it must NOT go in input.raw (answer leak), and it is
-      distinct from the scorer's parsed answer (see _primary_scorer)."""
+    """Split the `conversation` column into (prompt, generation_turns).
+
+    prompt = the user + system turns only -> input.raw: answer-free and
+    model-independent, so it hashes identically across models. generation_turns = the
+    assistant turn content(s) -> output.raw, the model's full generation."""
     if not raw:
         return '', []
     try:
@@ -342,11 +372,9 @@ def _split_conversation(raw: str | None) -> tuple[str, list[str]]:
 def _primary_scorer(scores_json: str | None) -> tuple[str, str]:
     """Return (scorer_name, scored_answer) from the SAME scorer entry, so the name
     and value can't point at different scorers. The Inspect `scores` map is keyed by
-    scorer name (e.g. 'match', 'choice', 'model_graded_qa'); WILD emits a single
-    scorer per item — if several ever appear we take the first key deterministically.
-    `scored_answer` is the scorer's EXTRACTED/parsed answer (Inspect's `answer`
-    field), NOT the model's full generation (that is the assistant turn in
-    `conversation`; see _split_conversation and output.raw)."""
+    scorer name ('match', 'choice', 'model_graded_qa', …); WILD emits one scorer per
+    item, and the first key is taken if several ever appear. `scored_answer` is the
+    scorer's parsed answer, not the model's generation."""
     if scores_json:
         try:
             scores = json.loads(scores_json)
@@ -361,32 +389,38 @@ def _primary_scorer(scores_json: str | None) -> tuple[str, str]:
 
 
 def make_instance(row: dict, evaluation_id: str, model: str,
-                  multi_subtask: bool) -> InstanceLevelEvaluationLog:
+                  multi_subtask: bool) -> InstanceLevelEvaluationLog | None:
+    """One instance record, or ``None`` for a row the aggregate also excluded."""
     task = row['task']
     subtask = row['subtask'] if row['subtask'] not in (None, '') else '_'
-    # Attach to the FINEST-GRAIN result: the leaf subtask when the benchmark is split
-    # (>1 subtask), else the lone overall (matches build_log's dedup so the FK always
-    # resolves). We deliberately do NOT also emit instances for the coarser overall
-    # result of a multi-subtask benchmark: every item belongs to exactly one subtask,
-    # so the overall's per-item set is just the union of the leaves' — re-emitting it
-    # would duplicate every row for no new information. Consumers reconstruct the
-    # overall from the leaf instances.
+    # Attach to the finest-grain result: the leaf subtask when the benchmark is
+    # split, else the lone overall (matching build_log's dedup, so the FK resolves).
+    # Leaf-only is intentional: every item belongs to exactly one subtask, so linking
+    # the overall as well would duplicate all ~7.5M rows for no new information.
     if multi_subtask:
         name, rid = f'wild.{task}.{subtask}', f'{task}::{subtask}'
     else:
         name, rid = f'wild.{task}', task
-    score = float(row['score'] or 0)
-    in_t, out_t = int(row['input_tokens'] or 0), int(row['output_tokens'] or 0)
+    score = item_score(row['score'])
+    if score is None:
+        return None            # reported by the aggregate pass; not scored here
+    in_t, out_t = row['input_tokens'], row['output_tokens']
     scorer, scored_answer = _primary_scorer(row.get('scores'))
-    # extracted (parsed) answer -> answer_attribution: prefer the `answer` column,
-    # fall back to the scorer's own parsed answer.
-    extracted = str(row.get('answer') or '') or scored_answer
+    # `source` names where the parsed answer came from, so it is never attributed
+    # to output.raw, which holds the full generation.
+    column_answer = str(row.get('answer') or '')
+    extracted = column_answer or scored_answer
+    if column_answer:
+        attribution_source = 'answer'
+    elif scored_answer:
+        attribution_source = f'scores.{scorer}.answer'
+    else:
+        attribution_source = 'unavailable'
     prompt, generation = _split_conversation(row.get('conversation'))
     reference = [str(row.get('target') or '')]
-    # output.raw = the model's FULL generation (assistant turn[s]) — NOT the parsed
-    # answer. Fall back to the extracted answer only if the row carries no assistant
-    # turn, so output.raw is never empty for a scored item.
-    output_raw = generation if generation else ([extracted] if extracted else [])
+    # A row with no assistant turn gets an empty list: substituting the parsed
+    # answer would label scorer data as the model's output.
+    output_raw = generation
     sample_hash = _sample_hash(prompt, reference)
     return InstanceLevelEvaluationLog(
         schema_version=SCHEMA_VERSION,
@@ -400,62 +434,72 @@ def make_instance(row: dict, evaluation_id: str, model: str,
         input=Input(raw=prompt, reference=reference),
         output=Output(raw=output_raw),
         answer_attribution=[AnswerAttributionItem(
-            turn_idx=0, source='output.raw',
+            turn_idx=0, source=attribution_source,
             extracted_value=extracted,
             extraction_method=scorer, is_terminal=True)],
         evaluation=Evaluation(score=score, is_correct=score == 1.0),
-        token_usage=TokenUsage(input_tokens=in_t, output_tokens=out_t,
-                               total_tokens=in_t + out_t),
+        # Omitted rather than zeroed when the row carries no usage.
+        token_usage=(
+            TokenUsage(input_tokens=int(in_t), output_tokens=int(out_t),
+                       total_tokens=int(in_t) + int(out_t))
+            if in_t is not None and out_t is not None else None),
         metadata={'stop_reason': str(row.get('stop_reason') or ''),
                   'subtask': str(subtask), 'scorer': scorer},
     )
 
 
-def write_instances(parquet, limit_shards, models, agg_paths: dict, eval_ids: dict,
-                    multi: set, max_instances: int | None,
-                    revision: str | None = None) -> dict[tuple[str, str], int]:
-    """Stream item rows into per-(model,task) `<stem>_samples.jsonl`. Returns counts."""
+def write_instances(parquet, limit_shards, models, staged_paths: dict,
+                    eval_ids: dict, multi: set, max_instances: int | None,
+                    revision: str | None = None
+                    ) -> dict[tuple[str, str], tuple[str, int]]:
+    """Stream item rows into the staged sidecars. Returns ``{key: (sha256, rows)}``.
+
+    The digest is accumulated as the bytes are appended, so no sidecar is ever
+    re-read or held whole in memory — WILD writes ~7.5M instance rows."""
+    digests: dict[tuple[str, str], object] = {}
     counts: dict[tuple[str, str], int] = defaultdict(int)
     written = 0
-    for batch in iter_batches(parquet, INSTANCE_COLUMNS, limit_shards, revision):
-        # group this row-group's rows by (model, task) to bound open handles
+    reached_cap = False
+    for _label, batch in iter_batches(parquet, INSTANCE_COLUMNS, limit_shards,
+                                      revision):
+        # group this batch's rows by (model, task) to bound open handles
         buckets: dict[tuple[str, str], list[str]] = defaultdict(list)
-        n = len(batch['model'])
-        for i in range(n):
-            model, task = batch['model'][i], batch['task'][i]
-            if models and model not in models:
+        for i in range(len(batch['model'])):
+            key = (batch['model'][i], batch['task'][i])
+            if models and key[0] not in models:
                 continue
-            if (model, task) not in agg_paths:
+            if key not in staged_paths:
                 continue
             if max_instances is not None and written >= max_instances:
+                reached_cap = True
                 break
             row = {c: batch[c][i] for c in INSTANCE_COLUMNS}
-            inst = make_instance(row, eval_ids[(model, task)], model,
-                                 (model, task) in multi)
-            buckets[(model, task)].append(
+            inst = make_instance(row, eval_ids[key], key[0], key in multi)
+            if inst is None:      # unusable score: the aggregate skipped it too
+                continue
+            buckets[key].append(
                 json.dumps(inst.model_dump(mode='json', exclude_none=True),
                            ensure_ascii=False))
             written += 1
         for key, lines in buckets.items():
-            sample_path = agg_paths[key].with_name(f'{agg_paths[key].stem}_samples.jsonl')
-            with sample_path.open('a', encoding='utf-8') as fh:
-                fh.write('\n'.join(lines) + '\n')
+            payload = ('\n'.join(lines) + '\n').encode('utf-8')
+            staged_paths[key].parent.mkdir(parents=True, exist_ok=True)
+            with staged_paths[key].open('ab') as fh:
+                fh.write(payload)
+            digests.setdefault(key, hashlib.sha256()).update(payload)
             counts[key] += len(lines)
-        if max_instances is not None and written >= max_instances:
+        if reached_cap:
             break
-    return counts
+    return {key: (digest.hexdigest(), counts[key])
+            for key, digest in digests.items()}
 
 
-# --------------------------------------------------------------------------- #
 # driver
-# --------------------------------------------------------------------------- #
 
 def resolve_source_revision(override: str | None,
                             parquet: list[str] | None) -> tuple[str | None, str | None]:
-    """Pin a concrete commit for remote runs so reruns are reproducible even if a
-    later HF lookup hiccups, and read the same snapshot in both passes (aggregate +
-    instances). Returns (revision, commit_timestamp). Local `--parquet` runs need no
-    revision. Warns loudly rather than silently degrading to a mutable ref."""
+    """Pin a concrete commit as ``(revision, commit_timestamp)``, so both passes and
+    any rerun read one snapshot. Local `--parquet` runs have no remote revision."""
     if parquet:                       # local files: no remote revision to pin
         return None, None
     try:
@@ -469,31 +513,76 @@ def resolve_source_revision(override: str | None,
             commit_ts = repr(dt.timestamp())
         return info.sha, commit_ts    # info.sha is the concrete commit SHA
     except Exception as exc:  # noqa: BLE001
-        print(f"WARNING: could not resolve {HF_REPO_ID}@{override or HF_REVISION} "
-              f"({exc!r}); falling back to the MUTABLE '{HF_REVISION}' ref — reruns "
-              f"may read different data and are NOT guaranteed idempotent.")
-        return override or HF_REVISION, None
+        if override:
+            # An explicit --revision is the caller's pin; a metadata lookup only
+            # supplies the commit date, so losing it costs provenance, not the pin.
+            print(f'WARNING: could not read metadata for {HF_REPO_ID}@{override} '
+                  f'({exc!r}); using it as given, with no commit date.')
+            return override, None
+        raise SystemExit(
+            f'could not resolve {HF_REPO_ID}@{HF_REVISION} to a concrete commit '
+            f'({exc!r}). Reading the mutable {HF_REVISION!r} ref would make both '
+            'passes and any rerun read possibly different data. Pass --revision '
+            '<sha> to pin a snapshot explicitly.'
+        )
 
 
 def resolve_eval_timestamp(override: str | None,
                            commit_ts: str | None = None) -> str:
-    """When the evaluation was RUN. Prefer an explicit override, then the pinned
-    commit's date (a stable, idempotent proxy). Only fall back to now() as a last
-    resort — and warn, since it makes evaluation_id non-idempotent across runs."""
+    """When the evaluation was RUN: an explicit override, else the pinned commit date.
+
+    ``evaluation_id`` is keyed on this, so there is no now() fallback — it would give
+    the same data a different identity on every run."""
     if override:
         return str(override)
     if commit_ts:
         return commit_ts
-    print("WARNING: no evaluation timestamp (neither --evaluation-timestamp nor a "
-          "resolved commit date); using now() — evaluation_id will change every run. "
-          "Pass --evaluation-timestamp or --revision for an idempotent id.")
-    return str(time.time())
+    raise SystemExit(
+        'no evaluation timestamp is available: local --parquet runs carry no source '
+        'commit date, and evaluation_id is keyed on this value, so falling back to '
+        'now() would give identical reruns different logical identities. Pass '
+        '--evaluation-timestamp <epoch>.'
+    )
+
+
+def existing_records(base_output_dir: Path,
+                     logs: list[EvaluationLog]) -> list[Path]:
+    """Aggregates and sidecars already published for the models this run writes.
+
+    Filenames are fresh uuid4s, so publishing into a populated target would add a
+    second copy of each evaluation_id rather than replace it."""
+    return sorted({
+        path
+        for log in logs
+        for path in datastore_output_dir(base_output_dir, COLLECTION,
+                                        log.model_info.id,
+                                        log.model_info.developer).glob('*.json*')
+    })
+
+
+def publish(logs: list[EvaluationLog], file_uuids: list[str],
+            base_output_dir: Path, staging_root: Path) -> list[Path]:
+    """Publish each aggregate together with its sidecar, one log at a time.
+
+    The shared publisher buffers a batch's bytes before creating any file, so one call
+    over WILD's ~1,700 logs would hold the whole sidecar corpus in memory. Anything
+    already created is removed if a later log fails."""
+    published: list[Path] = []
+    try:
+        for log, file_uuid in zip(logs, file_uuids):
+            published.extend(publish_evaluation_logs(
+                [log], base_output_dir, [file_uuid],
+                staged_output_dir=staging_root, collection_override=COLLECTION))
+    except Exception:
+        for path in reversed(published):
+            path.with_name(f'{path.stem}_samples.jsonl').unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+        raise
+    return published
 
 
 def run(args: argparse.Namespace) -> int:
     models = set(args.models) if args.models else None
-    # Pin ONE dataset revision up front and reuse it for both passes + provenance,
-    # so aggregate and instances read the same snapshot and reruns stay idempotent.
     revision, commit_ts = resolve_source_revision(args.revision, args.parquet)
     # retrieved = when this record was created (now); evaluation = when WILD ran it.
     eval_ts = resolve_eval_timestamp(args.evaluation_timestamp, commit_ts)
@@ -501,49 +590,87 @@ def run(args: argparse.Namespace) -> int:
     print(f'dataset_revision = {revision} | evaluation_timestamp = {eval_ts} '
           f'| retrieved_timestamp = {retrieved_ts}')
 
-    groups = aggregate(args.parquet, args.limit_shards, models, revision)
-    print(f'aggregated {len(groups)} (model, benchmark) groups')
+    groups, total_rows, failures = aggregate(args.parquet, args.limit_shards,
+                                             models, revision)
+    print(f'aggregated {len(groups)} (model, benchmark) groups '
+          f'from {total_rows} item rows')
 
-    agg_paths: dict[tuple[str, str], Path] = {}
-    eval_ids: dict[tuple[str, str], str] = {}
-    logs: dict[tuple[str, str], EvaluationLog] = {}
-    for (model, task), subs in groups.items():
-        log, developer, model_slug = build_log(model, task, subs, eval_ts,
-                                               retrieved_ts, revision)
-        path = save_evaluation_log(log, args.output_dir, developer, model_slug)
-        agg_paths[(model, task)] = path
-        eval_ids[(model, task)] = log.evaluation_id
-        logs[(model, task)] = log
+    keys = sorted(groups)
+    logs: list[EvaluationLog] = []
+    file_uuids: list[str] = []
+    for model, task in keys:
+        log, _developer, _model_slug = build_log(model, task, groups[(model, task)],
+                                                eval_ts, retrieved_ts, revision)
+        logs.append(log)
+        file_uuids.append(str(uuid.uuid4()))
 
-    if args.include_instances:
-        print('writing instance sidecars…')
-        multi = {k for k, subs in groups.items()
-                 if len([s for s in subs if s is not None]) > 1}
-        counts = write_instances(args.parquet, args.limit_shards, models,
-                                 agg_paths, eval_ids, multi, args.max_instances,
-                                 revision)
-        for key, count in counts.items():
-            if not count:
-                continue
-            path = agg_paths[key]
-            sample_path = path.with_name(f'{path.stem}_samples.jsonl')
-            checksum = hashlib.sha256(sample_path.read_bytes()).hexdigest()
-            logs[key].detailed_evaluation_results = DetailedEvaluationResults(
-                format=Format.jsonl, file_path=sample_path.name,
-                hash_algorithm=HashAlgorithm.sha256, checksum=checksum,
-                total_rows=count)
-            path.write_text(
-                logs[key].model_dump_json(indent=2, exclude_none=True),
-                encoding='utf-8')
-        print(f'wrote {sum(counts.values())} instance records')
+    # Checked before the instance pass so a rejected rerun costs nothing.
+    stale = existing_records(args.output_dir.parent, logs)
+    if stale and not args.replace_existing:
+        raise SystemExit(
+            f'{len(stale)} file(s) are already published under {args.output_dir} '
+            f'for these models, e.g. {stale[0]}. Filenames are fresh uuid4s, so '
+            'writing now would add a second copy of each evaluation_id rather '
+            'than replace it. Pass --replace-existing to replace them.'
+        )
 
-    print(f'wrote {len(agg_paths)} aggregate EvaluationLog(s) -> {args.output_dir}')
-    return len(agg_paths)
+    with tempfile.TemporaryDirectory(prefix='eee-wild-publication-') as staging:
+        staging_root = Path(staging)
+        if args.include_instances:
+            print('staging instance sidecars…')
+            multi = {k for k, subs in groups.items()
+                     if len([s for s in subs if s is not None]) > 1}
+            staged_paths = {
+                key: datastore_output_dir(staging_root, COLLECTION,
+                                          log.model_info.id,
+                                          log.model_info.developer)
+                / f'{file_uuid}_samples.jsonl'
+                for key, log, file_uuid in zip(keys, logs, file_uuids)}
+            eval_ids = {key: log.evaluation_id for key, log in zip(keys, logs)}
+            staged = write_instances(args.parquet, args.limit_shards, models,
+                                     staged_paths, eval_ids, multi,
+                                     args.max_instances, revision)
+            for key, log, file_uuid in zip(keys, logs, file_uuids):
+                if key not in staged:
+                    continue
+                checksum, rows = staged[key]
+                log.detailed_evaluation_results = DetailedEvaluationResults(
+                    format=Format.jsonl,
+                    # The full repository-relative path, not the basename: it is what
+                    # the schema, the publisher and the datastore gate all check.
+                    file_path=datastore_repo_file_path(
+                        COLLECTION, log.model_info.id, log.model_info.developer,
+                        f'{file_uuid}_samples.jsonl'),
+                    hash_algorithm=HashAlgorithm.sha256, checksum=checksum,
+                    total_rows=rows)
+            print(f'staged {sum(rows for _, rows in staged.values())} '
+                  'instance records')
+
+        result = SourceConversionResult(
+            source_name=SOURCE_NAME, total_records=total_rows,
+            records=logs, failures=failures)
+        # Written before publication: it accounts for the conversion, so a
+        # publication that raises must not take the record of what failed with it.
+        if failures:
+            print('Unconverted source rows: '
+                  f'{save_failure_report(result, default_failure_report_path(args.output_dir))}')
+
+        # Removed only once the replacement is fully staged, so a failure in the
+        # instance pass leaves the previous refresh in place.
+        for path in stale:
+            path.unlink()
+        published = publish(logs, file_uuids, args.output_dir.parent, staging_root)
+
+    print(f'wrote {len(published)} aggregate EvaluationLog(s) -> {args.output_dir}')
+    result.raise_if_incomplete()
+    return len(published)
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description='Convert kensho/WILD-raw to Every Eval Ever.')
-    p.add_argument('--parquet', nargs='*', default=None,
+    # nargs='+' so a bare --parquet errors instead of silently converting all 15
+    # remote shards.
+    p.add_argument('--parquet', nargs='+', default=None,
                    help='Local parquet path(s); default fetches the HF shards.')
     p.add_argument('--output-dir', type=Path, default=Path(DEFAULT_OUTPUT_DIR))
     p.add_argument('--limit-shards', type=int, default=None,
@@ -557,6 +684,11 @@ def parse_args() -> argparse.Namespace:
                    help='Override the record-creation epoch (default: now).')
     p.add_argument('--evaluation-timestamp', default=None,
                    help='Override when the eval ran (default: the pinned commit date).')
+    p.add_argument('--replace-existing', action='store_true',
+                   help='Delete the files already published for these models before '
+                        'writing. Without it a populated output directory is an '
+                        'error, because a rerun would add a second copy of every '
+                        'record.')
     p.add_argument('--revision', default=None,
                    help='Pin a specific kensho/WILD-raw commit SHA/tag for reproducible '
                         'reruns (default: resolve the current main commit and pin that).')

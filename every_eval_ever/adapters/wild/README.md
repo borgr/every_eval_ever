@@ -18,24 +18,29 @@ Kensho ran the evaluations, so it's an `evaluation_run` source with
   id as-is (e.g. `01-ai/Yi-1.5-34B-Chat`).
 - **Instances** (`--include-instances`) — the raw per-item rows become an
   instance-level `<uuid>_samples.jsonl` sidecar (single-turn: `input` = the prompt +
-  `target`, `output` = the model answer, `evaluation` = score/is_correct,
+  `target`, `output` = the model's full generation, `evaluation` = score/is_correct,
   `token_usage`), referenced by the aggregate's `detailed_evaluation_results`. This
   is the faithful use of the *raw* dataset; it is off by default because it is large.
 
 ## Usage
 
-Reads parquet straight from HuggingFace, **streamed per row group** (never the full
-~7GB). Smoke run over the first shard, writing outside the repo:
+Reads parquet straight from HuggingFace in **bounded record batches** (never the
+full ~7GB, and never a whole 500,000-row row group). The output directory must be a
+`data/wild` path, because records are published to
+`data/wild/<developer>/<model>/<uuid>.json`. Smoke run over the first shard, writing
+outside the repo:
 
 ```bash
-uv run python -m every_eval_ever.adapters.wild.adapter --output-dir /tmp/eee-wild --limit-shards 1
-uv run python -m every_eval_ever validate /tmp/eee-wild
+uv run python -m every_eval_ever.adapters.wild.adapter \
+  --output-dir /tmp/eee-wild/data/wild --limit-shards 1
+uv run python -m every_eval_ever validate '/tmp/eee-wild/data/wild/*/*/*.json*'
 ```
 
 Filter models / include a capped instance sample:
 
 ```bash
-uv run python -m every_eval_ever.adapters.wild.adapter --output-dir /tmp/eee-wild-inst \
+uv run python -m every_eval_ever.adapters.wild.adapter \
+  --output-dir /tmp/eee-wild-inst/data/wild \
   --limit-shards 1 --models 01-ai/Yi-1.5-34B-Chat \
   --include-instances --max-instances 2000
 ```
@@ -47,17 +52,34 @@ uv run python -m every_eval_ever.adapters.wild.adapter --output-dir data/wild   
 uv run python -m every_eval_ever.adapters.wild.adapter --output-dir data/wild --include-instances
 ```
 
-Local parquet instead of fetching:
+Local parquet instead of fetching. A local file carries no source commit date, so
+`--evaluation-timestamp` is required:
 
 ```bash
-uv run python -m every_eval_ever.adapters.wild.adapter --parquet data-000*.parquet --output-dir /tmp/eee-wild
+uv run python -m every_eval_ever.adapters.wild.adapter --parquet data-000*.parquet \
+  --output-dir /tmp/eee-wild/data/wild --evaluation-timestamp 1780000000.0
 ```
+
+Record filenames are fresh uuid4s, so a rerun into a populated output directory is
+an error rather than a second copy of every record; pass `--replace-existing` to
+replace what is there. Everything is staged and preflighted before any file is
+created, and a failure removes whatever the run created.
+
+A row whose `score` is not a usable binary correctness value is left out of the
+aggregate (rather than counted as wrong) and named in
+`adapter_reports/wild_failures.json`; the command then exits non-zero so a partial
+refresh is distinguishable from a complete one.
 
 ## Notes
 - Timestamps: `retrieved_timestamp` = when this record was built (**now**);
   `evaluation_timestamp` = when WILD ran the eval, proxied by the HF dataset's
   `lastModified` (overrides: `--retrieved-timestamp` / `--evaluation-timestamp`).
-  `evaluation_id` is keyed on the evaluation time so reruns are idempotent.
+  `evaluation_id` is keyed on the evaluation time so reruns are idempotent — there is
+  no `now()` fallback, which would give identical reruns different identities.
+- Remote runs pin one concrete commit and read it in both passes. If that commit
+  cannot be resolved the run stops rather than reading the mutable `main` ref; pass
+  `--revision <sha>` to pin a snapshot yourself. A local `--parquet` run records a
+  local marker instead of a revision it cannot know.
 - `eval_library` = `inspect_ai` — the WILD paper states the evals were run with the
   Inspect AI framework; the scorer (`match`) is in `additional_details`.
 - `source_data` points at each **benchmark's own dataset repo** (all verified on
@@ -70,15 +92,21 @@ uv run python -m every_eval_ever.adapters.wild.adapter --parquet data-000*.parqu
   `interaction_type=single_turn` — all confirmed from the paper (short-horizon QA;
   multi-turn/agentic explicitly out of scope). Generation settings (temp/sampling)
   are not documented → omitted.
-- **Instances:** `input.raw` = the user/system turns only (the assistant turn in the
-  `conversation` column is the model output → it goes in `output.raw`, taken from
-  `scores.<scorer>.answer`; this avoids leaking the answer into the input).
-  `answer_attribution.extraction_method` = the real Inspect scorer (the `scores`
-  key: `match`/`choice`/…). `sample_hash` = sha256(input.raw + reference) for
-  cross-model item joins.
-- **Aggregation:** per-item binary `score` (verified 0/1 for all 27 tasks) →
-  `accuracy` (`continuous [0,1]`) with an analytic proportion `standard_error` +
-  `num_samples`. A benchmark with ≤1 distinct subtask emits only the overall
+- **Instances:** `input.raw` = the user/system turns only, so the answer never leaks
+  into the input. `output.raw` = the assistant turn(s), i.e. the model's *full*
+  generation — a row with no assistant turn gets an empty list rather than the
+  scorer's parsed answer. The parsed answer goes in
+  `answer_attribution.extracted_value`, with `source` naming where it came from
+  (`answer`, or `scores.<scorer>.answer` when that column is empty) and
+  `extraction_method` = the real Inspect scorer (the `scores` key: `match`/`choice`/…).
+  `sample_hash` = sha256 over canonical JSON of `{"raw", "reference"}` — the shared
+  cross-adapter recipe, so the same item joins across adapters.
+  Instances attach to the finest-grain result only: every item belongs to exactly one
+  subtask, so re-emitting them under the overall would duplicate ~7.5M rows for no
+  new information.
+- **Aggregation:** per-item binary `score` → `accuracy` (`continuous [0,1]`) with an
+  analytic proportion `standard_error` + `num_samples`. Token means cover only the
+  rows that carried complete token usage. A benchmark with ≤1 distinct subtask emits only the overall
   `wild.<task>` result (no duplicate leaf); multi-subtask benchmarks emit the
   overall + one `wild.<task>.<subtask>` per subtask (`metric_parameters` marks
   overall vs subtask; `micro` pooling).
