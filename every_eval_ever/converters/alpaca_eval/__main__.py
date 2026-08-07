@@ -1,14 +1,8 @@
 """CLI for converting AlpacaEval leaderboard data to every_eval_ever format."""
 
 import argparse
-import json
-import sys
-import uuid
-from pathlib import Path
 
-from every_eval_ever.converters import SCHEMA_VERSION
-
-from .adapter import LEADERBOARDS, AlpacaEvalAdapter
+from .adapter import LEADERBOARDS
 
 
 def main():
@@ -33,41 +27,17 @@ def main():
         help='Base output directory (default: data).',
     )
     args = parser.parse_args()
+    args.source_organization_name = 'unknown'
+    args.evaluator_relationship = 'third_party'
+    args.source_organization_url = None
+    args.source_organization_logo_url = None
+    args.eval_library_name = 'alpaca_eval'
+    args.eval_library_version = 'unknown'
 
-    adapter = AlpacaEvalAdapter()
-    versions = [args.version] if args.version else list(LEADERBOARDS.keys())
-    output_dir = Path(args.output_dir)
+    from every_eval_ever.cli import _cmd_convert_alpaca_eval
 
-    total = 0
-    for version in versions:
-        cfg_name = LEADERBOARDS[version]['source_name']
-        print(f'\n=== {cfg_name} ===')
-        try:
-            logs = adapter.fetch_leaderboard(version)
-        except Exception as exc:
-            print(f'  ERROR: {exc}', file=sys.stderr)
-            continue
-
-        benchmark_key = f'alpaca_eval_{version}'
-
-        for log in logs:
-            parts = log.model_info.id.split('/', 1)
-            developer = parts[0] if len(parts) == 2 else 'unknown'
-            model_name = parts[1] if len(parts) == 2 else log.model_info.id
-
-            out_dir = output_dir / benchmark_key / developer / model_name
-            out_dir.mkdir(parents=True, exist_ok=True)
-            out_file = out_dir / f'{uuid.uuid4()}.json'
-
-            with out_file.open('w', encoding='utf-8') as f:
-                json.dump(
-                    log.model_dump(mode='json', exclude_none=True), f, indent=2
-                )
-            print(f'  {out_file}')
-            total += 1
-
-    print(f'\nConverted {total} model evaluation(s).')
+    return _cmd_convert_alpaca_eval(args)
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

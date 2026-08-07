@@ -1,7 +1,7 @@
 """Tests for the Open Medical-LLM Leaderboard adapter. Offline — builds records
 from synthetic lm-evaluation-harness result objects (no network)."""
+from every_eval_ever.adapters.open_medical_llm import adapter
 from every_eval_ever.eval_types import EvaluationLog
-from utils.open_medical_llm import adapter
 
 
 def _results_obj():

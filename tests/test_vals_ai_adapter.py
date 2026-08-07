@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from every_eval_ever.adapters.vals_ai import adapter
 from every_eval_ever.eval_types import EvaluationLog
 from every_eval_ever.validate import validate_file
-from utils.vals_ai import adapter
 
 FIXTURE_PATH = (
     Path(__file__).parent / 'data' / 'vals_ai' / 'finance_agent_payload.json'
@@ -48,10 +48,6 @@ def sample_payload() -> dict:
                             'verbosity': None,
                             'compute_effort': None,
                             'provider': 'OpenAI',
-                        },
-                        'unknown-model': {
-                            'accuracy': None,
-                            'provider': 'Mystery Lab',
                         },
                     },
                     'numerical_reasoning': {
@@ -106,11 +102,10 @@ def test_make_logs_validate_against_schema():
     bundles = adapter.make_logs(
         sample_payload(), retrieved_timestamp='1234567890.0'
     )
-    assert len(bundles) == 2
+    assert len(bundles) == 4
 
     for bundle in bundles:
         validated = EvaluationLog.model_validate(bundle.log.model_dump())
-        assert validated.schema_version == '0.2.2'
         assert validated.source_metadata.source_organization_name == 'Vals.ai'
         assert validated.source_metadata.source_type.value == 'documentation'
         assert (
@@ -157,6 +152,35 @@ def test_unknown_unprefixed_model_uses_provider_fallback():
     assert result.generation_config is None
 
 
+def test_routed_model_components_use_explicit_schema_fields():
+    payload = sample_payload()
+    raw_id = 'together/langston/nim/nvidia/llama-3.3-nemotron-super-49b-v1'
+    payload['benchmarks'][0]['tasks']['overall'][raw_id] = {
+        'accuracy': 55.0,
+        'provider': 'Together AI',
+    }
+
+    bundles = adapter.make_logs(
+        payload,
+        retrieved_timestamp='1234567890.0',
+    )
+    routed = next(
+        bundle.log
+        for bundle in bundles
+        if bundle.log.model_info.additional_details['vals_model_id'] == raw_id
+    )
+
+    assert routed.model_info.name == ('llama-3.3-nemotron-super-49b-v1')
+    assert routed.model_info.id == ('nvidia/llama-3.3-nemotron-super-49b-v1')
+    assert routed.model_info.developer == 'nvidia'
+    assert routed.model_info.inference_platform == 'Together AI'
+    assert routed.model_info.inference_engine.name == 'NIM'
+    assert (
+        routed.model_info.additional_details['vals_route']
+        == 'together/langston/nim'
+    )
+
+
 def test_preserves_source_fields_and_uncertainty():
     bundles = adapter.make_logs(
         sample_payload(), retrieved_timestamp='1234567890.0'
@@ -187,14 +211,25 @@ def test_preserves_source_fields_and_uncertainty():
     assert overall.score_details.uncertainty.standard_error.value == 4.748
 
 
-def test_non_percent_scores_are_skipped_without_explicit_bounds():
+def test_non_percent_scores_are_kept_without_invented_bounds():
     bundles = adapter.make_logs(
         sample_payload(), retrieved_timestamp='1234567890.0'
     )
-    model_ids = {bundle.log.model_info.id for bundle in bundles}
+    by_model = {bundle.log.model_info.id: bundle.log for bundle in bundles}
 
-    assert 'anthropic/claude-opus-4-7' not in model_ids
-    assert 'anthropic/claude-sonnet-4-6' not in model_ids
+    for model_id in (
+        'anthropic/claude-opus-4-7',
+        'anthropic/claude-sonnet-4-6',
+    ):
+        result = by_model[model_id].evaluation_results[0]
+        assert result.metric_config.metric_unit == 'points'
+        assert result.metric_config.score_type is None
+        assert result.metric_config.min_score is None
+        assert result.metric_config.max_score is None
+        assert (
+            result.metric_config.additional_details['max_score_source']
+            == 'not_provided'
+        )
 
 
 def test_canonical_model_id_collisions_fail_clearly():
@@ -245,6 +280,45 @@ def test_non_numeric_score_fails_with_context():
         assert 'finance_agent/overall/openai/bad-score' in message
     else:
         raise AssertionError('expected non-numeric score to fail')
+
+
+def test_null_score_is_a_failure_without_explicit_unevaluated_status():
+    payload = sample_payload()
+    null_row = {
+        'accuracy': None,
+        'provider': 'Mystery Lab',
+    }
+    payload['benchmarks'][0]['tasks']['overall']['unknown-model'] = null_row
+
+    result = adapter.convert_logs(payload, retrieved_timestamp='1234567890.0')
+
+    assert result.records
+    assert len(result.failures) == 1
+    assert result.failures[0].source_ref == (
+        'finance_agent/overall/unknown-model'
+    )
+    assert result.failures[0].reason == (
+        'Vals.ai model row is missing accuracy'
+    )
+    assert result.failures[0].source_record == null_row
+
+
+def test_non_numeric_score_keeps_valid_models_in_conversion_result():
+    payload = sample_payload()
+    bad_row = {
+        'accuracy': 'N/A',
+        'provider': 'OpenAI',
+    }
+    payload['benchmarks'][0]['tasks']['overall']['openai/bad-score'] = bad_row
+
+    result = adapter.convert_logs(payload, retrieved_timestamp='1234567890.0')
+
+    assert result.records
+    assert len(result.failures) == 1
+    assert result.failures[0].source_ref == (
+        'finance_agent/overall/openai/bad-score'
+    )
+    assert result.failures[0].source_record == bad_row
 
 
 def test_astro_payload_extraction():
@@ -337,6 +411,46 @@ def test_extract_collection_fetches_index_and_benchmark_pages(monkeypatch):
     assert payload['benchmarks'][0]['metadata']['benchmark'] == 'AIME'
 
 
+def test_live_page_failure_keeps_other_benchmarks_and_records_provenance(
+    monkeypatch,
+):
+    page_props = (
+        '{&quot;benchmarkView&quot;:[0,{&quot;metadata&quot;:[0,'
+        '{&quot;benchmark&quot;:[0,&quot;AIME&quot;],&quot;slug&quot;:[0,&quot;aime&quot;]}],'
+        '&quot;tasks&quot;:[0,{&quot;overall&quot;:[0,{&quot;openai/gpt-5&quot;:'
+        '[0,{&quot;accuracy&quot;:[0,95.0]}]}]}]}]}'
+    )
+    page_html = (
+        '<astro-island component-url="/_astro/BenchmarkView.abc.js" '
+        f'props="{page_props}"></astro-island>'
+    )
+
+    def fake_fetch(url: str) -> str:
+        if url == 'https://example.test/benchmarks':
+            return '<html></html>'
+        if url.endswith('/aime'):
+            return page_html
+        raise RuntimeError('benchmark page unavailable')
+
+    monkeypatch.setattr(adapter, 'fetch_text', fake_fetch)
+
+    payload = adapter.extract_collection(
+        benchmark_slugs=['aime', 'broken'],
+        base_url='https://example.test',
+    )
+    result = adapter.convert_logs(payload, retrieved_timestamp='1234567890.0')
+
+    assert len(result.records) == 1
+    assert len(result.failures) == 1
+    assert result.failures[0].source_ref == (
+        'https://example.test/benchmarks/broken'
+    )
+    assert result.failures[0].source_record == {
+        'benchmark_slug': 'broken',
+        'source_url': 'https://example.test/benchmarks/broken',
+    }
+
+
 def test_real_normalized_fixture_converts_to_schema():
     payload = adapter.extract_collection(input_json=FIXTURE_PATH)
     bundles = adapter.make_logs(payload, retrieved_timestamp='1234567890.0')
@@ -365,7 +479,7 @@ def test_export_paths_validate(tmp_path: Path):
     )
     paths = adapter.export_logs(bundles, output_dir)
 
-    assert len(paths) == 2
+    assert len(paths) == 4
     for path in paths:
         assert path.parent.parent.parent == output_dir
         report = validate_file(path)

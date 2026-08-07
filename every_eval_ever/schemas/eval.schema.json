@@ -1,6 +1,6 @@
 {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "version": "0.2.2",
+    "version": "0.3.0",
     "type": "object",
     "description": "Schema for storing and validating LLMs evaluation data, including model configuration, prompts, instances, Output, and evaluation metrics",
     "required": [
@@ -219,13 +219,20 @@
                                 "description": "Indicates whether there is an Unknown Level - if True, then a score of -1 will be treated as Unknown"
                             },
                             "min_score": {
-                                "type": "number",
-                 
-                                "description": "Minimum possible score for continuous metric"
+                                "oneOf": [
+                                    { "type": "number" },
+                                    { "type": "string", "enum": ["Infinity", "-Infinity"] },
+                                    { "type": "null" }
+                                ],
+                                "description": "Minimum possible score for a continuous metric. Use the string \"-Infinity\" when unbounded below. Absence/null means not provided."
                             },
                             "max_score": {
-                                "type": "number",
-                                "description": "Maximum possible score for continuous metric"
+                                "oneOf": [
+                                    { "type": "number" },
+                                    { "type": "string", "enum": ["Infinity", "-Infinity"] },
+                                    { "type": "null" }
+                                ],
+                                "description": "Maximum possible score for a continuous metric. Use the string \"Infinity\" when unbounded above. Absence/null means not provided."
                             },
                             "llm_scoring": {
                                 "type": "object",
@@ -279,6 +286,9 @@
                             }
                         },
                         "if": {
+                            "required": [
+                                "score_type"
+                            ],
                             "properties": {
                                 "score_type": {
                                     "const": "levels"
@@ -293,6 +303,9 @@
                         },
                         "else": {
                             "if": {
+                                "required": [
+                                    "score_type"
+                                ],
                                 "properties": {
                                     "score_type": {
                                         "const": "continuous"
@@ -543,18 +556,22 @@
         "detailed_evaluation_results": {
             "type": "object",
             "description": "Reference to the evaluation results for all individual samples in the evaluation",
+            "required": [
+                "format",
+                "file_path"
+            ],
             "properties": {
                 "format": {
                     "type": "string",
                     "description": "Format of the detailed evaluation results",
                     "enum": [
-                        "jsonl",
-                        "json"
+                        "jsonl"
                     ]
                 },
                 "file_path": {
                     "type": "string",
-                    "description": "Path to the detailed evaluation results file"
+                    "description": "Canonical repository-relative path to the detailed evaluation results file, rooted at data/",
+                    "pattern": "^data/[^/]+/[^/]+/[^/]+/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-4[0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}_samples\\.jsonl$"
                 },
                 "hash_algorithm": {
                     "type": "string",
@@ -614,7 +631,8 @@
             "description": "Complete model specification including basic information, technical configuration and inference settings",
             "required": [
                 "name",
-                "id"
+                "id",
+                "additional_details"
             ],
             "properties": {
                 "name": {
@@ -650,6 +668,26 @@
                 "additional_details": {
                     "type": "object",
                     "description": "Additional parameters (key-value pairs, all values must be strings)",
+                    "required": [
+                        "deployment_type",
+                        "model_availability"
+                    ],
+                    "properties": {
+                        "deployment_type": {
+                            "enum": [
+                                "self_deployed",
+                                "externally_managed",
+                                "unknown"
+                            ]
+                        },
+                        "model_availability": {
+                            "enum": [
+                                "open_weights",
+                                "closed_weights",
+                                "unknown"
+                            ]
+                        }
+                    },
                     "additionalProperties": {
                         "type": "string"
                     }
