@@ -32,10 +32,6 @@ def find_samples_file(output_dir: Path, task_name: str) -> Optional[Path]:
     matches = sorted(output_dir.glob(pattern))
     if matches:
         return matches[-1]  # Most recent
-    # Also check subdirectories (lm-eval nests under model_name_sanitized/)
-    matches = sorted(output_dir.glob(f'**/{pattern}'))
-    if matches:
-        return matches[-1]
     return None
 
 
@@ -55,11 +51,8 @@ MODEL_TYPE_TO_INFERENCE_ENGINE = {
     'gguf': 'llama.cpp',
 }
 
-# Known metric bounds: metric_name -> (min_score, max_score).
-# Use float('inf')/-inf for an unbounded side (it serializes as the JSON string
-# "Infinity"/"-Infinity"). A metric absent from this table has unknown bounds and
-# is skipped by the adapter rather than emitted with null bounds, which a
-# continuous metric_config forbids.
+# Known metric bounds: metric_name -> (min_score, max_score)
+# Infinite bounds are serialized as the JSON strings "Infinity"/"-Infinity".
 KNOWN_METRIC_BOUNDS = {
     'acc': (0.0, 1.0),
     'acc_norm': (0.0, 1.0),
@@ -75,5 +68,9 @@ KNOWN_METRIC_BOUNDS = {
     'rougeL': (0.0, 1.0),
     'rougeLsum': (0.0, 1.0),
     'ter': (0.0, float('inf')),
+    'word_perplexity': (1.0, float('inf')),
+    'byte_perplexity': (1.0, float('inf')),
+    'perplexity': (1.0, float('inf')),
+    'bits_per_byte': (0.0, float('inf')),
     'brier_score': (0.0, 1.0),
 }

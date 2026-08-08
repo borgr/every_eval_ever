@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from every_eval_ever.adapters.paperswithcode import adapter
 from every_eval_ever.validate import validate_file
-from utils.paperswithcode import adapter
 
 RETRIEVED_TS = '1700000000.0'
 DUMP_VERSION = '20260716'
@@ -72,7 +74,10 @@ def _metric_meta():
     return {
         'AbsRel': {'full_name': 'Absolute Relative Error', 'scale': '0-1'},
         'delta1': {'full_name': 'Delta < 1.25', 'scale': '0-1'},
-        'PSNR': {'full_name': 'Peak Signal-to-Noise Ratio', 'scale': 'unbounded'},
+        'PSNR': {
+            'full_name': 'Peak Signal-to-Noise Ratio',
+            'scale': 'unbounded',
+        },
         'Accuracy': {'full_name': 'Accuracy', 'scale': None},
     }
 
@@ -110,8 +115,8 @@ def _evaluations():
             'harness': None,
             'best_rank': '3',
         },
-        # closed/unknown-developer model, url dataset, PSNR (unbounded -> inf) +
-        # a made-up metric that is not in the registry (unresolved path).
+        # url dataset, PSNR (unbounded -> inf) + a made-up metric that is not in
+        # the registry (unresolved path).
         {
             'id': '13524',
             'paper_id': None,
@@ -121,10 +126,27 @@ def _evaluations():
             'metrics': json.dumps({'PSNR': '22.240', 'CustomZMetric': '0.5'}),
             'evaluated_on': None,
             'created_at': '2026-07-14 00:00:00+00',
-            'hf_model_url': None,
+            'hf_model_url': 'https://huggingface.co/nyu-vision/structsplat',
             'is_open': 't',
             'external': 'f',
             'harness': 'Not reported',
+        },
+        # a research method with no HF url whose developer the shared helper does
+        # not know: there is no organization to name, so the row is a failure
+        # rather than a record filed under a placeholder developer.
+        {
+            'id': '13525',
+            'paper_id': None,
+            'task_id': '20',
+            'dataset_id': '906',
+            'model_name': 'AnonSplat-XL',
+            'metrics': json.dumps({'PSNR': '19.8'}),
+            'evaluated_on': None,
+            'created_at': '2026-07-14 00:00:00+00',
+            'hf_model_url': None,
+            'is_open': 't',
+            'external': 'f',
+            'harness': None,
         },
         # European decimal comma + a known LLM name -> developer from helper
         {
@@ -158,7 +180,7 @@ def _make_resolver():
     return adapter.MetricResolver(pwc_directions=_metric_dir())
 
 
-def _build(resolver=None):
+def _convert(resolver=None):
     resolver = resolver or _make_resolver()
     return adapter.build_logs(
         _evaluations(),
@@ -171,6 +193,10 @@ def _build(resolver=None):
         DUMP_VERSION,
         RETRIEVED_TS,
     )
+
+
+def _build(resolver=None):
+    return _convert(resolver).records
 
 
 def test_parse_metric_value_edge_cases():
@@ -209,6 +235,33 @@ def test_model_identity_guesses_developer_from_name():
     assert name == 'GPT-5.5 Pro (xhigh)'  # raw display name preserved
 
 
+def test_unestablished_developer_is_reported_not_dropped(tmp_path):
+    conversion = _convert()
+    assert conversion.total_records == len(_evaluations())
+    assert [f.source_ref for f in conversion.failures] == [
+        'evaluations.id=13525'
+    ]
+    failure = conversion.failures[0]
+    assert 'AnonSplat-XL' in failure.reason
+    assert failure.source_record['model_name'] == 'AnonSplat-XL'
+    assert all(
+        b.log.model_info.name != 'AnonSplat-XL' for b in conversion.records
+    )
+
+    report = json.loads(
+        adapter.save_failure_report(
+            conversion, tmp_path / 'paperswithcode_failures.json'
+        ).read_text()
+    )
+    assert report['source_name'] == 'Papers with Code'
+    assert report['failed_record_count'] == 1
+    assert report['failed_records'][0]['source_ref'] == 'evaluations.id=13525'
+
+    # the run still has to signal that the conversion was partial
+    with pytest.raises(ValueError, match='Papers with Code'):
+        conversion.raise_if_incomplete()
+
+
 def test_source_data_variants():
     ds = _datasets()
     hf = adapter.build_source_data(ds['218'])
@@ -244,7 +297,9 @@ def test_directions_and_bounds():
 
 def test_multi_metric_row_fans_out_with_distinct_result_ids():
     bundles = _build()
-    moge = next(b for b in bundles if b.log.model_info.id == 'Ruicheng/moge-2-vitl')
+    moge = next(
+        b for b in bundles if b.log.model_info.id == 'Ruicheng/moge-2-vitl'
+    )
     ids = [r.evaluation_result_id for r in moge.log.evaluation_results]
     # delta1 + SSIM + AbsRel all fan out (AbsRel emitted with an inf bound)
     assert set(ids) == {
@@ -275,10 +330,19 @@ def test_built_logs_validate(tmp_path):
     """Prove the skeleton: construct, save, and run the real validator."""
     bundles = _build()
     assert bundles
-    for b in bundles:
-        path = adapter.save_evaluation_log(
-            b.log, tmp_path, b.developer, b.model
-        )
+    paths = adapter.save_evaluation_logs(
+        [
+            adapter.EvaluationLogOutput(
+                eval_log=b.log,
+                base_dir=tmp_path,
+                developer=b.developer,
+                model_name=b.model,
+            )
+            for b in bundles
+        ]
+    )
+    assert len(paths) == len(bundles)
+    for path in paths:
         report = validate_file(path)
         assert report.valid, report.errors
 
@@ -291,7 +355,10 @@ def test_resolver_registry_hit_uses_canonical():
     m = r.resolve('Accuracy', (0.0, 1.0))  # source already on canonical scale
     assert m.resolved is True
     assert m.metric_id == 'accuracy'
-    assert (m.min_score, m.max_score) == (0.0, 1.0)  # from the registry, not 0.39
+    assert (m.min_score, m.max_score) == (
+        0.0,
+        1.0,
+    )  # from the registry, not 0.39
     assert m.lower_is_better is False
     assert not r.unresolved
 
@@ -314,7 +381,10 @@ def test_reconcile_scale_no_group_fixes_impossible_value():
     # already on the canonical scale -> untouched, no flag
     assert adapter.reconcile_scale(0.87, 0.0, 1.0, resolved=True) == (0.87, {})
     # unresolved metrics are never rescaled (bounds are observed, same scale)
-    assert adapter.reconcile_scale(97.3, 0.0, 100.0, resolved=False) == (97.3, {})
+    assert adapter.reconcile_scale(97.3, 0.0, 100.0, resolved=False) == (
+        97.3,
+        {},
+    )
     # no unique factor (500 fits neither /100 nor x100 into [0,1]) -> flag, keep raw
     score, detail = adapter.reconcile_scale(500.0, 0.0, 1.0, resolved=True)
     assert score == 500.0
@@ -348,8 +418,22 @@ def test_analyze_group_systematic_mismatch_is_flagged_not_fixed():
     # A [0,1]-registered metric whose board smoothly straddles 1.0 (bad-pixel %):
     # a substantial minority is out of range with no clean valley -> the SCALE is
     # wrong, not the rows. Flag the whole group; never squash the values.
-    vals = [0.22, 0.26, 0.28, 0.35, 0.7, 0.72, 0.98, 0.99,
-            1.02, 1.14, 1.19, 1.83, 2.44, 2.79]
+    vals = [
+        0.22,
+        0.26,
+        0.28,
+        0.35,
+        0.7,
+        0.72,
+        0.98,
+        0.99,
+        1.02,
+        1.14,
+        1.19,
+        1.83,
+        2.44,
+        2.79,
+    ]
     gs = adapter.analyze_group(vals, 0.0, 1.0)
     assert gs.mode == 'anomaly' and gs.reason == 'group_scale_mismatch'
     s, d = adapter.reconcile_scale(2.79, 0.0, 1.0, True, gs)
@@ -382,6 +466,7 @@ def test_group_scale_applied_consistently_in_build():
             'model_name': 'ModelA',
             'metrics': json.dumps({'Accuracy': '95'}),
             'created_at': '2026-07-01 00:00:00+00',
+            'hf_model_url': 'https://huggingface.co/acme/model-a',
             'is_open': 't',
         },
         {
@@ -391,6 +476,7 @@ def test_group_scale_applied_consistently_in_build():
             'model_name': 'ModelB',
             'metrics': json.dumps({'Accuracy': '1.0'}),
             'created_at': '2026-07-01 00:00:00+00',
+            'hf_model_url': 'https://huggingface.co/acme/model-b',
             'is_open': 't',
         },
     ]
@@ -412,7 +498,7 @@ def test_group_scale_applied_consistently_in_build():
         DUMP_VERSION,
         RETRIEVED_TS,
         group_scales=group_scales,
-    )
+    ).records
     by_model = {b.log.model_info.name: b for b in bundles}
     a = by_model['ModelA'].log.evaluation_results[0].score_details
     b = by_model['ModelB'].log.evaluation_results[0].score_details
@@ -425,7 +511,7 @@ def test_resolver_unbounded_canonical_emits_inf():
     # 'elo' is unbounded in the registry (max_score: null)
     m = r.resolve('ELO', (900.0, 2100.0))
     assert m.resolved is True and m.metric_id == 'elo'
-    # null bound -> inf (serialized as "Infinity" per every_eval_ever#207)
+    # null bound -> inf (serialized as the JSON string "Infinity")
     assert m.max_score == float('inf')
     assert m.detail['canonical_max'] == 'unbounded'
 
@@ -464,14 +550,14 @@ def test_fail_closed_report_names_metrics_and_next_step():
     assert '--allow-unresolved' in msg
 
 
-# --- exact-first matching / name collisions (every_eval_ever#209, mrshu) -------
+# --- exact-first matching / name collisions -----------------------------------
 
 
 def test_similar_names_resolve_to_their_own_id_exact_first():
     r = _make_resolver()
-    # 'CLIP-IQA' and 'CLIPIQA+' both normalize to 'clipiqa' -- the old normalized
-    # index let whichever was seen first win. Exact (case-insensitive) match wins,
-    # so each spelling now resolves to ITS canonical id.
+    # 'CLIP-IQA' and 'CLIPIQA+' both normalize to 'clipiqa', so a normalized-only
+    # index would let whichever was seen first win. Exact (case-insensitive) match
+    # is tried first, so each spelling resolves to ITS canonical id.
     clip = r.resolve('CLIP-IQA', (0.0, 1.0))
     assert clip.resolved and clip.metric_id == 'clip-iqa'
     assert clip.detail['match_tier'] == 'exact'
@@ -524,7 +610,9 @@ def test_snapshot_has_no_exact_spelling_collisions():
             if sp:
                 seen.setdefault(str(sp).strip().casefold(), set()).add(m['id'])
     collisions = {k: sorted(v) for k, v in seen.items() if len(v) > 1}
-    assert not collisions, f'exact-spelling collisions in snapshot: {collisions}'
+    assert not collisions, (
+        f'exact-spelling collisions in snapshot: {collisions}'
+    )
 
 
 # --- idempotency: pinned timestamp + folder replace (Erotemic #3) --------------
@@ -539,16 +627,37 @@ def test_retrieved_ts_from_dump_is_deterministic():
     assert adapter.retrieved_ts_from_dump('weird-version') == 'weird-version'
 
 
-def test_replace_output_dir_removes_stale_records(tmp_path):
+def test_superseded_records_are_removed_and_kept_ones_survive(tmp_path):
     out = tmp_path / 'out'
     (out / 'dev' / 'model').mkdir(parents=True)
-    (out / 'dev' / 'model' / 'a.json').write_text('{}')
-    (out / 'dev' / 'model' / 'b.json').write_text('{}')
-    removed = adapter.replace_output_dir(out)
+    old_a = out / 'dev' / 'model' / 'a.json'
+    old_b = out / 'dev' / 'model' / 'b.json'
+    fresh = out / 'dev' / 'model' / 'c.json'
+    for path in (old_a, old_b, fresh):
+        path.write_text('{}')
+
+    stale = adapter.existing_records(out)
+    assert stale == [old_a, old_b, fresh]
+
+    removed = adapter.remove_superseded_records(stale, {fresh}, out)
     assert removed == 2
-    assert not out.exists()
-    # absent dir is a no-op returning 0
-    assert adapter.replace_output_dir(tmp_path / 'missing') == 0
+    assert fresh.exists() and not old_a.exists() and not old_b.exists()
+    assert out.exists()
+    assert adapter.existing_records(tmp_path / 'missing') == []
+
+
+def test_emptied_directories_are_pruned_no_higher_than_the_output_root(
+    tmp_path,
+):
+    out = tmp_path / 'out'
+    (out / 'dev' / 'model').mkdir(parents=True)
+    record = out / 'dev' / 'model' / 'a.json'
+    record.write_text('{}')
+
+    adapter.remove_superseded_records([record], set(), out)
+
+    assert not (out / 'dev').exists()
+    assert out.exists() and tmp_path.exists()
 
 
 # --- metric_unit, uncertainty, provenance, bucket listing ----------------------
@@ -614,7 +723,9 @@ def test_latest_dump_remote_path_lists_postgres_recursively(monkeypatch):
             seen['prefix'] = prefix
             seen['recursive'] = recursive
             return [
-                _Entry('postgres'),  # the dir entry itself -> ignored (no .dump)
+                _Entry(
+                    'postgres'
+                ),  # the dir entry itself -> ignored (no .dump)
                 _Entry('postgres/paperswithcode_hf_20260715_010101.dump'),
                 _Entry('postgres/paperswithcode_hf_20260716_031511.dump'),
                 _Entry('README.md'),

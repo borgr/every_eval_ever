@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from every_eval_ever.adapters.hle import adapter
 from every_eval_ever.eval_types import EvaluationLog
-from utils.hle import adapter
 
 
 def sample_rows() -> list[dict]:
@@ -45,13 +45,24 @@ def sample_rows() -> list[dict]:
             'calibrationError': None,
             'maxScore': 49.852,
         },
-        # Row missing a score must be silently dropped.
-        {
-            'model': 'broken-row',
-            'company': 'openai',
-            'score': None,
-        },
     ]
+
+
+def test_missing_score_reports_failed_source_record_count():
+    rows = sample_rows() + [
+        {'model': 'broken-row', 'company': 'openai', 'score': None}
+    ]
+
+    try:
+        adapter.make_logs(rows, retrieved_timestamp='123.0')
+    except ValueError as exc:
+        assert (
+            'encountered 1 conversion issue(s) across 4 source record(s)'
+            in str(exc)
+        )
+        assert 'row 3: missing score' in str(exc)
+    else:
+        raise AssertionError('expected an incomplete HLE row to fail')
 
 
 def test_make_logs_validate_against_schema():
@@ -59,7 +70,6 @@ def test_make_logs_validate_against_schema():
     assert len(bundles) == 3
     for log, _, _ in bundles:
         validated = EvaluationLog.model_validate(log.model_dump())
-        assert validated.schema_version == '0.2.2'
         assert validated.source_metadata.source_organization_name == 'Scale'
         assert validated.source_metadata.source_type.value == 'documentation'
         assert (

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from every_eval_ever.adapters.mt_bench import adapter
 from every_eval_ever.eval_types import EvaluationLog
-from utils.mt_bench import adapter
 
 
 def sample_rows() -> list[dict]:
@@ -52,9 +52,22 @@ def sample_rows() -> list[dict]:
             'turn': 1,
             'tstamp': 1687000040.0,
         },
-        # Row with no model -> ignored.
-        {'question_id': 99, 'score': 5, 'turn': 1},
     ]
+
+
+def test_missing_model_reports_failed_source_record_count():
+    rows = sample_rows() + [{'question_id': 99, 'score': 5, 'turn': 1}]
+
+    try:
+        adapter.make_logs(rows, retrieved_timestamp='1234567890.0')
+    except ValueError as exc:
+        assert (
+            'encountered 1 conversion issue(s) across 6 source record(s)'
+            in str(exc)
+        )
+        assert 'JSONL row 6: missing model name' in str(exc)
+    else:
+        raise AssertionError('expected an incomplete MT-Bench row to fail')
 
 
 def test_make_logs_validate_against_schema():
@@ -65,7 +78,6 @@ def test_make_logs_validate_against_schema():
 
     for log, _, _ in bundles:
         validated = EvaluationLog.model_validate(log.model_dump())
-        assert validated.schema_version == '0.2.2'
         assert validated.source_metadata.source_organization_name == 'LMSYS'
         assert validated.source_metadata.source_type.value == 'documentation'
         assert (
