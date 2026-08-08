@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import math
+import sys
 
 import pytest
 
@@ -190,6 +191,106 @@ def test_a_failed_publication_leaves_no_partial_output(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         adapter.run(_args(pqt, out, include_instances=True))
     assert not list(out.rglob("*.json*"))
+
+
+def _one_task_parquet(path, model, task):
+    convo = json.dumps([{"role": "user", "content": "Q?"},
+                        {"role": "assistant", "content": "ANSWER: C"}])
+    rows = [dict(model=model, task=task, subtask="main", item_id=f"i{i}",
+                 score=i % 2, input_tokens=10, output_tokens=2, conversation=convo,
+                 stop_reason="stop", target="C", answer="C",
+                 scores=json.dumps({"choice": {"value": "C", "answer": "ANSWER: C"}}))
+            for i in range(4)]
+    pq.write_table(pa.Table.from_pylist(rows), str(path))
+
+
+def test_replacement_supersedes_only_the_benchmarks_it_rewrites(tmp_path):
+    # one model directory holds every benchmark that model was evaluated on, so a run
+    # covering one of them must replace its own prior copy and leave the rest alone
+    mmlu, arc = tmp_path / "mmlu.parquet", tmp_path / "arc.parquet"
+    _one_task_parquet(mmlu, "openai/gpt-x", "mmlu")
+    _one_task_parquet(arc, "openai/gpt-x", "arc_challenge")
+    out = _out(tmp_path)
+    adapter.run(_args(mmlu, out, include_instances=True))
+    kept = {p.name for p in out.rglob("*.json*")}
+    # a benchmark the target does not hold yet supersedes nothing, so it needs no flag
+    adapter.run(_args(arc, out, include_instances=True))
+    adapter.run(_args(arc, out, include_instances=True, replace_existing=True))
+    after = {p.name for p in out.rglob("*.json*")}
+    assert kept < after                      # the mmlu aggregate and sidecar survive
+    assert len(after) == 2 * len(kept)       # arc replaced rather than accumulated
+    assert sorted(json.loads(p.read_text())["evaluation_id"].split("/")[2]
+                  for p in out.rglob("*.json")) == ["arc_challenge", "mmlu"]
+
+
+def test_a_failed_replacement_leaves_the_previous_refresh_in_place(tmp_path, monkeypatch):
+    # the prior records are removed only after the new ones exist, so a refresh that
+    # dies mid-publication cannot leave the directory emptier than it started
+    pqt = tmp_path / "w.parquet"
+    _synth_parquet(pqt)
+    out = _out(tmp_path)
+    adapter.run(_args(pqt, out, include_instances=True))
+    before = {p.name for p in out.rglob("*.json*")}
+    real = adapter.publish_evaluation_logs
+    calls = []
+
+    def flaky(*a, **kw):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("boom")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(adapter, "publish_evaluation_logs", flaky)
+    with pytest.raises(RuntimeError):
+        adapter.run(_args(pqt, out, include_instances=True, replace_existing=True))
+    assert {p.name for p in out.rglob("*.json*")} == before
+
+
+def test_output_dir_must_be_the_collection_directory(tmp_path):
+    # publication derives <base>/wild/<developer>/<model> itself, so any other leaf
+    # would write beside the directory asked for — and be scanned for replacement too
+    pqt = tmp_path / "w.parquet"
+    _synth_parquet(pqt)
+    with pytest.raises(SystemExit, match="must end in 'wild'"):
+        adapter.run(_args(pqt, tmp_path / "data" / "wild-v2"))
+    assert not list((tmp_path / "data").rglob("*.json*"))
+    assert adapter.resolve_base_output_dir(_out(tmp_path)) == tmp_path / "data"
+
+
+def test_models_filter_matching_nothing_publishes_nothing(tmp_path, capsys):
+    pqt = tmp_path / "w.parquet"
+    _synth_parquet(pqt)
+    out = _out(tmp_path)
+    with pytest.raises(SystemExit, match="the source has none of them"):
+        adapter.run(_args(pqt, out, models=["openai/gpt-y"]))
+    assert not list(out.rglob("*.json*"))
+    # a partly-matching selection is a warning, not an error: what matched is real
+    adapter.run(_args(pqt, out, models=["openai/gpt-x", "openai/gpt-y"]))
+    assert len(list(out.rglob("*.json"))) == 1
+    assert "no source rows for 1 selected model(s): openai/gpt-y" in capsys.readouterr().out
+
+
+def test_bare_models_flag_is_an_error(monkeypatch):
+    # nargs='+', so `--models` with nothing after it cannot parse to [] and then
+    # convert every model in the source
+    monkeypatch.setattr(sys, "argv", ["adapter", "--models"])
+    with pytest.raises(SystemExit):
+        adapter.parse_args()
+
+
+def test_symbolic_revision_cannot_stand_in_for_a_failed_pin(monkeypatch, capsys):
+    # the lookup is what turns 'main' into a commit; if it fails, 'main' still moves
+    # between the aggregate pass and the instance pass, so it is not a pin
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+    with pytest.raises(SystemExit, match="40-character commit SHA"):
+        adapter.resolve_source_revision("main", None)
+    with pytest.raises(SystemExit, match="--revision"):
+        adapter.resolve_source_revision(None, None)
+    sha = "a" * 40
+    # a SHA is already the pin; only the commit date is lost, and without it
+    # resolve_eval_timestamp demands --evaluation-timestamp rather than guessing
+    assert adapter.resolve_source_revision(sha, None) == (sha, None)
+    assert "no commit date" in capsys.readouterr().out
 
 
 def _unusable_score_parquet(path):

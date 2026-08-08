@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import tempfile
 import time
 import uuid
@@ -496,6 +497,25 @@ def write_instances(parquet, limit_shards, models, staged_paths: dict,
 
 # driver
 
+FULL_SHA_RE = re.compile(r'[0-9a-f]{40}')
+
+
+def resolve_base_output_dir(output_dir: Path) -> Path:
+    """The datastore root above ``output_dir``, which has to be the collection dir.
+
+    Publication derives ``<root>/wild/<developer>/<model>/`` itself, so it takes the
+    root rather than the leaf. A path whose last component is not the collection
+    would silently write beside the one asked for, and the replacement scan would
+    read that other directory too."""
+    if output_dir.name != COLLECTION:
+        raise SystemExit(
+            f'--output-dir must end in {COLLECTION!r}, the collection directory '
+            f'publication writes into; got {output_dir}. Pass <root>/{COLLECTION} '
+            f'(default {DEFAULT_OUTPUT_DIR}).'
+        )
+    return output_dir.parent
+
+
 def resolve_source_revision(override: str | None,
                             parquet: list[str] | None) -> tuple[str | None, str | None]:
     """Pin a concrete commit as ``(revision, commit_timestamp)``, so both passes and
@@ -513,12 +533,21 @@ def resolve_source_revision(override: str | None,
             commit_ts = repr(dt.timestamp())
         return info.sha, commit_ts    # info.sha is the concrete commit SHA
     except Exception as exc:  # noqa: BLE001
-        if override:
-            # An explicit --revision is the caller's pin; a metadata lookup only
-            # supplies the commit date, so losing it costs provenance, not the pin.
+        if override and FULL_SHA_RE.fullmatch(override):
+            # A commit SHA is already the pin; the lookup only adds the commit
+            # date, so losing it costs provenance, not reproducibility. Without
+            # that date resolve_eval_timestamp requires --evaluation-timestamp.
             print(f'WARNING: could not read metadata for {HF_REPO_ID}@{override} '
                   f'({exc!r}); using it as given, with no commit date.')
             return override, None
+        if override:
+            raise SystemExit(
+                f'could not resolve {HF_REPO_ID}@{override} to a commit ({exc!r}), '
+                f'and {override!r} is not a commit SHA. A branch or tag can move '
+                'between the aggregate pass and the instance pass, so it cannot '
+                'stand in for the pin the lookup failed to produce. Pass the '
+                '40-character commit SHA.'
+            )
         raise SystemExit(
             f'could not resolve {HF_REPO_ID}@{HF_REVISION} to a concrete commit '
             f'({exc!r}). Reading the mutable {HF_REVISION!r} ref would make both '
@@ -545,19 +574,47 @@ def resolve_eval_timestamp(override: str | None,
     )
 
 
-def existing_records(base_output_dir: Path,
-                     logs: list[EvaluationLog]) -> list[Path]:
-    """Aggregates and sidecars already published for the models this run writes.
+def logical_identity(evaluation_id: str) -> str:
+    """The (model, benchmark) an ``evaluation_id`` is about, without its timestamp.
 
-    Filenames are fresh uuid4s, so publishing into a populated target would add a
-    second copy of each evaluation_id rather than replace it."""
-    return sorted({
-        path
+    ``evaluation_id`` ends in the source commit date, so re-pinning the dataset gives
+    the same model and benchmark a new id. Replacement keys on this prefix instead, so
+    a refresh supersedes its own earlier copy however the snapshot moved."""
+    return evaluation_id.rsplit('/', 1)[0]
+
+
+def superseded_records(base_output_dir: Path,
+                       logs: list[EvaluationLog]) -> list[Path]:
+    """Files a previous run published for the (model, benchmark) pairs in ``logs``.
+
+    Filenames are fresh uuid4s, so publishing into a populated target adds a second
+    copy of a record rather than replacing it. Each candidate is read for its own
+    ``evaluation_id`` rather than matched on its path, because a path names only the
+    model: the same directory holds the benchmarks this run does not cover, and a
+    partial run must leave those alone. A sidecar travels with its aggregate."""
+    wanted = {logical_identity(log.evaluation_id) for log in logs}
+    directories = {
+        datastore_output_dir(base_output_dir, COLLECTION, log.model_info.id,
+                             log.model_info.developer)
         for log in logs
-        for path in datastore_output_dir(base_output_dir, COLLECTION,
-                                        log.model_info.id,
-                                        log.model_info.developer).glob('*.json*')
-    })
+    }
+    found: set[Path] = set()
+    for directory in sorted(directories):
+        for path in sorted(directory.glob('*.json')):
+            try:
+                published = json.loads(path.read_text())['evaluation_id']
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                print(f'WARNING: {path} carries no readable evaluation_id '
+                      f'({exc!r}); leaving it in place. If this run writes the same '
+                      'model and benchmark, the directory will hold both.')
+                continue
+            if logical_identity(str(published)) not in wanted:
+                continue
+            found.add(path)
+            sidecar = path.with_name(f'{path.stem}_samples.jsonl')
+            if sidecar.exists():
+                found.add(sidecar)
+    return sorted(found)
 
 
 def publish(logs: list[EvaluationLog], file_uuids: list[str],
@@ -583,6 +640,8 @@ def publish(logs: list[EvaluationLog], file_uuids: list[str],
 
 def run(args: argparse.Namespace) -> int:
     models = set(args.models) if args.models else None
+    # Checked before any lookup or read, so a mistyped destination costs nothing.
+    base_output_dir = resolve_base_output_dir(args.output_dir)
     revision, commit_ts = resolve_source_revision(args.revision, args.parquet)
     # retrieved = when this record was created (now); evaluation = when WILD ran it.
     eval_ts = resolve_eval_timestamp(args.evaluation_timestamp, commit_ts)
@@ -594,6 +653,18 @@ def run(args: argparse.Namespace) -> int:
                                              models, revision)
     print(f'aggregated {len(groups)} (model, benchmark) groups '
           f'from {total_rows} item rows')
+    if models:
+        matched = {model for model, _task in groups}
+        if not matched:
+            raise SystemExit(
+                f'--models selected {len(models)} model(s) and the source has none '
+                f'of them: {", ".join(sorted(models))}. Nothing would be published, '
+                'so the selection is treated as a mistake rather than an empty '
+                'refresh.'
+            )
+        if missing := models - matched:
+            print(f'WARNING: no source rows for {len(missing)} selected model(s): '
+                  f'{", ".join(sorted(missing))}')
 
     keys = sorted(groups)
     logs: list[EvaluationLog] = []
@@ -605,13 +676,13 @@ def run(args: argparse.Namespace) -> int:
         file_uuids.append(str(uuid.uuid4()))
 
     # Checked before the instance pass so a rejected rerun costs nothing.
-    stale = existing_records(args.output_dir.parent, logs)
-    if stale and not args.replace_existing:
+    superseded = superseded_records(base_output_dir, logs)
+    if superseded and not args.replace_existing:
         raise SystemExit(
-            f'{len(stale)} file(s) are already published under {args.output_dir} '
-            f'for these models, e.g. {stale[0]}. Filenames are fresh uuid4s, so '
-            'writing now would add a second copy of each evaluation_id rather '
-            'than replace it. Pass --replace-existing to replace them.'
+            f'{len(superseded)} file(s) under {args.output_dir} already hold the '
+            f'model and benchmark pairs this run writes, e.g. {superseded[0]}. '
+            'Filenames are fresh uuid4s, so writing now would add a second copy of '
+            'each rather than replace it. Pass --replace-existing to replace them.'
         )
 
     with tempfile.TemporaryDirectory(prefix='eee-wild-publication-') as staging:
@@ -655,11 +726,11 @@ def run(args: argparse.Namespace) -> int:
             print('Unconverted source rows: '
                   f'{save_failure_report(result, default_failure_report_path(args.output_dir))}')
 
-        # Removed only once the replacement is fully staged, so a failure in the
-        # instance pass leaves the previous refresh in place.
-        for path in stale:
-            path.unlink()
-        published = publish(logs, file_uuids, args.output_dir.parent, staging_root)
+        published = publish(logs, file_uuids, base_output_dir, staging_root)
+        # Removed only once the replacement is in place, so an aborted run leaves
+        # the previous refresh whole rather than a hole where it used to be.
+        for path in superseded:
+            path.unlink(missing_ok=True)
 
     print(f'wrote {len(published)} aggregate EvaluationLog(s) -> {args.output_dir}')
     result.raise_if_incomplete()
@@ -675,7 +746,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--output-dir', type=Path, default=Path(DEFAULT_OUTPUT_DIR))
     p.add_argument('--limit-shards', type=int, default=None,
                    help='Only read the first N shards (for smoke runs).')
-    p.add_argument('--models', nargs='*', default=None, help='Filter to these model ids.')
+    # nargs='+' for the same reason as --parquet: a bare --models must error, not
+    # parse to [] and quietly convert every model.
+    p.add_argument('--models', nargs='+', default=None,
+                   help='Filter to these model ids.')
     p.add_argument('--include-instances', action='store_true',
                    help='Also write per-item `<uuid>_samples.jsonl` instance sidecars.')
     p.add_argument('--max-instances', type=int, default=None,
@@ -685,10 +759,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--evaluation-timestamp', default=None,
                    help='Override when the eval ran (default: the pinned commit date).')
     p.add_argument('--replace-existing', action='store_true',
-                   help='Delete the files already published for these models before '
-                        'writing. Without it a populated output directory is an '
-                        'error, because a rerun would add a second copy of every '
-                        'record.')
+                   help='Replace the files already published for the model and '
+                        'benchmark pairs this run writes; anything else in the '
+                        'output directory is left alone. Without it their presence '
+                        'is an error, because a rerun would otherwise add a second '
+                        'copy of each record rather than replace it.')
     p.add_argument('--revision', default=None,
                    help='Pin a specific kensho/WILD-raw commit SHA/tag for reproducible '
                         'reruns (default: resolve the current main commit and pin that).')

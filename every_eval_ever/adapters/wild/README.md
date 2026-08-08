@@ -62,8 +62,12 @@ uv run python -m every_eval_ever.adapters.wild.adapter --parquet data-000*.parqu
 
 Record filenames are fresh uuid4s, so a rerun into a populated output directory is
 an error rather than a second copy of every record; pass `--replace-existing` to
-replace what is there. Everything is staged and preflighted before any file is
-created, and a failure removes whatever the run created.
+replace what is there. Replacement goes by identity rather than by directory — only
+the (model, benchmark) pairs this run rewrites, and only once their replacements are
+published — so a `--models`-filtered refresh leaves the other benchmarks in the same
+directory alone, and a run that fails partway leaves the previous refresh whole.
+Everything is staged and preflighted before any file is created, and a failure
+removes whatever the run created.
 
 A row whose `score` is not a usable binary correctness value is left out of the
 aggregate (rather than counted as wrong) and named in
@@ -78,7 +82,10 @@ refresh is distinguishable from a complete one.
   no `now()` fallback, which would give identical reruns different identities.
 - Remote runs pin one concrete commit and read it in both passes. If that commit
   cannot be resolved the run stops rather than reading the mutable `main` ref; pass
-  `--revision <sha>` to pin a snapshot yourself. A local `--parquet` run records a
+  `--revision <sha>` to pin a snapshot yourself. `--revision` may name a branch or
+  tag, but only while the lookup can resolve it to a commit — if the lookup itself
+  fails, only a 40-character SHA is accepted, because a ref that moves between the
+  two passes would have them read different data. A local `--parquet` run records a
   local marker instead of a revision it cannot know.
 - `eval_library` = `inspect_ai` — the WILD paper states the evals were run with the
   Inspect AI framework; the scorer (`match`) is in `additional_details`.
