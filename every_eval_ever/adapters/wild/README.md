@@ -64,10 +64,11 @@ Record filenames are fresh uuid4s, so a rerun into a populated output directory 
 an error rather than a second copy of every record; pass `--replace-existing` to
 replace what is there. Replacement goes by identity rather than by directory — only
 the (model, benchmark) pairs this run rewrites, and only once their replacements are
-published — so a `--models`-filtered refresh leaves the other benchmarks in the same
-directory alone, and a run that fails partway leaves the previous refresh whole.
-Everything is staged and preflighted before any file is created, and a failure
-removes whatever the run created.
+published — so a run whose input covers just some of a model's benchmarks (a
+`--limit-shards` smoke run, a subset of local `--parquet` files) leaves the rest of
+that model's directory alone, and a run that fails partway leaves the previous
+refresh whole. Everything is staged and preflighted before any file is created, and a
+failure removes whatever the run created.
 
 A row whose `score` is not a usable binary correctness value is left out of the
 aggregate (rather than counted as wrong) and named in
