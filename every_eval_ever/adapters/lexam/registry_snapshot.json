@@ -1,0 +1,71 @@
+{
+  "_meta": {
+    "note": "Only the entities this adapter emits. Regenerate with refresh_registry_snapshot.py; do not edit by hand. `models_absent_from_seed` are ids the live registry resolves but no checked-in seed file declares (build-only draft canonicals) - see curation/UPSTREAM_DATA_ISSUES.md.",
+    "registry_revision": "e294a8468830b2bafb268c269231df757d76fa6c",
+    "source": "evaleval/eval-card-registry seed/ (metrics, harnesses, benchmarks, models/core, models/sources)"
+  },
+  "benchmarks": {
+    "lexam.mcq_4_choices": "lexam-mcq-4-choices",
+    "lexam.open_question": "lexam-open-question"
+  },
+  "harnesses": [
+    "lighteval"
+  ],
+  "harnesses_unresolved": [],
+  "metrics": {
+    "accuracy": {
+      "lower_is_better": false,
+      "max_score": 1.0,
+      "min_score": 0.0,
+      "review_status": "reviewed",
+      "score_type": "continuous"
+    },
+    "lexam-open-question-judge-score": {
+      "lower_is_better": false,
+      "max_score": 100.0,
+      "min_score": 0.0,
+      "review_status": "draft",
+      "score_type": "continuous"
+    }
+  },
+  "metrics_unresolved": [],
+  "models": [
+    "Qwen/QwQ-32B",
+    "Qwen/Qwen2.5-7B-Instruct",
+    "Qwen/Qwen3-235B-A22B",
+    "Qwen/Qwen3-32B",
+    "alibaba/qwen3-next",
+    "anthropic/claude-sonnet-3.7",
+    "anthropic/claude-sonnet-4.5",
+    "deepseek-ai/DeepSeek-R1",
+    "deepseek-ai/DeepSeek-V3",
+    "deepseek-ai/DeepSeek-V3.2",
+    "deepseek/deepseek-v3.2-exp",
+    "google/gemini-2.5-pro",
+    "google/gemini-3-pro-preview",
+    "google/gemma-2-9b-it",
+    "google/gemma-3-12b-it",
+    "meta-llama/Llama-3.1-8B-Instruct",
+    "meta-llama/Llama-3.3-70B-Instruct",
+    "meta-llama/Llama-4-Maverick-17B-128E",
+    "meta/llama-3-1-405b-instruct",
+    "microsoft/phi-4",
+    "mistralai/ministral-8b-it",
+    "openai/gpt-4.1",
+    "openai/gpt-4.1-mini",
+    "openai/gpt-4.1-nano",
+    "openai/gpt-4o",
+    "openai/gpt-4o-2024-11-20",
+    "openai/gpt-4o-mini",
+    "openai/gpt-5",
+    "openai/gpt-5-mini",
+    "openai/gpt-5-nano",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "openai/o3-mini",
+    "swiss-ai-initiative/apertus-70b",
+    "swiss-ai-initiative/apertus-8b",
+    "utter-project/EuroLLM-9B-Instruct"
+  ],
+  "models_absent_from_seed": []
+}
