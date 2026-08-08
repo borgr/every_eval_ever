@@ -158,7 +158,53 @@ uv run python -m every_eval_ever validate --format github 'data/*/*/*/*.json*'
 | `--format {rich,json,github}` | `rich` | Output format |
 | `--max-errors N` | `50` | Maximum errors reported per JSONL file |
 
-Exit code is `0` if all files pass and `1` if any fail.
+Rich output distinguishes clean `PASS`, non-fatal `WARN`, and blocking `FAIL`
+results. Its summary reports clean-pass, warning-only, and failure counts.
+Clean runs exit `0`, runs containing an error exit `1`, and warning-only runs
+exit `2`. Warnings do not make a record schema-invalid, but they block merge
+until fixed.
+
+### Validate local folders with the standalone script
+
+Use the standalone script when generated files are not yet arranged as a
+datastore checkout. It accepts files, glob patterns, and directories at any
+depth without accessing a pull request or changing the package CLI:
+
+```sh
+# Grouped human-readable terminal report
+uv run python scripts/local_validate.py /path/to/output
+
+# Stream structured diagnostics to stdout
+uv run python scripts/local_validate.py --format json /path/to/output
+
+# Show grouped terminal output and save every individual finding
+uv run python scripts/local_validate.py \
+  --json-log local-validation.json /path/to/output
+```
+
+Directories are searched recursively for every `.json` and `.jsonl` file.
+Hidden descendants and directory symlinks are not traversed. Every matching
+file is validated; unrelated JSON is reported as invalid rather than silently
+skipped.
+
+The script uses the current bundled schemas and registered semantic checks.
+Datastore placement and naming problems are warnings locally, so a record may
+be valid but **not merge-ready**. Aggregate/sample content and relationship
+problems remain errors. A clean run exits `0`, a run containing an error exits
+`1`, and a warning-only run exits `2`. Fix every warning before submitting the
+files for merge. Checks that require PR history or repository-wide remote state
+remain the responsibility of the validator bot.
+
+Terminal output starts with pass, warning-only, and failure counts, then groups
+identical errors and warnings by type, location, and message. It shows each
+group's occurrence and affected-file counts instead of printing one panel per
+file. Use `--json-log PATH` to retain every individual finding while keeping
+the grouped terminal view.
+
+JSON output includes the schema version and fingerprint, a summary, and one
+report per file with its status, field or line location, message, offending
+input when available, errors, and warnings. Operational directory and log
+notices are written to stderr so stdout remains parseable JSON.
 
 ## 🗂️ Data Structure
 
