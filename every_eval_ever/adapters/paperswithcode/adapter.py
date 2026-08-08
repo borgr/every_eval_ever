@@ -808,23 +808,21 @@ class MetricResolver:
         )
 
 
-# PwC's free-text `scale` declarations that map to a real measurement unit. A
-# range declaration such as '0-1' or 'unbounded' is NOT a unit, and passing one
-# through would leak "0-1"/"unbounded" into a field meant for units like
-# proportion/percent/points. Unknown/range-only scales leave metric_unit unset;
-# the raw scale is preserved in additional_details so nothing is lost.
-_SCALE_TO_UNIT = {
-    '0-1': 'proportion',
-    '0-100': 'percent',
-    'percent': 'percent',
-    '%': 'percent',
+# The unit names the CANONICAL scale -- the one the emitted score is on after
+# reconciliation -- not the scale PwC declared for the source number. Any other
+# bound pair ([0,inf) errors, [-1,1] correlations, [1,5] MOS) has no unit name,
+# and an unresolved metric has no canonical contract; both leave it unset. PwC's
+# declaration is kept verbatim as `pwc_scale` in additional_details.
+_BOUNDS_TO_UNIT = {
+    (0.0, 1.0): 'proportion',
+    (0.0, 100.0): 'percent',
 }
 
 
-def _metric_unit_from_scale(scale: Any) -> str | None:
-    if not scale:
+def _metric_unit_from_bounds(resolved: ResolvedMetric) -> str | None:
+    if not resolved.resolved:
         return None
-    return _SCALE_TO_UNIT.get(str(scale).strip().lower())
+    return _BOUNDS_TO_UNIT.get((resolved.min_score, resolved.max_score))
 
 
 def build_metric_config(
@@ -839,9 +837,9 @@ def build_metric_config(
         metric_id=resolved.metric_id,
         metric_name=metric_name,
         metric_kind=resolved.metric_kind,
-        # A unit only when PwC's scale maps to a real one; a range/"unbounded"
-        # declaration is preserved raw in additional_details, not forced here.
-        metric_unit=_metric_unit_from_scale(meta.get('scale')),
+        # The unit of the canonical scale the score is emitted on, so it stays
+        # true after a rescale; PwC's declaration is kept as `pwc_scale`.
+        metric_unit=_metric_unit_from_bounds(resolved),
         lower_is_better=resolved.lower_is_better,
         score_type=ScoreType(resolved.score_type),
         min_score=resolved.min_score,
@@ -1038,6 +1036,27 @@ class LogBundle:
     model: str
 
 
+def _partition_out_of_range(
+    results: list[EvaluationResult],
+) -> tuple[list[EvaluationResult], list[EvaluationResult]]:
+    """Split results into (publishable, out of range) on their own bounds.
+
+    The declared ``[min_score, max_score]`` must contain the score -- the
+    datastore's semantic check rejects the record otherwise. Reconciliation can
+    still leave a score outside it: a ``scale_anomaly`` keeps the raw value on
+    purpose, and a boundary overrun within ``_SCALE_REL_TOL`` is tolerated for
+    scale classification. Those cells belong in the failure report, not the data.
+    """
+    keep: list[EvaluationResult] = []
+    out: list[EvaluationResult] = []
+    for res in results:
+        cfg = res.metric_config
+        score = res.score_details.score
+        in_range = cfg.min_score <= score <= cfg.max_score
+        (keep if in_range else out).append(res)
+    return keep, out
+
+
 def build_logs(
     evaluations: Iterable[dict[str, Any]],
     datasets_by_id: dict[Any, dict[str, Any]],
@@ -1102,6 +1121,23 @@ def build_logs(
                     source_record=ev,
                 )
             )
+            continue
+        results, out_of_range = _partition_out_of_range(results)
+        for res in out_of_range:
+            cfg = res.metric_config
+            failures.append(
+                SourceRecordFailure(
+                    source_ref=f'{source_ref} metric={cfg.metric_name}',
+                    reason=(
+                        f'score {res.score_details.score!r} is outside the '
+                        f'canonical range [{cfg.min_score}, {cfg.max_score}] '
+                        f'for {cfg.metric_id!r}; the reporting scale could not '
+                        'be reconciled, so the value is not published'
+                    ),
+                    source_record=ev,
+                )
+            )
+        if not results:
             continue
         try:
             model_id, developer, model_slug, display = model_identity(
@@ -1476,13 +1512,16 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         '--best-effort',
         action='store_true',
-        help='Emit as much data as possible: every imperfection (unresolved '
-        'metric, unknown direction, scale anomaly) is written WITH a flag and the '
-        'run exits 0. The default is strict -- ANY imperfection aborts the run '
-        'non-zero, giving CI a clean-or-fail signal. Use --best-effort for '
-        'exploratory runs or to keep collecting data while fixes are batched; use '
-        'the strict default when a run must be perfect (e.g. the commit that fixes '
-        'things). Imperfections are always reported regardless of mode.',
+        help='Emit as much data as possible: an imperfection (unresolved metric, '
+        'unknown direction, scale anomaly) is flagged in the output instead of '
+        'aborting the run. The default is strict -- ANY imperfection aborts '
+        'non-zero, giving CI a clean-or-fail signal; use --best-effort for '
+        'exploratory runs or to keep collecting data while fixes are batched. '
+        'Neither mode publishes an invalid record: a score that cannot be placed '
+        'on its canonical scale, and a row with no usable metric or no '
+        'establishable developer, are omitted and listed in the failure report, '
+        'so a partial conversion still exits non-zero. Imperfections are always '
+        'reported.',
     )
     ap.add_argument(
         '--output-dir',
@@ -1650,10 +1689,11 @@ def _imperfection_report(resolver: MetricResolver) -> str:
             _summarize_class(
                 'metric(s) with a SCALE ANOMALY (value(s) outside the canonical '
                 'range with no consistent rescale, OR a whole group whose '
-                'registered scale looks wrong -- group_scale_mismatch). Kept RAW '
-                '+ flagged, never guessed. A group_scale_mismatch usually means '
-                'the metric is registered on the wrong scale: re-register it on '
-                'its natural scale (METRIC_MAINTENANCE.md sec 4.3), refresh, re-run',
+                'registered scale looks wrong -- group_scale_mismatch). Never '
+                'guessed: the affected value is NOT published, it is listed in '
+                'the failure report. A group_scale_mismatch usually means the '
+                'metric is registered on the wrong scale: re-register it on its '
+                'natural scale (METRIC_MAINTENANCE.md sec 4.3), refresh, re-run',
                 resolver.scale_anomalies,
             )
         )
@@ -1787,7 +1827,8 @@ def run(args: argparse.Namespace) -> int:
         print(
             'best-effort: emitting despite '
             + '; '.join(fatal)
-            + ' (all flagged in the output).',
+            + ' (flagged in the output; a score that could not be placed on '
+            'its canonical scale is omitted and listed in the failure report).',
             file=sys.stderr,
         )
 

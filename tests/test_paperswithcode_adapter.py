@@ -180,6 +180,20 @@ def _make_resolver():
     return adapter.MetricResolver(pwc_directions=_metric_dir())
 
 
+def _resolved_metric(**over):
+    fields = {
+        'metric_id': 'accuracy',
+        'metric_kind': 'accuracy',
+        'lower_is_better': False,
+        'score_type': 'continuous',
+        'min_score': 0.0,
+        'max_score': 1.0,
+        'resolved': True,
+        'detail': {},
+    }
+    return adapter.ResolvedMetric(**{**fields, **over})
+
+
 def _convert(resolver=None):
     resolver = resolver or _make_resolver()
     return adapter.build_logs(
@@ -258,6 +272,61 @@ def test_unestablished_developer_is_reported_not_dropped(tmp_path):
     assert report['failed_records'][0]['source_ref'] == 'evaluations.id=13525'
 
     # the run still has to signal that the conversion was partial
+    with pytest.raises(ValueError, match='Papers with Code'):
+        conversion.raise_if_incomplete()
+
+
+def _unplaceable_evaluations():
+    base = {
+        'paper_id': None,
+        'task_id': '10',
+        'dataset_id': '218',
+        'model_name': 'MoGe-2',
+        'evaluated_on': None,
+        'created_at': '2026-07-01 00:00:00+00',
+        'hf_model_url': 'https://huggingface.co/Ruicheng/moge-2-vitl',
+        'is_open': 't',
+        'external': 'f',
+        'harness': None,
+    }
+    return [
+        # a boundary overrun small enough for the scale-classification tolerance
+        {**base, 'id': '30001', 'metrics': json.dumps({'delta1': '1.0005'})},
+        # impossible under [0,1] and no single power of 100 lands it in range,
+        # so it stays a raw scale_anomaly -- alongside a sound metric
+        {
+            **base,
+            'id': '30002',
+            'metrics': json.dumps({'delta1': '5000', 'SSIM': '0.85'}),
+        },
+    ]
+
+
+def test_scores_outside_canonical_bounds_are_reported_not_published():
+    conversion = adapter.build_logs(
+        _unplaceable_evaluations(),
+        _datasets(),
+        _tasks(),
+        _make_resolver(),
+        _metric_ranges(),
+        _metric_meta(),
+        _papers(),
+        DUMP_VERSION,
+        RETRIEVED_TS,
+    )
+    # the rejection is per metric cell: the sound SSIM result on the second row
+    # still publishes, so one bad number does not cost the whole row
+    results = [r for b in conversion.records for r in b.log.evaluation_results]
+    assert [r.metric_config.metric_name for r in results] == ['SSIM']
+
+    assert [f.source_ref for f in conversion.failures] == [
+        'evaluations.id=30001 metric=delta1',
+        'evaluations.id=30002 metric=delta1',
+    ]
+    assert all(
+        'outside the canonical range [0.0, 1.0]' in f.reason
+        for f in conversion.failures
+    )
     with pytest.raises(ValueError, match='Papers with Code'):
         conversion.raise_if_incomplete()
 
@@ -663,13 +732,21 @@ def test_emptied_directories_are_pruned_no_higher_than_the_output_root(
 # --- metric_unit, uncertainty, provenance, bucket listing ----------------------
 
 
-def test_metric_unit_maps_scale_to_unit_or_unset():
-    assert adapter._metric_unit_from_scale('0-1') == 'proportion'
-    assert adapter._metric_unit_from_scale('0-100') == 'percent'
-    assert adapter._metric_unit_from_scale('%') == 'percent'
-    # a range/unbounded declaration is NOT a unit -> unset (not the literal string)
-    assert adapter._metric_unit_from_scale('unbounded') is None
-    assert adapter._metric_unit_from_scale(None) is None
+def test_metric_unit_comes_from_the_canonical_bounds_not_the_source_scale():
+    def unit(lo, hi, resolved=True):
+        return adapter._metric_unit_from_bounds(
+            _resolved_metric(min_score=lo, max_score=hi, resolved=resolved)
+        )
+
+    assert unit(0.0, 1.0) == 'proportion'
+    assert unit(0.0, 100.0) == 'percent'
+    # any other canonical shape has no unit name
+    assert unit(0.0, float('inf')) is None
+    assert unit(-1.0, 1.0) is None
+    assert unit(1.0, 5.0) is None
+    # an unresolved metric has no canonical contract to take a unit from, even
+    # though its observed-range fallback happens to look like a proportion
+    assert unit(0.0, 1.0, resolved=False) is None
 
 
 def test_metric_unit_and_raw_scale_in_build():
@@ -678,7 +755,7 @@ def test_metric_unit_and_raw_scale_in_build():
         for b in _build()
         for r in b.log.evaluation_results
     }
-    # '0-1' scale -> a real unit; 'unbounded' -> no unit, but raw scale preserved
+    # canonical [0,1] -> proportion; unbounded -> no unit, raw scale preserved
     assert cfgs['delta1'].metric_unit == 'proportion'
     assert cfgs['PSNR'].metric_unit is None
     assert cfgs['PSNR'].additional_details.get('pwc_scale') == 'unbounded'

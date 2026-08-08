@@ -153,13 +153,19 @@ absent from the snapshot, or whose name maps to more than one canonical id,
 emits it with observed-range bounds flagged as such. Reported values are mapped
 onto the canonical scale per `(metric, dataset)` leaderboard rather than per
 score, so an all-percent board for a `[0,1]` metric is rescaled as a group and a
-lone out-of-range value is flagged instead of silently divided.
+lone out-of-range value is flagged instead of silently divided. `metric_unit`
+names that canonical scale rather than the one PwC declared, so it stays true
+after a rescale; the source declaration is kept as `pwc_scale`. A score the
+group decision cannot place inside the declared bounds is **not published** —
+that cell is omitted and listed in the failure report, since the bounds a record
+declares have to contain its score.
 
 Every run prints a full imperfection report — unresolved metrics, unknown
-directions, scale anomalies — to stderr. The mode decides only whether to abort:
-strict (the default) exits non-zero before writing anything,
+directions, scale anomalies — to stderr. The mode decides only whether to abort
+before publishing: strict (the default) exits non-zero before writing anything,
 `--allow-unresolved` tolerates only the unresolved class, and `--best-effort`
-emits everything with each imperfection flagged in the output.
+writes everything representable with each imperfection flagged. No mode ships an
+out-of-range score, so a run that dropped one still exits non-zero.
 
 Registering a bound for a new metric is the one part of this adapter that needs
 human judgment; [`METRIC_MAINTENANCE.md`](paperswithcode/METRIC_MAINTENANCE.md)

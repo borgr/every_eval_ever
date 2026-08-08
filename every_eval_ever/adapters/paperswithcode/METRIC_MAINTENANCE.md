@@ -45,9 +45,9 @@ uv run python -m every_eval_ever.adapters.paperswithcode.adapter \
     --dump <dump.dump> --all --best-effort --output-dir /tmp/eee-pwc-check
 ```
 
-`--best-effort` emits everything and exits 0, but **still prints the full
-imperfection report to stderr**. The unresolved section is now **triaged into
-three buckets** for you:
+`--best-effort` emits everything it can represent instead of aborting, and
+**still prints the full imperfection report to stderr**. The unresolved section
+is **triaged into three buckets** for you:
 
 - **RECURRING** — the name matches a known standard family. A ~60-second registry
   add with the family's bound/direction (§3). Do these.
@@ -262,9 +262,20 @@ always kept in `score_details.raw_value`, and it is flagged. Everything else
 outside range with no unique factor stays `scale_anomaly` (kept raw, flagged).
 
 **Fatal vs informational.** `scale_anomaly` (incl. `group_scale_mismatch`) is a
-strict-mode imperfection — a `--best-effort` run emits it flagged. Successful
-`group_uniform`/`group_mixed`/`per_row` reconciliations are **informational
-only** (reported, never fatal): they are the data being scaled the right way.
+strict-mode imperfection. Successful `group_uniform`/`group_mixed`/`per_row`
+reconciliations are **informational only** (reported, never fatal): they are the
+data being scaled the right way.
+
+**Publication is separate from that gate, and stricter.** A record's declared
+`[min_score, max_score]` has to contain its score — the datastore's semantic
+check rejects it otherwise — so the last thing the adapter does before grouping
+results into logs is drop any cell whose emitted score is outside its canonical
+bounds, in **either** mode, and list it in the failure report with the metric it
+came from. Two cases reach that gate: a `scale_anomaly` (kept raw on purpose)
+and a boundary overrun inside the classification tolerance. So an
+unreconcilable number is never published, and a run that dropped one exits
+non-zero even under `--best-effort`. If a whole board turns up there, that is
+the same signal as `group_scale_mismatch`: re-register the metric.
 
 So: pick the max that matches the scale the metric is *intrinsically* on. If you
 get it wrong, you won't corrupt data — you'll get a `group_scale_mismatch` flag
