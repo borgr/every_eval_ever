@@ -37,10 +37,8 @@ _INSTANCE_FILE_RE = re.compile(rf'{_UUID_RE}_samples\.jsonl$')
 # a single id and mean different things, which is the failure
 # ``check_metric_identity`` reports. A qualified id built from the same word is
 # fine (``lmarena.elo``, ``mteb-score``): the collision is in the bare form.
-#
-# Only words that cannot name a quantity belong here. This is not a
-# "non-canonical metric" list — see check_metric_identity for why there cannot
-# be one.
+# Only words that cannot name a quantity belong here — this is not a list of
+# non-canonical metrics; see check_metric_identity.
 _GENERIC_METRIC_IDS = frozenset(
     {
         'average',
@@ -616,39 +614,19 @@ def check_metric_identity(data: dict[str, Any]) -> list[str]:
     picked the same word.
 
     What this deliberately does *not* do is decide whether an id names a real
-    metric — do not extend it into a whitelist of known metrics. The vocabulary
-    that exists is the eval-card-registry's, and requiring membership in an
-    in-repo list plus a ``.`` separator would flag 1820 of its 1842 metric ids:
-    it spells them with dashes (``exact-match``, ``rouge-l``, ``pass-at-1``) and
-    qualifies a benchmark-specific metric with a prefix rather than a dot
-    (``mteb-score``, ``mmau-pro-open-ended-judge-score``). Growing the list does
-    not fix it either, because no list holds every field's metrics — ``psnr``,
-    ``cider``, ``iou``, ``stoi`` are all specific and none would be in one. A
-    check that flags the registry's own ids drives contributors off them, which
-    inverts the intent.
+    metric, and :data:`_GENERIC_METRIC_IDS` must not grow into a whitelist of
+    known ones. The only vocabulary that exists is the eval-card-registry's, and
+    requiring membership in an in-repo list would flag 1820 of its 1842 ids;
+    no list holds every field's metrics either — ``psnr``, ``cider``, ``iou``,
+    ``stoi`` are all specific and none would be in one. So the rule is the
+    narrow one that holds offline: warn only on an id that names no quantity at
+    all.
 
-    So the rule is the narrow one that holds offline: warn only where two
-    sources' numbers really would collide, on an id that names no quantity at
-    all (:data:`_GENERIC_METRIC_IDS`). Over one published aggregate from each of
-    500 ``(collection, developer)`` groups this finding fires on 28 files rather
-    than 41, and every id it stops flagging is a specific quantity —
-    ``latency_mean``, ``standard_error``, ``mean_attempts``, ``cost_per_task``,
-    ``average_refusal_rate``, ``standard_deviation``. Asking for those to be
-    namespaced per source would fragment ids that already mean one thing
-    everywhere.
-
-    Six registry ids do warn — ``average``, ``elo``, ``mean-score``,
-    ``overall``, ``rank``, ``score``, four of them ``reviewed``. That is
-    deliberate rather than a miss: an Elo or a rank is only comparable inside
-    one leaderboard's pool, so the bare id is exactly the ambiguity being
-    reported, and it is worth raising against those registry entries too.
-
-    One warning per finding *kind*, not per result. A leaderboard file carries
-    one entry per task, and every entry is built by the same adapter code, so a
-    per-result warning repeats itself as many times as the source has tasks:
-    the largest published record produces 374 identical lines, which buries
-    every other finding in the report. The count and the first location are
-    what a contributor needs; the rest is the same sentence again.
+    One warning per finding *kind*, not per result. Every entry in a leaderboard
+    file is built by the same adapter code, so a per-result warning repeats
+    itself once per task — 374 identical lines on the largest published record —
+    and buries every other finding. The count and the first location are what a
+    contributor needs.
 
     Warnings, not errors: the field is optional in the schema, and published
     records predate this rule.
@@ -670,8 +648,14 @@ def check_metric_identity(data: dict[str, Any]) -> list[str]:
         location = f'evaluation_results[{index}].metric_config'
         metric_id = metric.get('metric_id')
 
-        if not isinstance(metric_id, str) or not metric_id.strip():
+        if metric_id is None or (
+            isinstance(metric_id, str) and not metric_id.strip()
+        ):
             missing.append(location)
+            continue
+        if not isinstance(metric_id, str):
+            # A schema error, and calling it missing would name the wrong fix
+            # for a field that is populated.
             continue
 
         metric_id = metric_id.strip()
@@ -679,7 +663,9 @@ def check_metric_identity(data: dict[str, Any]) -> list[str]:
             generic.append((location, metric_id))
 
         evaluation_name = result.get('evaluation_name')
-        if isinstance(evaluation_name, str) and metric_id == evaluation_name:
+        if isinstance(evaluation_name, str) and _normalize_metric_id(
+            metric_id
+        ) == _normalize_metric_id(evaluation_name):
             repeats_task.append((location, evaluation_name))
 
     warnings: list[str] = []

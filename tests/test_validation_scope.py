@@ -71,6 +71,7 @@ def valid_aggregate() -> dict:
                     'source_type': 'other',
                 },
                 'metric_config': {
+                    'metric_id': 'accuracy',
                     'lower_is_better': False,
                     'score_type': 'binary',
                 },
@@ -434,10 +435,16 @@ def test_metric_id_must_name_a_quantity():
     metric = data['evaluation_results'][0]['metric_config']
 
     # Missing entirely: the join key does not exist.
+    metric.pop('metric_id')
     assert any(
         "missing 'metric_id'" in finding
         for finding in check_metric_identity(data)
     )
+
+    # A non-string id is a schema error; 'missing' would name the wrong fix for
+    # a field that is populated.
+    metric['metric_id'] = 12
+    assert check_metric_identity(data) == []
 
     # A word any other leaderboard could also pick for its headline number,
     # in either separator spelling and either case.
@@ -505,11 +512,13 @@ def test_a_specific_metric_id_is_accepted_whoever_spelled_it():
 def test_metric_id_repeating_the_task_name_is_flagged():
     data = valid_aggregate()
     result = data['evaluation_results'][0]
-    result['metric_config']['metric_id'] = result['evaluation_name']
-    assert any(
-        'repeats evaluation_name' in finding
-        for finding in check_metric_identity(data)
-    )
+    # Either spelling of the same name, since neither side is canonical.
+    for repeated in ('bench', ' Bench ', 'bench '):
+        result['metric_config']['metric_id'] = repeated
+        assert any(
+            'repeats evaluation_name' in finding
+            for finding in check_metric_identity(data)
+        ), repeated
 
 
 def test_a_generic_word_behind_a_namespace_is_not_a_collision():
@@ -545,6 +554,7 @@ def test_one_warning_per_finding_carries_the_count_and_first_location():
     """
     data = valid_aggregate()
     template = data['evaluation_results'][0]
+    template['metric_config'].pop('metric_id')
     data['evaluation_results'] = [
         {**template, 'evaluation_name': f'task_{index}'} for index in range(5)
     ]
@@ -577,7 +587,9 @@ def test_one_warning_per_finding_carries_the_count_and_first_location():
 
 def test_metric_identity_warns_without_failing_validation(tmp_path):
     """The rule must not reject records that predate it."""
-    report = validate_data(tmp_path, valid_aggregate())
+    data = valid_aggregate()
+    data['evaluation_results'][0]['metric_config'].pop('metric_id')
+    report = validate_data(tmp_path, data)
     assert report.valid is True
     assert any('metric_id' in warning['msg'] for warning in report.warnings)
 
