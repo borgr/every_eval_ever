@@ -48,22 +48,21 @@ def _output_dir(
     )
 
 
-def _reject_collection_as_base(base_dir: Path, output_dir: Path) -> None:
-    """Refuse a *base_dir* that is already the collection directory.
+def _reject_base_below_data(base_dir: Path, output_dir: Path) -> None:
+    """Refuse a *base_dir* that is a child of a ``data`` directory.
 
-    ``base_dir/<collection>`` repeating the collection inside a ``data`` tree is
-    the caller having passed ``data/<collection>``, the convention
-    ``EvaluationLogOutput`` uses. A scratch root that happens to share the
-    collection's name is not under ``data``, so it still publishes.
+    Every path this publisher writes is ``data/<collection>/<dev>/<model>/``, so
+    a base one level inside ``data`` publishes one level too deep whatever it is
+    named — the caller having passed ``data/<collection>``, the convention
+    ``EvaluationLogOutput`` uses, or a directory whose name is not the
+    collection being published at all. A scratch root outside ``data`` still
+    publishes, even one that shares a collection's name.
     """
-    if (
-        base_dir.parent.name == 'data'
-        and output_dir.parent.parent.name == base_dir.name
-    ):
+    if base_dir.parent.name == 'data':
         raise ValueError(
-            f'base_output_dir {base_dir}/ is a collection directory; pass the '
-            "'data' directory instead, or this batch publishes one level too "
-            f'deep at {output_dir}/'
+            f'base_output_dir {base_dir}/ is inside a datastore data/ '
+            "directory; pass the 'data' directory itself, or this batch "
+            f'publishes one level too deep at {output_dir}/'
         )
 
 
@@ -180,8 +179,8 @@ def publish_evaluation_logs(
     the opposite convention, ``data/<collection>``.
 
     Raises:
-        ValueError: If *base_output_dir* is itself the collection directory of a
-            ``data`` tree, which would publish one level too deep.
+        ValueError: If *base_output_dir* is a child of a ``data`` directory,
+            which would publish one level too deep whatever it is named.
     """
 
     logs = list(logs)
@@ -203,7 +202,7 @@ def publish_evaluation_logs(
     for raw_log, file_uuid in zip(logs, file_uuids):
         log = EvaluationLog.model_validate(raw_log.model_dump())
         output_dir = _output_dir(base_output_dir, log, collection_override)
-        _reject_collection_as_base(base_output_dir, output_dir)
+        _reject_base_below_data(base_output_dir, output_dir)
         source_data = log.evaluation_results[0].source_data
         route_owner = (
             collection_override or source_data.dataset_name,

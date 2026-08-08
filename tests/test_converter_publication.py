@@ -56,22 +56,32 @@ def test_publish_evaluation_logs_uses_canonical_validated_path(
     assert report.valid, report.errors
 
 
-def test_publisher_rejects_the_collection_directory_as_its_base(
+def test_publisher_rejects_any_base_inside_the_data_directory(
     tmp_path: Path,
 ):
-    """``base_output_dir`` is ``data``, not ``data/<collection>``.
+    """``base_output_dir`` is ``data``, not anything below it.
 
     ``EvaluationLogOutput.base_dir`` takes the collection directory, so the
     conventions are one level apart; passing the wrong one used to publish a
-    level too deep and surface as a path-depth failure at review time.
+    level too deep and surface as a path-depth failure at review time. The name
+    of that directory is beside the point — one level inside ``data`` is one
+    level too deep whether or not it matches the collection being published.
     """
     log = make_lm_eval_log()
     collection = log.evaluation_results[0].source_data.dataset_name
-    base = tmp_path / 'data' / collection
-    base.mkdir(parents=True)
 
-    with pytest.raises(ValueError, match='is a collection directory'):
-        publish_evaluation_logs([log], base, [FILE_UUID])
+    for name in (collection, 'some-other-collection'):
+        base = tmp_path / 'data' / name
+        base.mkdir(parents=True)
+        with pytest.raises(ValueError, match='inside a datastore data/'):
+            publish_evaluation_logs([log], base, [FILE_UUID])
+
+    # Same for a collection chosen by the override rather than the source.
+    base = tmp_path / 'data' / 'lm_eval_harness'
+    with pytest.raises(ValueError, match='inside a datastore data/'):
+        publish_evaluation_logs(
+            [log], base, [FILE_UUID], collection_override='override_collection'
+        )
 
     # A scratch root that merely shares the name is not under 'data'.
     scratch = tmp_path / collection

@@ -134,8 +134,10 @@ class EvaluationLogOutput:
 
     ``base_dir`` is the **collection** directory, ``data/<collection>``: the
     final path is ``base_dir/<developer>/<model_name>/<uuid>.json`` and the
-    collection name is read from ``base_dir.name``. Any depth but ``data``
-    itself is trusted, so a wrong one silently renames the collection.
+    collection name is read from ``base_dir.name``. Only that final component is
+    checked, and only for being a usable path component — any depth above it is
+    trusted, so a wrong one silently renames the collection rather than
+    failing.
 
     ``publish_evaluation_logs`` takes the *other* convention: its
     ``base_output_dir`` is the ``data`` directory.
@@ -399,11 +401,22 @@ def default_failure_report_path(
     A report is not an ``EvaluationLog`` and must never be placed under
     ``data/<collection>/...`` where a PR validator could mistake it for one.
 
-    ``output_dir`` is the **collection** directory, ``data/<collection>`` — the
-    same convention as ``EvaluationLogOutput.base_dir``, one level deeper than
-    ``publish_evaluation_logs``. It returns
-    ``adapter_reports/<collection>_failures.json``, naming the report from the
-    components below ``data``, so a wrong depth renames the report.
+    ``output_dir`` is any path below a ``data`` root — usually the collection
+    directory ``data/<collection>``, the same convention as
+    ``EvaluationLogOutput.base_dir`` and one level deeper than
+    ``publish_evaluation_logs``, but callers also pass deeper report identities.
+    The report is placed in ``adapter_reports/`` beside that ``data`` root and
+    named from every component below it, joined by ``__``: ``data/<collection>``
+    gives ``<collection>_failures.json`` and ``data/hal/<benchmark>`` gives
+    ``hal__<benchmark>_failures.json``. A wrong depth therefore renames the
+    report rather than failing.
+
+    The root is the **nearest** ``data`` ancestor. Inside a nested tree such as
+    ``<datastore>/data/staging/data/<collection>`` that is the inner one, which
+    puts ``adapter_reports/`` under the outer datastore — the one placement this
+    function cannot keep out of a validated tree. With no ``data`` ancestor at
+    all, the report goes beside *output_dir* and is named from its last
+    component only.
     """
     output_path = Path(output_dir)
     data_root = next(
