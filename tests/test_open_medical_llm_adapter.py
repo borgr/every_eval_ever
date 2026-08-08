@@ -250,6 +250,141 @@ def test_failure_report_survives_a_publication_error(tmp_path, monkeypatch):
     assert [f["source_ref"] for f in report["failed_records"]] == [paths[1]]
 
 
+def _clean_run_argv(tmp_path, extra=()):
+    return ["adapter", "--output-dir", str(tmp_path / "data" / "open-medical-llm"),
+            "--no-registry-resolve", "--workers", "1", *extra]
+
+
+def _published(output_dir: pathlib.Path) -> list[pathlib.Path]:
+    return sorted(output_dir.glob("*/*/*.json"))
+
+
+@pytest.fixture
+def one_good_model(monkeypatch):
+    """main() over a single convertible result file, offline."""
+    path = "acme/med-x/results_2024-05-01 00:00:00.123.json"
+    monkeypatch.setattr(adapter, "list_result_files", lambda: [path])
+    monkeypatch.setattr(adapter, "fetch_json", lambda p: _results_obj())
+    return path
+
+
+def test_evaluation_id_follows_the_source_path_not_the_evaluated_repo():
+    """An HF alias redirect moves the evaluated repo; the source file keeps its id."""
+    log, developer, model = adapter.make_log(
+        "acme/Med-X", _results_obj(),                     # alias-resolved evaluated repo
+        "acme/med-x/results_2024-05-01 00:00:00.123.json", "1700000000.0",
+        dataset_repo="acme/med-x",                        # the path the file sits under
+    )
+    # routing and metadata follow the evaluated repo...
+    assert (developer, model) == ("acme", "Med-X")
+    assert log.model_info.id == "acme/Med-X"
+    # ...but the identity is the source file's, so the redirect cannot re-ingest it
+    # as a second evaluation of the same run.
+    assert log.evaluation_id == "open-medical-llm-leaderboard/acme_med-x/1714521600.123000"
+
+
+def test_a_non_finite_score_is_attributed_to_its_own_file(monkeypatch):
+    """One unusable number fails its own model, not the whole export."""
+    chosen = {"acme/med-x": "acme/med-x/results_2024-05-01 00:00:00.json",
+              "acme/nan": "acme/nan/results_2024-05-01 00:00:00.json"}
+    broken = {"config": {"model_name": "acme/nan"},
+              "results": {"pubmedqa": {"acc,none": float("nan")}}}
+    objs = {chosen["acme/med-x"]: _results_obj(), chosen["acme/nan"]: broken}
+    monkeypatch.setattr(adapter, "fetch_json", lambda path: objs[path])
+
+    result, _flagged = adapter.convert(chosen, [], "1700000000.0",
+                                       resolve_enabled=False, workers=1)
+    assert [developer + "/" + model for _log, developer, model in result.records] == [
+        "acme/med-x"]                                     # the good model still converts
+    assert [f.source_ref for f in result.failures] == [chosen["acme/nan"]]
+    assert "pubmedqa acc,none" in result.failures[0].reason   # names the task, not the batch
+
+
+def test_the_accounting_report_replaces_the_previous_run_s_copy(
+    tmp_path, one_good_model, monkeypatch
+):
+    """A clean run must not leave an earlier run's report standing as its own."""
+    report_path = adapter.default_failure_report_path(
+        str(tmp_path / "data" / "open-medical-llm"))
+    report_path.parent.mkdir(parents=True)
+    report_path.write_text(json.dumps({"failed_records": [{"source_ref": "gone"}]}))
+
+    monkeypatch.setattr("sys.argv", _clean_run_argv(tmp_path))
+    assert adapter.main()["failures"] == 0
+
+    report = json.loads(report_path.read_text())
+    assert report["failed_records"] == []                  # the stale entry is gone
+    assert report["total_source_records"] == 1
+    # the swap is atomic, so no half-written report is left behind under any name
+    assert [p.name for p in report_path.parent.iterdir()] == [report_path.name]
+
+
+def test_a_successful_replacement_does_not_accumulate_copies(
+    tmp_path, one_good_model, monkeypatch
+):
+    output_dir = tmp_path / "data" / "open-medical-llm"
+    monkeypatch.setattr("sys.argv", _clean_run_argv(tmp_path))
+    adapter.main()
+    first = _published(output_dir)
+    assert len(first) == 1
+    first_id = json.loads(first[0].read_text())["evaluation_id"]
+
+    monkeypatch.setattr("sys.argv", _clean_run_argv(tmp_path, ["--replace-existing"]))
+    adapter.main()
+    second = _published(output_dir)
+    assert len(second) == 1                               # replaced, not duplicated
+    assert second != first                                # filenames are fresh uuid4s
+    assert json.loads(second[0].read_text())["evaluation_id"] == first_id
+
+
+def test_a_failed_replacement_leaves_the_previous_records_in_place(
+    tmp_path, monkeypatch
+):
+    """Prior records go only once their replacements are on disk — every route."""
+    paths = ["acme/med-x/results_2024-05-01 00:00:00.123.json",
+             "beta/med-y/results_2024-05-02 00:00:00.456.json"]
+
+    def _obj_for(path):
+        repo = path.rsplit("/", 1)[0]
+        obj = _results_obj()
+        obj["config"] |= {"model_name": repo, "model_args": f"pretrained={repo}"}
+        return obj
+
+    monkeypatch.setattr(adapter, "list_result_files", lambda: paths)
+    monkeypatch.setattr(adapter, "fetch_json", _obj_for)
+
+    output_dir = tmp_path / "data" / "open-medical-llm"
+    monkeypatch.setattr("sys.argv", _clean_run_argv(tmp_path))
+    adapter.main()
+    before = {path: path.read_text() for path in _published(output_dir)}
+    assert len(before) == 2
+
+    monkeypatch.setattr(adapter, "save_evaluation_logs",
+                        lambda outputs: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr("sys.argv", _clean_run_argv(tmp_path, ["--replace-existing"]))
+    with pytest.raises(RuntimeError):
+        adapter.main()
+    assert {path: path.read_text() for path in _published(output_dir)} == before
+
+
+def test_a_negative_limit_is_rejected(tmp_path, one_good_model, monkeypatch):
+    """A negative slice drops models off the end instead of taking the first N."""
+    monkeypatch.setattr("sys.argv", _clean_run_argv(tmp_path, ["--limit", "-1"]))
+    with pytest.raises(SystemExit, match="--limit must not be negative"):
+        adapter.main()
+    assert not (tmp_path / "data").exists()
+
+
+def test_limit_zero_selects_nothing_rather_than_everything(
+    tmp_path, one_good_model, monkeypatch
+):
+    """`--limit 0` used to be falsy, so it converted every model."""
+    monkeypatch.setattr("sys.argv", _clean_run_argv(tmp_path, ["--limit", "0"]))
+    with pytest.raises(SystemExit, match="no models to convert after --limit 0"):
+        adapter.main()
+    assert not (tmp_path / "data").exists()
+
+
 def test_next_link_parses_rel_next():
     h = ('<https://huggingface.co/api/datasets/x/tree/main?recursive=true&cursor=ABC>; rel="next", '
          '<https://huggingface.co/api/datasets/x/tree/main>; rel="first"')

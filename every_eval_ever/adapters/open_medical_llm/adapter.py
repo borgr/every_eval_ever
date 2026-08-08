@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import json
+import os
 import re
 import time
 import urllib.parse
@@ -48,6 +49,7 @@ from every_eval_ever.helpers import (
     SourceRecordExclusion,
     SourceRecordFailure,
     default_failure_report_path,
+    require_finite_number,
     save_evaluation_logs,
     save_failure_report,
 )
@@ -298,13 +300,20 @@ def make_result(task: str, metrics: dict, eval_ts_iso: str | None) -> Evaluation
         return None
     display, hf_repo = TASKS[task]
 
+    # Checked here, where the task and the source file are still known: the batch
+    # serializer also rejects NaN/infinity, but it does so after every worker has
+    # reported, so one unusable number would fail the whole export instead of being
+    # attributed to the file it came from.
+    score = require_finite_number(acc, f"{task} acc,none")
+
     stderr = metrics.get("acc_stderr,none")
     uncertainty = None
     if stderr is not None:
-        uncertainty = Uncertainty(standard_error=StandardError(value=float(stderr)))
+        uncertainty = Uncertainty(standard_error=StandardError(
+            value=require_finite_number(stderr, f"{task} acc_stderr,none")))
 
     score_details = ScoreDetails(
-        score=float(acc),
+        score=score,
         details=clean_details(
             {
                 "raw_metric_key": "acc,none",
@@ -352,16 +361,18 @@ def make_log(
     retrieved_ts: str,
     *,
     model_id: str | None = None,
+    dataset_repo: str | None = None,
     resolution_details: dict | None = None,
 ) -> tuple[EvaluationLog, str, str] | None:
     """Build one aggregate log for ``developer/model``.
 
-    ``model_repo`` is the evaluated model as established by evaluated_model_repo,
-    and it drives the developer/model routing, the record identity and the model
-    metadata. ``model_id`` is the registry-canonical id for ``model_info.id`` (the
-    join key); pass ``None`` for path-mode (id == source repo). ``evaluation_id`` is
-    keyed on ``model_repo``, never on ``model_id``: the registry can re-map a draft
-    canonical, and a moving id would break re-ingest idempotency. Offline unit tests
+    ``model_repo`` is the evaluated model as established by evaluated_model_repo, and
+    it drives the developer/model routing and the model metadata. ``model_id`` is the
+    registry-canonical id for ``model_info.id`` (the join key); pass ``None`` for
+    path-mode (id == source repo). ``dataset_repo`` is the ``developer/model`` path the
+    result file sits under, and it alone keys ``evaluation_id``: an HF alias redirect
+    can move ``model_repo`` and the registry can re-map a draft ``model_id``, so either
+    would hand the same source file a second identity on re-ingest. Offline unit tests
     call this directly without a resolver, so it never touches the network.
     """
     developer, model = model_repo.split("/", 1)
@@ -394,7 +405,7 @@ def make_log(
         ts_token = re.sub(r"[^0-9A-Za-z._-]+", "-", path.rsplit("/", 1)[-1].removesuffix(".json"))
 
     resolved_id = model_id or model_repo  # join key; raw_slug keys evaluation_id
-    raw_slug = model_repo.replace("/", "_")
+    raw_slug = (dataset_repo or model_repo).replace("/", "_")
 
     md_details: dict = {
         # `pretrained=<hf repo>` is lm-evaluation-harness loading a checkpoint
@@ -486,7 +497,7 @@ def convert(
                         f'which model was evaluated is unknown', None)
             model_id, prov = resolve_model_id(evaluated, enabled=resolve_enabled)
             built = make_log(evaluated, obj, chosen[model_repo], retrieved_ts,
-                             model_id=model_id,
+                             model_id=model_id, dataset_repo=model_repo,
                              resolution_details={**identity, **prov})
         except Exception as e:  # noqa: BLE001
             return ("ERR", model_repo, str(e), None)
@@ -524,6 +535,23 @@ def convert(
     ), flagged
 
 
+def write_conversion_report(
+    result: SourceConversionResult[tuple[EvaluationLog, str, str]],
+    output_dir: str,
+) -> Path:
+    """Persist this run's accounting, replacing any previous run's copy in one step.
+
+    Written on every run, a clean one included: a report left behind by an earlier
+    run reads as current, and only the run that found nothing to report can say so.
+    The swap is atomic, so an interrupted write cannot leave a truncated report
+    where a complete one was.
+    """
+    final = default_failure_report_path(output_dir)
+    staged = save_failure_report(result, final.with_name(final.name + ".tmp"))
+    os.replace(staged, final)
+    return final
+
+
 def existing_records(
     output_dir: str, routes: list[tuple[str, str]]
 ) -> list[Path]:
@@ -555,18 +583,34 @@ def main() -> dict:
     ap.add_argument(
         "--replace-existing",
         action="store_true",
-        help="Delete the records already published for these models before "
-             "writing. Without it a populated output directory is an error, "
-             "because a re-run would add a second copy of every record.",
+        help="Replace the records already published for these models; they are "
+             "removed only once this run's records are written. Without it a "
+             "populated output directory is an error, because a re-run would add "
+             "a second copy of every record.",
     )
     args = ap.parse_args()
     resolve_enabled = not args.no_registry_resolve
+    # Checked before the source listing, so a mistyped limit costs no requests.
+    if args.limit is not None and args.limit < 0:
+        raise SystemExit(
+            f"--limit must not be negative; got {args.limit}. A negative slice "
+            "drops models off the end of the selection instead of taking the "
+            "first N."
+        )
 
     retrieved_ts = str(time.time())
     paths = list_result_files()
     chosen, baselines = latest_per_model(paths)
-    if args.limit:
+    if args.limit is not None:
         chosen = {model: chosen[model] for model in sorted(chosen)[: args.limit]}
+    if not chosen:
+        limit_note = "" if args.limit is None else f" after --limit {args.limit}"
+        raise SystemExit(
+            f"no models to convert{limit_note}. {len(paths)} source file(s) were "
+            f"listed, {len(baselines)} of them hand-curated baselines. Nothing "
+            "would be published, so this exits rather than reporting a successful "
+            "refresh that wrote nothing."
+        )
     print(f"Models to process: {len(chosen)}")
     print(
         f"Skipped {len(baselines)} hand-curated baseline entries (different provenance): "
@@ -580,13 +624,13 @@ def main() -> dict:
         resolve_enabled=resolve_enabled, workers=args.workers,
     )
 
-    # Written before publication: it accounts for the conversion, so a publication
-    # that raises must not take the record of what failed to convert with it.
-    if result.failures:
-        report = save_failure_report(
-            result, default_failure_report_path(args.output_dir)
-        )
-        print(f"Unconverted source files: {report}")
+    # Written before publication, and on every run: it accounts for the conversion,
+    # so a publication that raises must not take the record of what failed with it,
+    # and a run with nothing to report has to say so rather than leave an earlier
+    # run's report standing as if it were this run's.
+    report = write_conversion_report(result, args.output_dir)
+    print(f"Conversion accounting: {report} ({len(result.failures)} unconverted, "
+          f"{len(result.exclusions)} excluded)")
 
     stale = existing_records(
         args.output_dir, [(developer, model) for _, developer, model in result.records]
@@ -598,8 +642,6 @@ def main() -> dict:
             'filenames are fresh uuid4s, so writing now would add a second copy '
             'of each evaluation_id. Pass --replace-existing to replace them.'
         )
-    for path in stale:
-        path.unlink()
 
     written = save_evaluation_logs([
         EvaluationLogOutput(
@@ -610,6 +652,13 @@ def main() -> dict:
         )
         for log, developer, model in result.records
     ])
+    # Removed only once the replacements are on disk: save_evaluation_logs preflights
+    # the whole batch and rolls back what it created, so a failure leaves the previous
+    # publication whole rather than a gap where it used to be. missing_ok because the
+    # replacements are already published — a file that vanished meanwhile is no reason
+    # to fail a refresh that succeeded.
+    for path in stale:
+        path.unlink(missing_ok=True)
     print(f"Wrote {len(written)} logs; {len(result.exclusions)} excluded; "
           f"{len(result.failures)} failed. -> {args.output_dir}")
     if flagged:
