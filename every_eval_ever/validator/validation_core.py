@@ -609,6 +609,16 @@ def check_model_identity_path(
     model_id = model_info.get('id')
     if not isinstance(model_id, str):
         return []  # a non-string id is a schema error
+    stated_developer = model_info.get('developer')
+    if (
+        '/' not in model_id
+        and stated_developer is not None
+        and not isinstance(stated_developer, str)
+    ):
+        # Only a flat id reads this field, and a non-string value is already a
+        # schema error — one this check would restate as "developer is
+        # required" about a populated field.
+        return []
 
     collection, developer, model = repo_path.split('/')[1:4]
     try:
@@ -619,7 +629,7 @@ def check_model_identity_path(
         # this check's finding, and reporting it under model_info would send
         # the reader to the wrong field.
         _, expected_developer, expected_model = datastore_path_components(
-            'collection', model_id, model_info.get('developer')
+            'collection', model_id, stated_developer
         )
     except ValueError as exc:
         return [

@@ -488,6 +488,31 @@ def test_model_identity_path_defers_to_the_schema_on_a_missing_id():
     assert check_model_identity_path(AGGREGATE_REPO_PATH, data) == []
 
 
+def test_a_non_string_developer_is_left_to_the_schema(tmp_path):
+    """A flat id whose ``developer`` is the wrong type already fails.
+
+    Warning as well would restate that schema error as ``model_info.developer
+    is required``, about a field that is populated.
+    """
+    data = valid_aggregate()
+    data['model_info'].update({'id': 'model', 'developer': 1})
+    assert check_model_identity_path(AGGREGATE_REPO_PATH, data) == []
+
+    report = validate_data(tmp_path, data)
+    assert report.valid is False
+    assert [error['loc'] for error in report.errors] == [
+        'model_info -> developer'
+    ]
+    assert report.warnings == []
+
+    # A slash-separated id takes its developer from the id, so the same value
+    # leaves its drift reportable.
+    data['model_info']['id'] = 'dev-labs/model'
+    findings = check_model_identity_path(AGGREGATE_REPO_PATH, data)
+    assert len(findings) == 1
+    assert 'bench/dev-labs/model/' in findings[0]
+
+
 def test_a_blank_id_is_reported_because_the_schema_accepts_it():
     """``id`` is required but unconstrained, so ``'  '`` reaches the datastore.
 
