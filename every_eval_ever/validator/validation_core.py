@@ -616,11 +616,11 @@ def check_metric_identity(data: dict[str, Any]) -> list[str]:
     What this deliberately does *not* do is decide whether an id names a real
     metric, and :data:`_GENERIC_METRIC_IDS` must not grow into a whitelist of
     known ones. The only vocabulary that exists is the eval-card-registry's, and
-    requiring membership in an in-repo list would flag 1820 of its 1842 ids;
-    no list holds every field's metrics either — ``psnr``, ``cider``, ``iou``,
-    ``stoi`` are all specific and none would be in one. So the rule is the
-    narrow one that holds offline: warn only on an id that names no quantity at
-    all.
+    it namespaces 6 of its 1842 ids, so demanding a namespace would flag the
+    other 1836; no in-repo list holds every field's metrics either — ``psnr``,
+    ``cider``, ``iou``, ``stoi`` are all specific and none would be in one. So
+    the rule is the narrow one that holds offline: warn only on an id that names
+    no quantity at all.
 
     One warning per finding *kind*, not per result. Every entry in a leaderboard
     file is built by the same adapter code, so a per-result warning repeats
