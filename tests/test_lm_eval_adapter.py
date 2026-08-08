@@ -1,5 +1,8 @@
+import json
 import tempfile
 from pathlib import Path
+
+import pytest
 
 from every_eval_ever.converters.lm_eval.adapter import LMEvalAdapter
 from every_eval_ever.converters.lm_eval.instance_level_adapter import (
@@ -12,8 +15,10 @@ from every_eval_ever.converters.lm_eval.utils import (
 from every_eval_ever.eval_types import (
     EvaluationLog,
     EvaluatorRelationship,
+    ScoreType,
     SourceDataHf,
 )
+from every_eval_ever.helpers.io import SourceRecordsError
 
 DATA_DIR = Path('tests/data/lm_eval')
 RESULTS_FILE = DATA_DIR / 'results_2026-01-21T03-44-18.458309.json'
@@ -66,6 +71,16 @@ def test_find_samples_file():
 
 def test_find_samples_file_missing():
     assert find_samples_file(DATA_DIR, 'nonexistent_task') is None
+
+
+def test_find_samples_file_does_not_cross_model_directories(tmp_path):
+    nested = tmp_path / 'another-model'
+    nested.mkdir()
+    (nested / 'samples_shared_task_2026.jsonl').write_text(
+        '{}\n', encoding='utf-8'
+    )
+
+    assert find_samples_file(tmp_path, 'shared_task') is None
 
 
 # ── Adapter: transform_from_file ───────────────────────────────────────
@@ -254,14 +269,19 @@ def test_instance_level_transform_and_save():
             model_id='test-model',
             task_name='math_perturbed_full',
             output_dir=tmpdir,
-            file_uuid='abc123',
+            file_uuid='123e4567-e89b-42d3-a456-426614174000',
+            collection='test',
+            developer='dev',
         )
         assert result is not None
         assert result.total_rows == 10
         assert result.format.value == 'jsonl'
         assert result.checksum  # non-empty sha256
-        assert Path(result.file_path).exists()
-        assert 'abc123_samples.jsonl' in result.file_path
+        assert (Path(tmpdir) / Path(result.file_path).name).exists()
+        assert result.file_path == (
+            'data/test/dev/test-model/'
+            '123e4567-e89b-42d3-a456-426614174000_samples.jsonl'
+        )
 
 
 def test_instance_level_transform_and_save_no_output_dir():
@@ -274,3 +294,131 @@ def test_instance_level_transform_and_save_no_output_dir():
         output_dir=None,
     )
     assert result is None
+
+
+def test_na_stderr_treated_as_absent():
+    """lm-eval reports stderr as the string 'N/A' for non-bootstrapped metrics
+    (aggregated/grouped or custom metrics, e.g. ECLeKTic). Conversion must not
+    crash, and the StandardError (which requires a float) must be omitted rather
+    than coerced to 0."""
+    adapter = LMEvalAdapter()
+    raw_data = {
+        'results': {'mytask': {'acc,none': 0.5, 'acc_stderr,none': 'N/A'}},
+        'n-samples': {'mytask': {'effective': 100}},
+    }
+    results = adapter._build_evaluation_results(raw_data, 'mytask')
+    assert len(results) == 1
+    uncertainty = results[0].score_details.uncertainty
+    assert uncertainty is not None
+    assert uncertainty.standard_error is None
+    assert uncertainty.num_samples == 100
+
+
+def test_unbounded_metric_uses_quoted_infinity():
+    adapter = LMEvalAdapter()
+    raw_data = {
+        'results': {'mytask': {'word_perplexity,none': 2.0}},
+    }
+
+    [result] = adapter._build_evaluation_results(raw_data, 'mytask')
+
+    assert result.metric_config.score_type == ScoreType.continuous
+    assert result.metric_config.min_score == 1.0
+    assert result.metric_config.max_score == float('inf')
+    assert '"max_score":"Infinity"' in result.model_dump_json()
+
+
+def test_unknown_metric_is_preserved_without_invented_bounds():
+    adapter = LMEvalAdapter()
+    raw_data = {
+        'results': {'mytask': {'custom_metric,none': 2.0}},
+    }
+
+    [result] = adapter._build_evaluation_results(raw_data, 'mytask')
+
+    assert result.score_details.score == 2.0
+    assert result.metric_config.score_type is None
+    assert result.metric_config.min_score is None
+    assert result.metric_config.max_score is None
+    assert result.metric_config.additional_details == {
+        'bounds_status': 'unknown'
+    }
+
+
+def test_unknown_metric_count_is_recorded_on_the_log():
+    adapter = LMEvalAdapter()
+    raw_data = {
+        'results': {
+            'mytask': {
+                'custom_metric,none': 2.0,
+                'another_custom_metric,none': 3.0,
+            }
+        },
+        'configs': {'mytask': {'task': 'mytask'}},
+    }
+
+    log = adapter._transform_single(
+        raw_data,
+        {
+            'task_name': 'mytask',
+            'source_organization_name': 'TestOrg',
+            'evaluator_relationship': 'first_party',
+        },
+    )
+
+    assert log.source_metadata.additional_details == {
+        'metrics_with_unknown_bounds': '2'
+    }
+
+
+def test_directory_conversion_retains_good_files_and_reports_bad_files(
+    tmp_path, monkeypatch
+):
+    good_path = tmp_path / 'results_good.json'
+    bad_path = tmp_path / 'results_bad.json'
+    good_path.write_text('{}', encoding='utf-8')
+    bad_path.write_text('{}', encoding='utf-8')
+    adapter = LMEvalAdapter()
+    good_log = object()
+
+    def fake_transform(path, _metadata):
+        if Path(path).name == 'results_bad.json':
+            raise ValueError('broken lm-eval result')
+        return [good_log]
+
+    monkeypatch.setattr(adapter, 'transform_from_file', fake_transform)
+
+    result = adapter.transform_from_directory_result(tmp_path, {})
+
+    assert result.records == [good_log]
+    assert result.total_records == 2
+    assert len(result.failures) == 1
+    assert result.failures[0].source_ref == str(bad_path)
+    assert result.failures[0].source_record == {'path': str(bad_path)}
+    with pytest.raises(SourceRecordsError, match='broken lm-eval result'):
+        result.raise_if_incomplete()
+
+
+def test_directory_conversion_tracks_each_results_file_parent(tmp_path):
+    adapter = LMEvalAdapter()
+    source = json.loads(RESULTS_FILE.read_text(encoding='utf-8'))
+    model_a = tmp_path / 'model-a'
+    model_b = tmp_path / 'model-b'
+    model_a.mkdir()
+    model_b.mkdir()
+    first = model_a / 'results_first.json'
+    second = model_b / 'results_second.json'
+    first.write_text(json.dumps(source), encoding='utf-8')
+    second_source = json.loads(json.dumps(source))
+    second_source['config']['model_args'] = 'pretrained=test/model-b'
+    second.write_text(json.dumps(second_source), encoding='utf-8')
+
+    result = adapter.transform_from_directory_result(
+        tmp_path, {'parent_eval_output_dir': str(tmp_path)}
+    )
+
+    parents = {
+        adapter.get_eval_metadata(log.evaluation_id)['parent_dir']
+        for log in result.records
+    }
+    assert parents == {str(model_a), str(model_b)}

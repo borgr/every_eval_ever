@@ -24,6 +24,11 @@ from every_eval_ever.eval_types import (
     StandardError,
     Uncertainty,
 )
+from every_eval_ever.helpers.io import (
+    SourceConversionResult,
+    SourceRecordExclusion,
+    SourceRecordFailure,
+)
 
 # ---------------------------------------------------------------------------
 # Leaderboard configurations
@@ -124,10 +129,12 @@ def _fetch_csv(url: str) -> List[Dict[str, str]]:
 def _model_name_from_row(row: Dict[str, str]) -> str:
     """Extract the model name from a CSV row (first/unnamed column)."""
     for key in ('', 'Unnamed: 0', 'model', 'Model'):
-        if key in row and row[key].strip():
-            return row[key].strip()
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     # Fallback: first value
-    return next(iter(row.values()), '').strip()
+    fallback = next(iter(row.values()), '')
+    return fallback.strip() if isinstance(fallback, str) else ''
 
 
 def _build_evaluation_results(
@@ -254,14 +261,22 @@ class AlpacaEvalAdapter:
     """Converts AlpacaEval leaderboard CSV rows into EvaluationLog objects."""
 
     def fetch_leaderboard(self, version: str = 'v2') -> List[EvaluationLog]:
-        """Fetch a leaderboard by version key ('v1' or 'v2') and return logs.
+        """Fetch a complete leaderboard or raise with row provenance."""
+        result = self.fetch_leaderboard_result(version)
+        result.raise_if_incomplete()
+        return result.records
+
+    def fetch_leaderboard_result(
+        self, version: str = 'v2'
+    ) -> SourceConversionResult[EvaluationLog]:
+        """Fetch a leaderboard while retaining valid and rejected rows.
 
         Args:
             version: Leaderboard version — 'v1' (AlpacaEval 1.0) or
                      'v2' (AlpacaEval 2.0, weighted LC win rate).
 
         Returns:
-            List of EvaluationLog objects, one per model row.
+            Valid logs plus provenance for rejected and excluded rows.
         """
         if version not in LEADERBOARDS:
             raise ValueError(
@@ -274,24 +289,60 @@ class AlpacaEvalAdapter:
 
         benchmark_key = f'alpaca_eval_{version}'
         logs = []
+        failures: list[SourceRecordFailure] = []
+        exclusions: list[SourceRecordExclusion] = []
 
-        for row in rows:
+        for row_number, row in enumerate(rows, start=2):
+            source_ref = f'CSV row {row_number}'
             model_name = _model_name_from_row(row)
             if not model_name:
+                failures.append(
+                    SourceRecordFailure(
+                        source_ref=source_ref,
+                        reason='missing model name',
+                        source_record=row,
+                    )
+                )
                 continue
 
             # Skip NullModel placeholder
             if re.fullmatch(r'null.?model', model_name, re.IGNORECASE):
+                exclusions.append(
+                    SourceRecordExclusion(
+                        source_ref=source_ref,
+                        reason='NullModel is a leaderboard placeholder',
+                        source_record=row,
+                    )
+                )
                 continue
 
-            win_rate = row.get('win_rate', '').strip()
+            raw_win_rate = row.get('win_rate')
+            win_rate = (
+                raw_win_rate.strip()
+                if isinstance(raw_win_rate, str)
+                else ''
+            )
             if not win_rate:
+                failures.append(
+                    SourceRecordFailure(
+                        source_ref=f'{source_ref} ({model_name!r})',
+                        reason='missing win_rate',
+                        source_record=row,
+                    )
+                )
                 continue
 
             developer = _infer_developer(model_name)
-            model_id = (
-                f'{developer}/{model_name}' if developer else model_name
-            )
+            if developer is None:
+                failures.append(
+                    SourceRecordFailure(
+                        source_ref=f'{source_ref} ({model_name!r})',
+                        reason='cannot determine model developer',
+                        source_record=row,
+                    )
+                )
+                continue
+            model_id = f'{developer}/{model_name}'
 
             evaluation_id = (
                 f'{benchmark_key}/{model_id}/{retrieved_ts}'
@@ -299,6 +350,13 @@ class AlpacaEvalAdapter:
 
             eval_results = _build_evaluation_results(row, cfg)
             if not eval_results:
+                failures.append(
+                    SourceRecordFailure(
+                        source_ref=f'{source_ref} ({model_name!r})',
+                        reason='no usable evaluation metrics',
+                        source_record=row,
+                    )
+                )
                 continue
 
             log = EvaluationLog(
@@ -334,4 +392,10 @@ class AlpacaEvalAdapter:
             )
             logs.append(log)
 
-        return logs
+        return SourceConversionResult(
+            source_name=f'AlpacaEval {version}',
+            total_records=len(rows),
+            records=logs,
+            failures=failures,
+            exclusions=exclusions,
+        )

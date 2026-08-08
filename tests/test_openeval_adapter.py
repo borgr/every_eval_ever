@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+from every_eval_ever.adapters.openeval import adapter
 from every_eval_ever.eval_types import EvaluationLog
+from every_eval_ever.helpers.io import SourceRecordsError
 from every_eval_ever.instance_level_types import InstanceLevelEvaluationLog
 from every_eval_ever.validate import validate_file
-from utils.openeval import adapter
 
 
 def sample_payload() -> dict:
@@ -140,7 +145,6 @@ def test_make_logs_validate_against_schema():
     assert set(logs) == {'gemma-2b-it', 'gpt-4o'}
     for log in logs.values():
         validated = EvaluationLog.model_validate(log.model_dump())
-        assert validated.schema_version == '0.2.2'
         assert validated.source_metadata.source_name == 'OpenEval'
         assert validated.source_metadata.source_type.value == 'evaluation_run'
         assert (
@@ -283,6 +287,118 @@ def test_unknown_benchmark_ids_raise_by_default():
         raise AssertionError('Expected unmatched benchmark to raise')
 
 
+def test_malformed_metric_is_reported_without_dropping_valid_metric():
+    payload = sample_payload()
+    payload['response'][0]['scores'] = {
+        'metric': [
+            {'name': 'ifeval_strict_accuracy'},
+            {'name': 'broken_metric'},
+        ],
+        'value': [0.0, 'not-a-number'],
+    }
+
+    result = adapter.make_logs_result(
+        payload, retrieved_timestamp='1234567890.0'
+    )
+
+    assert len(result.records) == 2
+    assert len(result.failures) == 1
+    assert result.failures[0].source_record == {
+        'metric': {'name': 'broken_metric'},
+        'value': 'not-a-number',
+    }
+    gemma = next(
+        bundle
+        for bundle in result.records
+        if bundle.log.model_info.name == 'gemma-2b-it'
+    )
+    strict_result = next(
+        evaluation
+        for evaluation in gemma.log.evaluation_results
+        if evaluation.evaluation_name
+        == 'openeval.ifeval.ifeval-strict-accuracy'
+    )
+    assert strict_result.score_details.score == 0.5
+
+
+def test_non_object_response_is_reported_without_dropping_valid_responses():
+    payload = sample_payload()
+    payload['response'].append('broken response')
+
+    result = adapter.make_logs_result(
+        payload, retrieved_timestamp='1234567890.0'
+    )
+
+    assert len(result.records) == 2
+    assert len(result.failures) == 1
+    assert result.failures[0].source_ref == 'OpenEval response row 4'
+    assert result.failures[0].source_record == 'broken response'
+
+
+def test_run_publishes_valid_models_then_reports_malformed_response(tmp_path):
+    payload = sample_payload()
+    bad_response = {
+        'response_id': 'ifeval_20260305T211125Z_bad_broken-model_0',
+        'model': {'name': 'broken-model'},
+        'scores': {
+            'metric': [{'name': 'ifeval_strict_accuracy'}],
+            'value': ['not-a-number'],
+        },
+    }
+    payload['response'].append(bad_response)
+    input_path = tmp_path / 'openeval.json'
+    input_path.write_text(json.dumps(payload), encoding='utf-8')
+    output_dir = tmp_path / 'data' / 'openeval'
+    args = SimpleNamespace(
+        input_json=input_path,
+        max_response_shards=None,
+        revision='test-revision',
+        include_instances=False,
+        limit_responses=None,
+        allow_unknown_benchmark=False,
+        output_dir=output_dir,
+    )
+
+    with pytest.raises(SourceRecordsError, match='not-a-number'):
+        adapter.run(args)
+
+    assert len(list(output_dir.rglob('*.json'))) == 2
+    report = json.loads(
+        (tmp_path / 'adapter_reports' / 'openeval_failures.json').read_text(
+            encoding='utf-8'
+        )
+    )
+    assert report['failed_record_count'] == 1
+    assert report['failed_records'][0]['source_record'] == {
+        'metric': {'name': 'ifeval_strict_accuracy'},
+        'value': 'not-a-number',
+    }
+
+
+def test_model_group_failure_does_not_discard_other_model(monkeypatch):
+    original = adapter._make_log_bundle
+
+    def fail_gemma(name, *args, **kwargs):
+        if name == 'gemma-2b-it':
+            raise ValueError('broken model group')
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(adapter, '_make_log_bundle', fail_gemma)
+
+    result = adapter.make_logs_result(
+        sample_payload(), retrieved_timestamp='1234567890.0'
+    )
+
+    assert [bundle.log.model_info.name for bundle in result.records] == [
+        'gpt-4o'
+    ]
+    assert len(result.failures) == 1
+    assert result.failures[0].source_ref.startswith(
+        "OpenEval model group 'gemma-2b-it'/"
+    )
+    assert result.failures[0].reason == 'broken model group'
+
+
 def test_export_paths_follow_datastore_layout(tmp_path: Path):
     output_dir = tmp_path / 'data' / 'openeval'
     bundles = adapter.make_logs(
@@ -351,7 +467,10 @@ def test_include_instances_writes_valid_jsonl_sidecar(tmp_path: Path):
     assert aggregate.detailed_evaluation_results is not None
     assert aggregate.detailed_evaluation_results.total_rows == 2
     assert aggregate.detailed_evaluation_results.format.value == 'jsonl'
-    assert aggregate.detailed_evaluation_results.file_path == sample_path.name
+    assert aggregate.detailed_evaluation_results.file_path == (
+        f'data/openeval/{gemma_bundle.developer}/{gemma_bundle.model}/'
+        f'{sample_path.name}'
+    )
     assert aggregate.detailed_evaluation_results.checksum
 
     report = validate_file(sample_path)
@@ -427,3 +546,54 @@ def test_non_binary_instance_scores_do_not_claim_correctness():
     assert instance.evaluation.score == 0.75
     assert instance.evaluation.is_correct is False
     assert instance.metadata['is_correct_applicable'] == 'false'
+
+
+def test_export_rollback_does_not_delete_competing_file(
+    tmp_path: Path, monkeypatch
+):
+    output_dir = tmp_path / 'data' / 'openeval'
+    bundles = adapter.make_logs(
+        sample_payload(), retrieved_timestamp='1234567890.0'
+    )
+    generated_ids = iter(
+        [
+            uuid.UUID('00000000-0000-4000-8000-000000000001'),
+            uuid.UUID('00000000-0000-4000-8000-000000000002'),
+        ]
+    )
+    monkeypatch.setattr(adapter.uuid, 'uuid4', lambda: next(generated_ids))
+
+    second = bundles[1]
+    competing_path = (
+        output_dir
+        / second.developer
+        / second.model
+        / '00000000-0000-4000-8000-000000000002.json'
+    )
+    original_open = Path.open
+
+    def racing_open(path: Path, mode='r', *args, **kwargs):
+        if path == competing_path and mode == 'xb':
+            with original_open(path, 'xb') as handle:
+                handle.write(b'competing process')
+            raise FileExistsError(path)
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'open', racing_open)
+
+    try:
+        adapter.export_logs(bundles, output_dir)
+    except FileExistsError:
+        pass
+    else:
+        raise AssertionError('Expected simulated exclusive-create race')
+
+    first = bundles[0]
+    first_path = (
+        output_dir
+        / first.developer
+        / first.model
+        / '00000000-0000-4000-8000-000000000001.json'
+    )
+    assert not first_path.exists()
+    assert competing_path.read_text(encoding='utf-8') == 'competing process'

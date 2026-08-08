@@ -2,7 +2,22 @@
 
 from .developer import get_developer, get_model_id
 from .fetch import FetchError, fetch_csv, fetch_json
-from .io import generate_output_path, sanitize_filename, save_evaluation_log
+from .io import (
+    EvaluationLogOutput,
+    SourceConversionResult,
+    SourceRecordExclusion,
+    SourceRecordFailure,
+    SourceRecordsError,
+    datastore_repo_file_path,
+    default_failure_report_path,
+    generate_output_path,
+    require_finite_number,
+    require_identity,
+    sanitize_filename,
+    save_evaluation_log,
+    save_evaluation_logs,
+    save_failure_report,
+)
 from .schema import (
     SCHEMA_VERSION,
     make_evaluation_log,
@@ -22,7 +37,18 @@ __all__ = [
     'FetchError',
     # io.py
     'save_evaluation_log',
+    'save_evaluation_logs',
+    'EvaluationLogOutput',
+    'SourceConversionResult',
+    'SourceRecordExclusion',
+    'SourceRecordFailure',
+    'SourceRecordsError',
+    'default_failure_report_path',
+    'datastore_repo_file_path',
+    'save_failure_report',
     'generate_output_path',
+    'require_finite_number',
+    'require_identity',
     'sanitize_filename',
     # schema.py
     'SCHEMA_VERSION',

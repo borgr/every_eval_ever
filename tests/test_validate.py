@@ -5,21 +5,50 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from every_eval_ever.schema import get_schema_version
 from every_eval_ever.validate import (
     expand_paths,
+    main,
     render_report_github,
     render_report_json,
-    validate_aggregate,
-    validate_file,
-    validate_instance_file,
 )
+from every_eval_ever.validate import (
+    validate_aggregate as _validate_aggregate,
+)
+from every_eval_ever.validate import (
+    validate_file as _validate_file,
+)
+from every_eval_ever.validate import (
+    validate_instance_file as _validate_instance_file,
+)
+
+CURRENT_SCHEMA_VERSION = get_schema_version()
 
 # ---------------------------------------------------------------------------
 # Helpers — minimal valid data fixtures
 # ---------------------------------------------------------------------------
 
+
+def validate_aggregate(file_path: Path, **kwargs):
+    """Keep legacy schema tests independent from the new semantic rules."""
+    kwargs.setdefault('run_semantic_checks', False)
+    return _validate_aggregate(file_path, **kwargs)
+
+
+def validate_instance_file(file_path: Path, *args, **kwargs):
+    kwargs.setdefault('run_semantic_checks', False)
+    return _validate_instance_file(file_path, *args, **kwargs)
+
+
+def validate_file(file_path: Path, *args, **kwargs):
+    kwargs.setdefault('run_semantic_checks', False)
+    return _validate_file(file_path, *args, **kwargs)
+
+
 VALID_AGGREGATE: dict = {
-    'schema_version': '0.2.2',
+    'schema_version': CURRENT_SCHEMA_VERSION,
     'evaluation_id': 'test/model/123',
     'retrieved_timestamp': '1234567890',
     'source_metadata': {
@@ -47,7 +76,7 @@ VALID_AGGREGATE: dict = {
 }
 
 VALID_SINGLE_TURN: dict = {
-    'schema_version': 'instance_level_eval_0.2.2',
+    'schema_version': CURRENT_SCHEMA_VERSION,
     'evaluation_id': 'test/model/123',
     'model_id': 'org/test-model',
     'evaluation_name': 'test_eval',
@@ -68,7 +97,7 @@ VALID_SINGLE_TURN: dict = {
 }
 
 VALID_MULTI_TURN: dict = {
-    'schema_version': 'instance_level_eval_0.2.2',
+    'schema_version': CURRENT_SCHEMA_VERSION,
     'evaluation_id': 'test/model/123',
     'model_id': 'org/test-model',
     'evaluation_name': 'test_eval',
@@ -313,17 +342,65 @@ class TestFileDispatch:
         assert report.valid is False
         assert report.errors[0]['type'] == 'unsupported_extension'
 
-    def test_directory_expansion(self, tmp_path: Path):
+    def test_fixed_depth_glob_expands_files_without_nested_matches(
+        self, tmp_path: Path
+    ):
         sub = tmp_path / 'sub'
         sub.mkdir()
-        _write_json(sub, 'a.json', VALID_AGGREGATE)
-        _write_jsonl(sub, 'b.jsonl', [VALID_SINGLE_TURN])
+        direct_json = _write_json(sub, 'a.json', VALID_AGGREGATE)
+        direct_jsonl = _write_jsonl(sub, 'b.jsonl', [VALID_SINGLE_TURN])
         (sub / 'c.txt').write_text('ignored')
-        paths = expand_paths([str(sub)])
-        extensions = {p.suffix for p in paths}
-        assert '.json' in extensions
-        assert '.jsonl' in extensions
-        assert '.txt' not in extensions
+        nested = sub / 'nested'
+        nested.mkdir()
+        nested_json = _write_json(nested, 'hidden.json', VALID_AGGREGATE)
+
+        paths = expand_paths([f'{sub}/*.json*'])
+
+        assert direct_json in paths
+        assert direct_jsonl in paths
+        assert nested_json not in paths
+        assert all(path.parent == sub for path in paths)
+
+    def test_directory_arguments_are_rejected(self, tmp_path: Path):
+        with pytest.raises(ValueError, match='directory arguments'):
+            expand_paths([str(tmp_path)])
+
+    def test_cli_accepts_absolute_local_datastore_path(self, tmp_path: Path):
+        path = (
+            tmp_path
+            / 'local-output'
+            / 'data'
+            / 'benchmark'
+            / 'developer'
+            / 'model'
+            / 'f82b2807-fb31-4e42-a4a4-497d7d7a7e61.json'
+        )
+        path.parent.mkdir(parents=True)
+        payload = {
+            **VALID_AGGREGATE,
+            'model_info': {
+                'name': 'test-model',
+                'id': 'org/test-model',
+                'developer': 'org',
+                'additional_details': {
+                    'deployment_type': 'unknown',
+                    'model_availability': 'unknown',
+                },
+            },
+        }
+        path.write_text(json.dumps(payload), encoding='utf-8')
+
+        assert main([str(path), '--format', 'json']) == 0
+
+    def test_explicit_recursive_glob_is_honored(self, tmp_path: Path):
+        direct = _write_json(tmp_path, 'direct.json', VALID_AGGREGATE)
+        nested_dir = tmp_path / 'nested'
+        nested_dir.mkdir()
+        nested = _write_json(nested_dir, 'nested.json', VALID_AGGREGATE)
+
+        paths = expand_paths([f'{tmp_path}/**/*.json'])
+
+        assert paths == [direct, nested]
 
 
 class TestMaxErrors:
