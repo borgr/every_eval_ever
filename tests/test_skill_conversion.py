@@ -74,7 +74,7 @@ GATE_GUIDE = SKILL_DIR / 'reference' / 'datastore-gate.md'
 def test_every_registered_check_is_documented_in_the_gate_guide():
     """A contributor meets the semantic checks through the guide, not the source."""
     guide = GATE_GUIDE.read_text(encoding='utf-8')
-    documented = {}
+    missing = {}
     for check in REGISTERED_CHECKS:
         names = re.findall(
             r'return (check_\w+)\(', inspect.getsource(check.run)
@@ -88,9 +88,10 @@ def test_every_registered_check_is_documented_in_the_gate_guide():
             ),
             regenerate=False,
         )
-        documented[check.name] = [name for name in names if name not in guide]
+        undocumented = [name for name in names if name not in guide]
+        if undocumented:
+            missing[check.name] = undocumented
 
-    missing = {name: gap for name, gap in documented.items() if gap}
     assert not missing, _remedy(
         f'registered checks absent from datastore-gate.md: {missing}',
         where=f'add a section for each to {GATE_GUIDE.relative_to(REPO_ROOT)}',

@@ -81,8 +81,10 @@ Re-derive this list from `REGISTERED_CHECKS`, `_DEPLOYMENT_TYPES`,
 - One record only proves the alias relation and this record's directory — not that the
   other directory is already populated. Fix it by choosing the spelling and correcting the
   adapter's mapping, so every future record agrees.
-- Warning, not error: the affected records are already published and the fix changes join
-  keys. Exit code stays 0.
+- Warning, not error: the record stays valid, because the affected records are already
+  published and the fix changes join keys. Valid is not merge-ready though — a batch
+  carrying only this warning exits **2**, so any build treating a non-zero exit as a
+  rejection will reject it.
 
 ## §publish — `publish_evaluation_logs`
 **Mind which root each entry point wants — they differ, and a mismatch is silent until

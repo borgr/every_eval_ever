@@ -636,7 +636,8 @@ def check_developer_slug(data: dict[str, Any]) -> list[str]:
             'directories, neither listing complete'
             if directory_field in locations
             else 'the id prefix picks the directory here, so this field '
-            'splits none, but anything grouping by developer reads two'
+            'splits none, but it disagrees with that directory and groups '
+            'this record apart from any spelled the other way'
         )
         found = '/'.join(repr(spelling) for spelling in sorted(spellings))
         warnings.append(
