@@ -22,18 +22,23 @@ earlier snapshot.
 Run
 ---
     uv run python -m every_eval_ever.adapters.benchpress.adapter --output-dir /tmp/eee-benchpress
-    uv run python -m every_eval_ever validate /tmp/eee-benchpress
+    uv run python -m every_eval_ever validate '/tmp/eee-benchpress/*/*/*.json'
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlparse
+
+from pydantic import ValidationError
 
 from every_eval_ever.eval_types import (
     EvalLibrary,
@@ -57,6 +62,7 @@ from every_eval_ever.helpers import (
     default_failure_report_path,
     fetch_csv,
     fetch_json,
+    require_finite_number,
     save_evaluation_logs,
     save_failure_report,
 )
@@ -71,17 +77,17 @@ DEFAULT_OUTPUT_DIR = 'data/benchpress'
 # matrix, so they are excluded here too unless --include-unaccepted is passed.
 ACCEPTED_AUDIT_STATUSES = frozenset({'verified', 'verified_third_party'})
 
-# BenchPress source_type values whose *document* is published by a model's own
-# provider. That makes the document provider-authored; it does not by itself make
-# the score first_party -- see relationship_from_score.
-PROVIDER_AUTHORED_SOURCE_TYPES = frozenset({
-    'official_blog', 'official_paper', 'model_card', 'tech_report',
-})
-
 # source_types whose evaluator is independent of the scored model's provider,
 # whatever else the citation contains.
 INDEPENDENT_SOURCE_TYPES = frozenset({
     'leaderboard', 'third_party', 'third_party_aggregator', 'academic_paper',
+})
+
+# source_types a provider writes about its own models. The type alone says only
+# what KIND of document a citation is; who published it has to come from the
+# citation itself -- see relationship_from_score.
+PROVIDER_AUTHORED_SOURCE_TYPES = frozenset({
+    'official_blog', 'official_paper', 'model_card', 'tech_report',
 })
 
 # metric_type -> EEE metric_unit.
@@ -148,7 +154,6 @@ def _slug(text: Any) -> str:
 def _domain(url: str | None) -> str | None:
     if not url:
         return None
-    from urllib.parse import urlparse
     return urlparse(url).netloc or None
 
 
@@ -166,9 +171,20 @@ def _clean(value):
     return value
 
 
-def _to_float(value):
+def _optional_number(value):
+    """A descriptive numeric column, kept as written when it will not parse.
+
+    These reach the record through _str_map, which stringifies either way, so a
+    value the source wrote as text is preserved rather than lost -- and no score
+    depends on it, so it is not worth ending the export over.
+    """
     value = _clean(value)
-    return None if value is None else float(value)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return value
 
 
 def _json_obj(value):
@@ -193,8 +209,8 @@ def _parse_models(rows: list[dict]) -> list[dict]:
         'id': r['model_id'], 'name': r.get('model_name') or r['model_id'],
         'provider': _clean(r.get('provider')),
         'release_date': _clean(r.get('release_date')),
-        'params_total_M': _to_float(r.get('params_total_M')),
-        'params_active_M': _to_float(r.get('params_active_M')),
+        'params_total_M': _optional_number(r.get('params_total_M')),
+        'params_active_M': _optional_number(r.get('params_active_M')),
         'architecture': _clean(r.get('architecture')),
         'is_reasoning': _clean(r.get('is_reasoning')),
         'open_weights': _clean(r.get('open_weights')),
@@ -205,16 +221,20 @@ def _parse_benchmarks(rows: list[dict]) -> list[dict]:
     return [{
         'id': r['benchmark_id'], 'name': r.get('benchmark_name') or r['benchmark_id'],
         'category': _clean(r.get('category')), 'metric': _clean(r.get('metric')),
-        'num_problems': _to_float(r.get('num_problems')),
+        'num_problems': _optional_number(r.get('num_problems')),
         'source_url': _clean(r.get('source_url')),
         'canonical_setting': _json_obj(r.get('canonical_setting_json')),
     } for r in rows]
 
 
 def _parse_scores(rows: list[dict]) -> list[dict]:
+    # The score stays as the source wrote it: it is parsed per row in make_logs,
+    # where a value that will not parse is that row's failure rather than the end
+    # of the run. The id columns stay strict -- one missing from the header is a
+    # structural mismatch, not one bad row.
     return [{
         'model_id': r['model_id'], 'benchmark_id': r['benchmark_id'],
-        'score': _to_float(r.get('score')),
+        'score': _clean(r.get('score')),
         'reference_url': _clean(r.get('reference_url')),
         'source_type': _clean(r.get('source_type')),
         'audit_status': _clean(r.get('audit_status')),
@@ -225,13 +245,27 @@ def _parse_scores(rows: list[dict]) -> list[dict]:
     } for r in rows]
 
 
-def resolve_revision() -> str:
-    """The dataset's current commit SHA, so one run reads one snapshot."""
-    info = fetch_json(f'https://huggingface.co/api/datasets/{HF_REPO}')
+_FULL_SHA = re.compile(r'[0-9a-f]{40}')
+
+
+def resolve_revision(reference: str | None = None) -> str:
+    """The commit SHA for ``reference`` (default: the dataset's current tip).
+
+    A branch or tag names whatever it points at now, so reading the four files at
+    one would still mix revisions, and the SHA recorded on every record would be a
+    ref that can move afterwards. A full SHA is already immutable and is taken as
+    given, so pinning one costs no request.
+    """
+    if reference and _FULL_SHA.fullmatch(reference):
+        return reference
+    suffix = f'/revision/{quote(reference, safe="")}' if reference else ''
+    info = fetch_json(f'https://huggingface.co/api/datasets/{HF_REPO}{suffix}')
     sha = info.get('sha')
     if not sha:
         raise RuntimeError(
-            f'{HF_REPO} returned no commit sha; pass --revision to pin one'
+            f'{HF_REPO} returned no commit sha for '
+            f'{reference or "its current revision"}; pass --revision <sha> to '
+            'pin one'
         )
     return sha
 
@@ -239,11 +273,12 @@ def resolve_revision() -> str:
 def fetch_payload(revision: str | None = None) -> dict[str, Any]:
     """Fetch the BenchPress CSV mirror + metadata.json at one pinned commit.
 
-    ``main`` moves, and the four files are four requests, so reading them at the
-    branch tip can mix revisions. The commit is resolved once and every file is
-    read at it; ``--revision`` reproduces an earlier snapshot.
+    ``main`` moves, and the four files are four requests, so reading them at a
+    branch tip can mix revisions. Whatever is asked for -- the default tip, a
+    branch, a tag -- resolves to one commit first, and every file is read at that
+    commit; ``--revision`` reproduces an earlier snapshot.
     """
-    revision = revision or resolve_revision()
+    revision = resolve_revision(revision)
     base = f'https://huggingface.co/datasets/{HF_REPO}/resolve/{revision}'
     metadata = fetch_json(f'{base}/metadata.json')
     return {
@@ -265,41 +300,42 @@ def load_payload(input_json: Path) -> dict[str, Any]:
 # record construction
 # --------------------------------------------------------------------------- #
 
-def citation_provider_counts(scores: list[dict],
-                             models: dict[str, dict]) -> dict[str, int]:
-    """How many distinct providers each ``reference_url`` reports scores for.
+def _provider_publishes(url: str | None, provider: str | None) -> bool:
+    """Whether a citation is hosted on a domain that carries the provider's name.
 
-    A citation covering several providers is a comparison table, not one
-    provider's report of its own model. See relationship_from_score.
+    Where a citation lives is the only publisher evidence this export offers. A
+    hostname label equal to the provider's name -- ``openai.com``,
+    ``cdn.amazon.science``, ``moonshotai.github.io`` -- names the provider as
+    publisher, because a domain has an owner. A shared host names nobody,
+    whatever its path says: the org in ``huggingface.co/Qwen/...`` sits in the
+    path, and ``storage.googleapis.com`` serves anyone's bucket.
     """
-    providers: dict[str, set[str]] = defaultdict(set)
-    for score in scores:
-        url = score.get('reference_url')
-        model = models.get(score['model_id'])
-        if url and model:
-            providers[url].add(model.get('provider') or 'unknown')
-    return {url: len(names) for url, names in providers.items()}
+    provider = _slug(provider or '').replace('-', '')
+    host = _domain(url)
+    if not provider or not host:
+        return False
+    labels = [label.replace('-', '') for label in host.lower().split('.')]
+    return provider in set(labels) or provider == ''.join(labels)
 
 
-def relationship_from_score(score: dict, citation_breadth: dict[str, int]) -> str:
+def relationship_from_score(score: dict, model: dict) -> str:
     """Who evaluated the model, as far as the BenchPress export can establish it.
 
-    A provider-authored document type (a model card, blog post or tech report)
-    only means the *document* is a provider's; it does not say whose. Those
-    documents routinely carry a comparison table of competitors' scores, and
-    BenchPress scrapes those cells too: a Claude score cited to
-    ``arxiv.org/abs/2412.19437`` came out of DeepSeek's V3 report, not Anthropic's.
-    So a provider-authored citation is ``first_party`` only when every score it
-    supplies belongs to one provider. When it spans several, which one published
-    it is not recoverable from the export, and neither claim is made.
+    ``source_type`` says what KIND of document a citation is -- a model card, a
+    blog post, a tech report -- not who published it, and provider-authored
+    documents routinely tabulate competitors' scores, which BenchPress scrapes
+    too: on the current snapshot a Google ``gemini-2.5-flash`` score is cited to
+    Qwen's model card. So ``first_party`` takes both a provider-authored type and
+    a citation on the provider's own domain. Independent types are
+    ``third_party``, and a document whose publisher the export does not identify
+    is ``other`` rather than a guess in either direction.
     """
     source_type = score.get('source_type') or ''
     if source_type in INDEPENDENT_SOURCE_TYPES:
         return 'third_party'
-    if source_type in PROVIDER_AUTHORED_SOURCE_TYPES:
-        url = score.get('reference_url')
-        if url and citation_breadth.get(url, 0) == 1:
-            return 'first_party'
+    if source_type in PROVIDER_AUTHORED_SOURCE_TYPES and _provider_publishes(
+            score.get('reference_url'), model.get('provider')):
+        return 'first_party'
     return 'other'
 
 
@@ -390,6 +426,10 @@ def make_evaluation_result(score: dict, benchmark: dict) -> EvaluationResult | N
     value = score.get('score')
     if value is None:
         return None
+    # Parsed here, not when the CSV is read: inside make_logs's per-row boundary a
+    # value that will not parse is attributed to the row it came from, instead of
+    # ending the run before any row has been recorded.
+    value = require_finite_number(value, f'{_score_ref(score)} score')
     cs = benchmark.get('canonical_setting') or {}
     reported = score.get('reported_setting') or {}
     metric_type = cs.get('metric_type')
@@ -504,10 +544,14 @@ def make_logs(payload: dict[str, Any],
         timestamp = _iso_to_epoch_str(version['generated_at_utc'])
     timestamp = timestamp or str(time.time())
 
-    citation_breadth = citation_provider_counts(payload['scores'], models)
     exclusions: list[SourceRecordExclusion] = []
     failures: list[SourceRecordFailure] = []
-    groups: dict[tuple[str, str, str], list[EvaluationResult]] = defaultdict(list)
+    # (developer, model, relationship) -> benchmark id -> result. Keyed by the
+    # join key so a second, different result for one benchmark is reported
+    # instead of quietly losing to the first.
+    groups: dict[
+        tuple[str, str, str], dict[str | None, EvaluationResult]
+    ] = defaultdict(dict)
     model_infos: dict[tuple[str, str, str], ModelInfo] = {}
     for score in payload['scores']:
         audit_status = score.get('audit_status') or 'missing'
@@ -520,12 +564,25 @@ def make_logs(payload: dict[str, Any],
             continue
         model = models.get(score['model_id'])
         benchmark = benchmarks.get(score['benchmark_id'])
-        result = (make_evaluation_result(score, benchmark)
-                  if model is not None and benchmark is not None else None)
+        try:
+            result = (make_evaluation_result(score, benchmark)
+                      if model is not None and benchmark is not None else None)
+            identity = None if result is None else normalize_model_info(model)
+        except (ValueError, TypeError, ValidationError) as exc:
+            # Only what an unusable source value raises: a number that will not
+            # parse, and a field the schema rejects. Anything else is a bug in
+            # this adapter and stays visible instead of being filed as bad data.
+            failures.append(SourceRecordFailure(
+                source_ref=_score_ref(score),
+                reason=f'{type(exc).__name__}: {exc}',
+                source_record=score,
+            ))
+            continue
         if result is None:
             failures.append(SourceRecordFailure(
                 source_ref=_score_ref(score),
                 reason='no score, or the model/benchmark id is not in this export',
+                source_record=score,
             ))
             continue
         bounds = result.metric_config
@@ -536,25 +593,36 @@ def make_logs(payload: dict[str, Any],
                         f'benchmark\'s declared range '
                         f'[{bounds.min_score}, {bounds.max_score}], so the two '
                         'disagree about the scale and neither can be trusted'),
+                source_record=score,
             ))
             continue
-        model_info, org, slug = normalize_model_info(model)
-        key = (org, slug, relationship_from_score(score, citation_breadth))
-        groups[key].append(result)
+        model_info, org, slug = identity
+        relationship = relationship_from_score(score, model)
+        key = (org, slug, relationship)
+        kept = groups[key]
+        previous = kept.get(result.evaluation_result_id)
+        if previous is not None:
+            if previous.model_dump() == result.model_dump():
+                continue  # the same cell reported twice: nothing to add or report
+            failures.append(SourceRecordFailure(
+                source_ref=_score_ref(score),
+                reason=(f'{result.evaluation_result_id} is already reported for '
+                        f'this model as {relationship}, citing '
+                        f'{previous.source_data.url[0]}; evaluation_result_id is the '
+                        'join key for instance records, so one log cannot carry '
+                        'two different results for one benchmark'),
+                source_record=score,
+            ))
+            continue
+        kept[result.evaluation_result_id] = result
         model_infos[key] = model_info
 
     bundles: list[LogBundle] = []
     for (org, slug, relationship), results in sorted(groups.items()):
         model_info = model_infos[(org, slug, relationship)]
         sanitized = model_info.id.replace('/', '_')
-        # de-dup by result id (one benchmark appears at most once per log)
-        seen: set[str] = set()
-        deduped: list[EvaluationResult] = []
-        for result in sorted(results, key=lambda r: r.evaluation_result_id or ''):
-            if result.evaluation_result_id in seen:
-                continue
-            seen.add(result.evaluation_result_id or '')
-            deduped.append(result)
+        ordered = sorted(results.values(),
+                         key=lambda r: r.evaluation_result_id or '')
         log = EvaluationLog(
             schema_version=SCHEMA_VERSION,
             evaluation_id=f'benchpress/{relationship}/{sanitized}/{timestamp}',
@@ -562,7 +630,7 @@ def make_logs(payload: dict[str, Any],
             source_metadata=source_metadata(relationship, version),
             eval_library=EvalLibrary(name='BenchPress', version='unknown'),
             model_info=model_info,
-            evaluation_results=deduped,
+            evaluation_results=ordered,
         )
         bundles.append(LogBundle(log=log, developer=org, model=slug))
     return SourceConversionResult(
@@ -577,6 +645,23 @@ def make_logs(payload: dict[str, Any],
 # --------------------------------------------------------------------------- #
 # output
 # --------------------------------------------------------------------------- #
+
+def write_conversion_report(result: SourceConversionResult[LogBundle],
+                            output_dir: Path) -> Path:
+    """Persist this run's accounting, replacing any previous run's copy in one step.
+
+    Written before publication, because it accounts for the conversion: a
+    publication error is when the record of what was rejected is most worth
+    having. Written on every run, because a report left behind by an earlier run
+    reads as current, and only the run that found nothing to report can say so.
+    The swap is atomic, so an interrupted write cannot leave a truncated report
+    where a complete one was.
+    """
+    final = default_failure_report_path(output_dir)
+    staged = save_failure_report(result, final.with_name(final.name + '.tmp'))
+    os.replace(staged, final)
+    return final
+
 
 def export_logs(bundles: list[LogBundle], output_dir: Path) -> list[Path]:
     """Publish every log in one batch, so a late failure leaves no partial tree."""
@@ -633,19 +718,16 @@ def run(args: argparse.Namespace) -> int:
         retrieved_timestamp=args.retrieved_timestamp,
         include_unaccepted=args.include_unaccepted,
     )
+    report = write_conversion_report(result, args.output_dir)
     paths = export_logs(result.records, args.output_dir)
     for path in paths:
         print(path)
     print(f'{result.total_records} source scores -> {len(paths)} log(s); '
           f'{len(result.exclusions)} excluded, {len(result.failures)} failed')
-    if result.failures:
-        # Valid records are already published; the report and the non-zero exit
-        # are what keep the rejected rows from passing as a clean run.
-        report = save_failure_report(
-            result, default_failure_report_path(args.output_dir)
-        )
-        print(f'Rejected source rows: {report}')
-        result.raise_if_incomplete()
+    print(f'Conversion accounting: {report}')
+    # Only failures fail the run: an excluded row is BenchPress's own decision.
+    # The report itemizes both.
+    result.raise_if_incomplete()
     return len(paths)
 
 
