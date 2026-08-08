@@ -526,7 +526,7 @@ def test_a_generic_word_behind_a_namespace_is_not_a_collision():
 
     ``.`` is the separator the schema documents and ``/`` is the one several
     published sources chose — ``mmlu_pro/overall`` and ``mt_bench/turn_1`` are
-    in the datastore, and ``tools/hf_community_evals.py`` accepts
+    in the datastore, and ``every_eval_ever/tools/hf_community_evals.py`` accepts
     ``hle.accuracy`` and ``hle/accuracy`` interchangeably. ``mmlu_pro/overall``
     ends in a generic word and must still pass: the collision is in the bare
     form, and normalization must not reach past a namespace separator to find
