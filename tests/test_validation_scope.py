@@ -447,9 +447,10 @@ def test_model_identity_must_match_its_datastore_directory():
 def test_an_identity_that_names_no_directory_is_reported_not_raised():
     """The publisher's own reason is the message, for each way it can fail.
 
-    Five of 500 published records carry a flat id with no ``developer``, and two
-    more say ``unknown``; the publisher would refuse to file any of them, so no
-    path follows from the identity at all.
+    All four occur in the published datastore: 92 records carry a flat id with no
+    ``developer``, 177 an ``unknown`` one, and 13 a name that is not a portable
+    path component. The publisher would refuse to file any of them, so no path
+    follows from the identity at all.
     """
     data = valid_aggregate()
     for model_info in (
