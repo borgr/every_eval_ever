@@ -44,6 +44,10 @@ class ConverterCase:
     # belongs in this field rather than in `evaluation_name` or the description, and a
     # converter that leaves it unset shows up here as `None` in the set.
     metric_names: frozenset[str] | None = None
+    # The `score_details.uncertainty` keys, unioned over every result. Setting this
+    # also requires every result to carry an uncertainty, since dropping the standard
+    # error from a score leaves a record that still validates.
+    uncertainty_keys: frozenset[str] | None = None
     extra_argv: tuple[str, ...] = ()
     # Upstream key paths the converter cannot work without, `*` matching any one key.
     required_source_paths: tuple[str, ...] = ()
@@ -71,6 +75,7 @@ CASES: tuple[ConverterCase, ...] = (
             'math_perturbed_full/exact_match': 0.0,
             'math_rephrased_full/exact_match': 0.0004,
         },
+        uncertainty_keys=frozenset({'standard_error', 'num_samples'}),
         required_source_paths=(
             'config.model',
             'config.model_args',
@@ -99,6 +104,7 @@ CASES: tuple[ConverterCase, ...] = (
             'vul_exploit_scorer:std': 0.3115628730565127,
         },
         metric_names=frozenset({'accuracy', 'mean', 'std'}),
+        uncertainty_keys=frozenset({'standard_deviation', 'num_samples'}),
         required_source_paths=(
             'eval.model',
             'eval.task',
@@ -139,6 +145,7 @@ CASES: tuple[ConverterCase, ...] = (
                 'quasi_prefix_exact_match@5',
             }
         ),
+        uncertainty_keys=frozenset({'standard_deviation', 'num_samples'}),
         # `--log_path` is a HELM run directory, not one file, so there is no single
         # payload for `missing_paths` to address. The gate and the counts above are
         # what cover this converter.
