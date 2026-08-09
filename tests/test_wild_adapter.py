@@ -193,15 +193,18 @@ def test_a_failed_publication_leaves_no_partial_output(tmp_path, monkeypatch):
     assert not list(out.rglob("*.json*"))
 
 
-def _one_task_parquet(path, model, task):
+def _task_rows(model, task):
     convo = json.dumps([{"role": "user", "content": "Q?"},
                         {"role": "assistant", "content": "ANSWER: C"}])
-    rows = [dict(model=model, task=task, subtask="main", item_id=f"i{i}",
+    return [dict(model=model, task=task, subtask="main", item_id=f"i{i}",
                  score=i % 2, input_tokens=10, output_tokens=2, conversation=convo,
                  stop_reason="stop", target="C", answer="C",
                  scores=json.dumps({"choice": {"value": "C", "answer": "ANSWER: C"}}))
             for i in range(4)]
-    pq.write_table(pa.Table.from_pylist(rows), str(path))
+
+
+def _one_task_parquet(path, model, task):
+    pq.write_table(pa.Table.from_pylist(_task_rows(model, task)), str(path))
 
 
 def test_replacement_supersedes_only_the_benchmarks_it_rewrites(tmp_path):
@@ -268,6 +271,36 @@ def test_models_filter_matching_nothing_publishes_nothing(tmp_path, capsys):
     adapter.run(_args(pqt, out, models=["openai/gpt-x", "openai/gpt-y"]))
     assert len(list(out.rglob("*.json"))) == 1
     assert "no source rows for 1 selected model(s): openai/gpt-y" in capsys.readouterr().out
+
+
+def _flat_id_parquet(path, models):
+    rows = [row for model in models for row in _task_rows(model, "mmlu")]
+    pq.write_table(pa.Table.from_pylist(rows), str(path))
+
+
+def test_model_ids_without_a_namespace_still_name_a_publisher(tmp_path):
+    # 15 of WILD's 65 models are named without one ("gpt-4o", "nova-pro"), and the
+    # datastore path needs a publisher for every record.
+    pqt = tmp_path / "w.parquet"
+    _flat_id_parquet(pqt, ["gpt-4o", "claude-3-haiku", "llama-3.1-8b", "nova-pro"])
+    out = _out(tmp_path)
+    adapter.run(_args(pqt, out))
+    assert {p.relative_to(out).parts[:2] for p in out.rglob("*.json")} == {
+        ("openai", "gpt-4o"), ("anthropic", "claude-3-haiku"),
+        ("meta", "llama-3.1-8b"), ("amazon", "nova-pro")}
+    for path in out.rglob("*.json"):
+        assert validate_file(path).valid
+
+
+def test_a_model_that_names_no_publisher_is_named_in_the_error(tmp_path):
+    # the path helper's own refusal says only "model_info.developer must be known",
+    # which does not say which of the run's models it was
+    pqt = tmp_path / "w.parquet"
+    _flat_id_parquet(pqt, ["entirely-novel-model"])
+    out = _out(tmp_path)
+    with pytest.raises(SystemExit, match="entirely-novel-model"):
+        adapter.run(_args(pqt, out))
+    assert not list(out.rglob("*.json*"))
 
 
 def test_bare_models_flag_is_an_error(monkeypatch):

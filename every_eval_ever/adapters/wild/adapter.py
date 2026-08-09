@@ -48,6 +48,7 @@ from every_eval_ever.eval_types import (
     SourceMetadata,
 )
 from every_eval_ever.helpers import SCHEMA_VERSION
+from every_eval_ever.helpers.developer import get_developer
 from every_eval_ever.helpers.io import (
     SourceConversionResult,
     SourceRecordFailure,
@@ -278,7 +279,7 @@ def _result(task: str, subtask: str | None, agg: Agg) -> EvaluationResult:
 def build_log(model: str, task: str, subs: dict[str | None, Agg],
               eval_ts: str, retrieved_ts: str,
               revision: str | None = None) -> tuple[EvaluationLog, str, str]:
-    developer = model.split('/')[0] if '/' in model else 'unknown'
+    developer = get_developer(model)
     model_slug = model.split('/')[-1]
     sanitized = model.replace('/', '_')
     real_subs = sorted(k for k in subs if k is not None)
@@ -674,6 +675,16 @@ def run(args: argparse.Namespace) -> int:
                                                 eval_ts, retrieved_ts, revision)
         logs.append(log)
         file_uuids.append(str(uuid.uuid4()))
+
+    unresolved = sorted({log.model_info.id for log in logs
+                         if log.model_info.developer == 'unknown'})
+    if unresolved:
+        raise SystemExit(
+            f'{len(unresolved)} model id(s) name no publisher, and the datastore '
+            f'path needs one: {", ".join(unresolved)}. A flat id is resolved by '
+            'every_eval_ever.helpers.developer; add the model family there rather '
+            'than filing these under a placeholder.'
+        )
 
     # Checked before the instance pass so a rejected rerun costs nothing.
     superseded = superseded_records(base_output_dir, logs)
