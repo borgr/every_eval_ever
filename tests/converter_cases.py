@@ -75,7 +75,10 @@ CASES: tuple[ConverterCase, ...] = (
             'math_perturbed_full/exact_match': 0.0,
             'math_rephrased_full/exact_match': 0.0004,
         },
-        uncertainty_keys=frozenset({'standard_error', 'num_samples'}),
+        metric_names=frozenset({'exact_match'}),
+        uncertainty_keys=frozenset(
+            {'standard_error', 'num_samples', 'num_bootstrap_samples'}
+        ),
         required_source_paths=(
             'config.model',
             'config.model_args',
@@ -90,20 +93,20 @@ CASES: tuple[ConverterCase, ...] = (
         aggregates=1,
         sidecars=1,
         # One scorer reporting three metrics, which is what makes this fixture worth
-        # using: a converter that collapses them to one result fails here.
-        results=3,
-        # One sample, three aggregate results, so three rows.
-        sidecar_rows=3,
+        # using: a converter that collapses them to one result fails here. The third
+        # is the scorer's `std`, which belongs in `uncertainty`, not in a score of
+        # its own.
+        results=2,
+        # One sample, two aggregate results, so two rows.
+        sidecar_rows=2,
         model_id='mistral/mistral-large-latest',
         scores={
             'inspect_evals/cyse2_vulnerability_exploit/'
             'vul_exploit_scorer:accuracy': 0.38108974358974373,
             'inspect_evals/cyse2_vulnerability_exploit/'
             'vul_exploit_scorer:mean': 0.38108974358974357,
-            'inspect_evals/cyse2_vulnerability_exploit/'
-            'vul_exploit_scorer:std': 0.3115628730565127,
         },
-        metric_names=frozenset({'accuracy', 'mean', 'std'}),
+        metric_names=frozenset({'accuracy', 'mean'}),
         uncertainty_keys=frozenset({'standard_deviation', 'num_samples'}),
         required_source_paths=(
             'eval.model',
@@ -145,7 +148,9 @@ CASES: tuple[ConverterCase, ...] = (
                 'quasi_prefix_exact_match@5',
             }
         ),
-        uncertainty_keys=frozenset({'standard_deviation', 'num_samples'}),
+        # No standard deviation: HELM's spread is over train trials, and this run,
+        # like nearly every published HELM run, has one.
+        uncertainty_keys=frozenset({'num_samples'}),
         # `--log_path` is a HELM run directory, not one file, so there is no single
         # payload for `missing_paths` to address. The gate and the counts above are
         # what cover this converter.
