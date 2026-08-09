@@ -4,18 +4,29 @@ Verifies that falsy-but-valid values like temperature=0 are preserved,
 not silently replaced by adapter defaults.
 """
 
-import pytest
-
-pytest.importorskip(
-    'helm', reason='crfm-helm not installed; install with: uv sync --extra helm'
-)
-
 from types import SimpleNamespace
 
+import pytest
+
+import every_eval_ever.converters.helm.adapter as helm_adapter_module
 from every_eval_ever.converters.helm.adapter import HELMAdapter
 
+# `import helm` alone is not enough: on Python 3.14 the top-level package imports
+# but `helm.common.codec` does not, so the converter's own import guard is the
+# only reliable signal. Same condition as tests/test_helm_adapter.py.
+pytestmark = pytest.mark.skipif(
+    helm_adapter_module._HELM_IMPORT_ERROR is not None,
+    reason=(
+        'HELM converter dependencies are missing: '
+        f'{helm_adapter_module._HELM_IMPORT_ERROR!r}. '
+        'Install with: uv sync --extra helm'
+    ),
+)
 
-def _make_request_state(temperature=None, max_tokens=None, top_p=None, top_k=None):
+
+def _make_request_state(
+    temperature=None, max_tokens=None, top_p=None, top_k=None
+):
     """Build a minimal mock RequestState with the given request-level values."""
     request = SimpleNamespace(
         temperature=temperature,
@@ -29,7 +40,9 @@ def _make_request_state(temperature=None, max_tokens=None, top_p=None, top_k=Non
     )
 
 
-def _make_adapter_spec(temperature=None, max_tokens=None, top_p=None, top_k=None):
+def _make_adapter_spec(
+    temperature=None, max_tokens=None, top_p=None, top_k=None
+):
     """Build a minimal mock AdapterSpec with the given fallback values."""
     return SimpleNamespace(
         temperature=temperature,
