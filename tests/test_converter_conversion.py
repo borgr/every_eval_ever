@@ -99,6 +99,30 @@ def test_conversion_yields_the_expected_records(case, tmp_path):
             '`metric_config.metric_name`; `None` here means the converter left it '
             'unset, and `evaluation_name` is for the evaluation.'
         )
+    if case.uncertainty_keys is not None:
+        results = [
+            result for log in logs for result in log['evaluation_results']
+        ]
+        bare = [
+            f'{result["evaluation_name"]}/'
+            f'{result.get("evaluation_result_id") or result["metric_config"].get("metric_name")}'
+            for result in results
+            if not result['score_details'].get('uncertainty')
+        ]
+        assert not bare, (
+            f'{case.source} published {len(bare)} score(s) with no uncertainty at '
+            f'all: {bare}. The record still validates without one, which is why '
+            'this is asserted here.'
+        )
+        converted = {
+            key
+            for result in results
+            for key in result['score_details']['uncertainty']
+        }
+        assert converted == case.uncertainty_keys, (
+            f'{case.source} reported uncertainty as {sorted(converted)}, expected '
+            f'{sorted(case.uncertainty_keys)}.'
+        )
 
     for log, path in zip(logs, aggregates, strict=True):
         detailed = log.get('detailed_evaluation_results')
