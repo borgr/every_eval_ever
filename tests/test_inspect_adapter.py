@@ -344,7 +344,11 @@ def test_gaia_eval():
 
 
 def test_evaluation_name_is_the_benchmark_and_the_metric_is_named():
-    """One scorer reporting three metrics: same eval, three named metrics."""
+    """One scorer reporting three metrics: same eval, two named scores.
+
+    The third is the scorer's `std`, which the schema carries as uncertainty on
+    the scores it describes.
+    """
     adapter = InspectAIAdapter()
     metadata_args = {
         'source_organization_name': 'TestOrg',
@@ -358,19 +362,84 @@ def test_evaluation_name_is_the_benchmark_and_the_metric_is_named():
     )
 
     results = converted_eval.evaluation_results
-    assert len(results) == 3
+    assert len(results) == 2
     assert {result.evaluation_name for result in results} == {
         'inspect_evals/cyse2_vulnerability_exploit'
     }
     assert {result.metric_config.metric_name for result in results} == {
         'accuracy',
         'mean',
-        'std',
     }
     for result in results:
         assert result.evaluation_result_id == (
             f'vul_exploit_scorer:{result.metric_config.metric_name}'
         )
+        # The scorer's `std` metric, carried where the schema puts dispersion.
+        assert result.score_details.uncertainty.standard_deviation == (
+            0.3115628730565127
+        )
+
+
+def test_metric_bounds_are_claimed_only_where_they_are_known():
+    """`accuracy` is a proportion; `mean` is a mean of whatever the scorer returns."""
+    adapter = InspectAIAdapter()
+    converted_eval = _load_eval(
+        adapter,
+        'tests/data/inspect/data_cyse2_vuln_exploit_challenges.json',
+        {
+            'source_organization_name': 'TestOrg',
+            'evaluator_relationship': EvaluatorRelationship.first_party,
+        },
+    )
+    by_metric = {
+        result.metric_config.metric_name: result.metric_config
+        for result in converted_eval.evaluation_results
+    }
+
+    assert by_metric['accuracy'].min_score == 0.0
+    assert by_metric['accuracy'].max_score == 1.0
+    assert by_metric['accuracy'].score_type == ScoreType.continuous
+
+    assert by_metric['mean'].min_score is None
+    assert by_metric['mean'].max_score is None
+    assert by_metric['mean'].additional_details == {'bounds_status': 'unknown'}
+
+
+def test_num_samples_comes_from_the_results_header():
+    """The scores cover every completed sample, not only the samples in the log.
+
+    A log read without its samples carries none, so counting them would report
+    a handful of samples for a run over thousands.
+    """
+    adapter = InspectAIAdapter()
+    converted_eval = _load_eval(
+        adapter,
+        'tests/data/inspect/data_cyse2_vuln_exploit_challenges.json',
+        {
+            'source_organization_name': 'TestOrg',
+            'evaluator_relationship': EvaluatorRelationship.first_party,
+        },
+    )
+
+    for result in converted_eval.evaluation_results:
+        assert result.score_details.uncertainty.num_samples == 2340
+
+
+def test_standard_error_of_zero_is_reported():
+    """A task every sample scores identically has a stderr of 0.0, not of none."""
+    adapter = InspectAIAdapter()
+    converted_eval = _load_eval(
+        adapter,
+        'tests/data/inspect/data_pubmedqa_gpt4o_mini.json',
+        {
+            'source_organization_name': 'TestOrg',
+            'evaluator_relationship': EvaluatorRelationship.first_party,
+        },
+    )
+
+    uncertainty = converted_eval.evaluation_results[0].score_details.uncertainty
+    assert uncertainty.standard_error is not None
+    assert uncertainty.standard_error.value == 0.0
 
 
 def test_humaneval_eval():
@@ -700,7 +769,7 @@ def test_supplemental_eval_details_matches_all_results_of_an_evaluation():
                     'score_details': {'details': {'reviewed': 'yes'}},
                 },
                 {
-                    'evaluation_result_id': 'vul_exploit_scorer:std',
+                    'evaluation_result_id': 'vul_exploit_scorer:mean',
                     'score_details': {'details': {'reviewed': 'separately'}},
                 },
             ],
@@ -720,11 +789,8 @@ def test_supplemental_eval_details_matches_all_results_of_an_evaluation():
     assert details_by_result_id['vul_exploit_scorer:accuracy'] == {
         'reviewed': 'yes'
     }
-    assert details_by_result_id['vul_exploit_scorer:mean'] == {
-        'reviewed': 'yes'
-    }
     # The specific key wins over the evaluation-wide one.
-    assert details_by_result_id['vul_exploit_scorer:std'] == {
+    assert details_by_result_id['vul_exploit_scorer:mean'] == {
         'reviewed': 'separately'
     }
 

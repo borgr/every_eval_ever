@@ -63,17 +63,12 @@ MODEL_TYPE_TO_INFERENCE_ENGINE = {
     'gguf': 'llama.cpp',
 }
 
-# Known metric bounds: metric_name -> (min_score, max_score)
-# Infinite bounds are serialized as the JSON strings "Infinity"/"-Infinity".
-KNOWN_METRIC_BOUNDS = {
-    'acc': (0.0, 1.0),
-    'acc_norm': (0.0, 1.0),
-    'exact_match': (0.0, 1.0),
-    'f1': (0.0, 1.0),
-    'em': (0.0, 1.0),
+# Bounds for the metrics lm-eval spells its own way, layered over
+# converters/common/metrics.py::SHARED_METRIC_BOUNDS. lm-eval's `bleu` is
+# sacrebleu, which reports 0-100 rather than the 0-1 of nltk's sentence_bleu.
+LM_EVAL_METRIC_BOUNDS = {
     'mc1': (0.0, 1.0),
     'mc2': (0.0, 1.0),
-    'mcc': (-1.0, 1.0),
     'bleu': (0.0, 100.0),
     'rouge1': (0.0, 1.0),
     'rouge2': (0.0, 1.0),
@@ -84,5 +79,4 @@ KNOWN_METRIC_BOUNDS = {
     'byte_perplexity': (1.0, float('inf')),
     'perplexity': (1.0, float('inf')),
     'bits_per_byte': (0.0, float('inf')),
-    'brier_score': (0.0, 1.0),
 }

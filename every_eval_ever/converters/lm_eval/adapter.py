@@ -10,6 +10,10 @@ from every_eval_ever.converters.common.adapter import (
     BaseEvaluationAdapter,
     SupportedLibrary,
 )
+from every_eval_ever.converters.common.metrics import (
+    count_unknown_bounds,
+    metric_bounds_fields,
+)
 from every_eval_ever.converters.common.utils import get_current_unix_timestamp
 from every_eval_ever.eval_types import (
     EvalLibrary,
@@ -22,7 +26,6 @@ from every_eval_ever.eval_types import (
     MetricConfig,
     ModelInfo,
     ScoreDetails,
-    ScoreType,
     SourceDataHf,
     SourceDataPrivate,
     SourceMetadata,
@@ -36,7 +39,7 @@ from every_eval_ever.helpers.io import (
 )
 
 from .utils import (
-    KNOWN_METRIC_BOUNDS,
+    LM_EVAL_METRIC_BOUNDS,
     MODEL_TYPE_TO_INFERENCE_ENGINE,
     MODEL_TYPE_TO_INFERENCE_PLATFORM,
     evaluation_result_id,
@@ -256,32 +259,24 @@ class LMEvalAdapter(BaseEvaluationAdapter):
             if not isinstance(stderr_val, (int, float)):
                 stderr_val = None
 
-            is_higher_better = higher_is_better.get(metric_name, True)
-
-            bounds = KNOWN_METRIC_BOUNDS.get(metric_name)
-
             description = metric_name
             if filter_name != 'none':
                 description = f'{metric_name} (filter: {filter_name})'
 
-            if bounds is None:
-                # Preserve metrics whose mathematical range is not yet known
-                # without falsely declaring them continuous and unbounded.
-                metric_config = MetricConfig(
-                    evaluation_description=description,
-                    metric_name=metric_name,
-                    lower_is_better=not is_higher_better,
-                    additional_details={'bounds_status': 'unknown'},
-                )
-            else:
-                metric_config = MetricConfig(
-                    evaluation_description=description,
-                    metric_name=metric_name,
-                    lower_is_better=not is_higher_better,
-                    score_type=ScoreType.continuous,
-                    min_score=bounds[0],
-                    max_score=bounds[1],
-                )
+            metric_fields = metric_bounds_fields(
+                metric_name, LM_EVAL_METRIC_BOUNDS
+            )
+            stated_direction = higher_is_better.get(metric_name)
+            if isinstance(stated_direction, bool):
+                # The log states the direction, which beats inferring it from
+                # the metric's name.
+                metric_fields['lower_is_better'] = not stated_direction
+
+            metric_config = MetricConfig(
+                evaluation_description=description,
+                metric_name=metric_name,
+                **metric_fields,
+            )
 
             uncertainty = None
             num_samples = (
@@ -355,11 +350,8 @@ class LMEvalAdapter(BaseEvaluationAdapter):
             or metadata_args.get('eval_library_version', 'unknown'),
         )
 
-        unknown_bounds_count = sum(
-            result.metric_config.additional_details is not None
-            and result.metric_config.additional_details.get('bounds_status')
-            == 'unknown'
-            for result in evaluation_results
+        unknown_bounds_count = count_unknown_bounds(
+            result.metric_config for result in evaluation_results
         )
         source_metadata = SourceMetadata(
             source_name='lm-evaluation-harness',

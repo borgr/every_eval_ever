@@ -49,6 +49,7 @@ from every_eval_ever.converters.common.adapter import (
     SupportedLibrary,
 )
 from every_eval_ever.converters.common.error import AdapterError
+from every_eval_ever.converters.common.metrics import metric_bounds_fields
 from every_eval_ever.converters.common.utils import (
     convert_timestamp_to_unix_format,
     get_current_unix_timestamp,
@@ -83,7 +84,6 @@ from every_eval_ever.eval_types import (
     ModelInfo,
     Sandbox,
     ScoreDetails,
-    ScoreType,
     SourceDataHf,
     SourceDataPrivate,
     SourceMetadata,
@@ -100,6 +100,11 @@ from every_eval_ever.helpers.io import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Inspect metrics that the schema carries inside `uncertainty` instead of as a
+# score of their own. `var` is deliberately absent: there is no field for a
+# variance, so dropping it as a score would lose the number.
+_UNCERTAINTY_METRICS = frozenset({'std', 'stddev', 'stderr'})
 
 
 class InspectAIAdapter(BaseEvaluationAdapter):
@@ -124,11 +129,16 @@ class InspectAIAdapter(BaseEvaluationAdapter):
         return SupportedLibrary.INSPECT_AI
 
     def _extract_uncertainty(
-        self, stderr_value: float, stddev_value: float, num_samples: int
+        self,
+        stderr_value: float | None,
+        stddev_value: float | None,
+        num_samples: int | None,
     ) -> Uncertainty:
         return Uncertainty(
+            # A standard error of exactly 0.0 is what a task every sample
+            # scores identically reports, so it is a value, not an absence.
             standard_error=StandardError(value=stderr_value)
-            if stderr_value
+            if stderr_value is not None
             else None,
             standard_deviation=stddev_value,
             num_samples=num_samples,
@@ -157,11 +167,8 @@ class InspectAIAdapter(BaseEvaluationAdapter):
             metric_config=MetricConfig(
                 evaluation_description=f'{metric_info.name} from scorer {scorer_name}',
                 metric_name=metric_info.name,
-                lower_is_better=False,  # no metadata available
-                score_type=ScoreType.continuous,
-                min_score=0,
-                max_score=1,
                 llm_scoring=llm_grader,
+                **metric_bounds_fields(metric_info.name),
             ),
             score_details=ScoreDetails(
                 score=metric_info.value,
@@ -226,10 +233,19 @@ class InspectAIAdapter(BaseEvaluationAdapter):
                 None,
             )
 
-            for _, metric_info in scorer.metrics.items():
-                if metric_info.name == 'stderr':
-                    continue
+            # Inspect reports dispersion as a metric of the scorer, and the
+            # schema carries it on the score it describes rather than beside it.
+            # Emitting it as its own score as well would repeat the number and
+            # claim a direction ("a higher standard deviation is better") that
+            # does not apply to it. It stays a score when it is the only thing
+            # the scorer reported, so that a run is never left with none.
+            scored_metrics = [
+                metric_info
+                for metric_info in scorer.metrics.values()
+                if metric_info.name not in _UNCERTAINTY_METRICS
+            ] or list(scorer.metrics.values())
 
+            for metric_info in scored_metrics:
                 scorer_name = scorer.name or scorer.scorer
 
                 result = self._build_evaluation_result(
@@ -622,7 +638,6 @@ class InspectAIAdapter(BaseEvaluationAdapter):
 
         model_path = eval_spec.model
 
-        num_samples = len(raw_eval_log.samples) if raw_eval_log.samples else 0
         single_sample = (
             raw_eval_log.samples[0] if raw_eval_log.samples else single_sample
         )
@@ -647,6 +662,17 @@ class InspectAIAdapter(BaseEvaluationAdapter):
         )
 
         results: EvalResults | None = raw_eval_log.results
+
+        # The scores were computed over the samples that completed, which the
+        # results header states. `raw_eval_log.samples` is only populated when
+        # the log was read with its samples, so its length is a fallback: for a
+        # header-only log it is 0, which would understate every score's
+        # num_samples rather than leave it unstated.
+        num_samples = (
+            results.completed_samples or results.total_samples
+            if results
+            else None
+        ) or (len(raw_eval_log.samples) if raw_eval_log.samples else None)
 
         evaluation_task_name = eval_spec.task_display_name or eval_spec.task
 
