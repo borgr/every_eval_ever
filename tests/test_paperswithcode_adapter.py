@@ -194,10 +194,10 @@ def _resolved_metric(**over):
     return adapter.ResolvedMetric(**{**fields, **over})
 
 
-def _convert(resolver=None):
+def _convert(resolver=None, evaluations=None):
     resolver = resolver or _make_resolver()
     return adapter.build_logs(
-        _evaluations(),
+        _evaluations() if evaluations is None else evaluations,
         _datasets(),
         _tasks(),
         resolver,
@@ -209,8 +209,8 @@ def _convert(resolver=None):
     )
 
 
-def _build(resolver=None):
-    return _convert(resolver).records
+def _build(resolver=None, evaluations=None):
+    return _convert(resolver, evaluations).records
 
 
 def test_parse_metric_value_edge_cases():
@@ -383,6 +383,92 @@ def test_unbounded_metrics_emitted_with_inf_and_reported():
     _build(resolver)
     # PSNR (row 13524) and AbsRel (row 11533) are unbounded in the registry
     assert set(resolver.unbounded_emitted) == {'PSNR', 'AbsRel'}
+
+
+def _rows(*per_row, model_name='MoGe-2'):
+    """One model, one leaderboard row per ``(is_open, hf_model_url)`` pair."""
+    return [
+        {
+            'id': f'7770{i}',
+            'paper_id': '900',
+            'task_id': '10',
+            'dataset_id': '218',
+            'model_name': model_name,
+            'metrics': json.dumps({'delta1': '0.991'}),
+            'evaluated_on': '2026-07-06',
+            'created_at': '2026-06-18 13:13:06+00',
+            'hf_model_url': url,
+            'is_open': flag,
+            'external': 'f',
+            'harness': None,
+        }
+        for i, (flag, url) in enumerate(per_row)
+    ]
+
+
+def _rows_flagged(*flags):
+    url = 'https://huggingface.co/Ruicheng/moge-2-vitl'
+    return _rows(*((flag, url) for flag in flags))
+
+
+def test_rows_spelling_one_model_two_ways_make_one_log():
+    """PwC spells a model differently per row; only some rows carry the HF url.
+
+    Left as distinct ids the results split across two records whose paths differ
+    only in case -- and on a case-insensitive filesystem, silently collide.
+    """
+    # the url row is spelled moonshotai/Kimi-K2.5; the row without one falls back
+    # to the helper's developer and a lowercased slug, moonshotai/kimi-k2.5
+    url = 'https://huggingface.co/moonshotai/Kimi-K2.5'
+    bundles = _build(
+        evaluations=_rows(
+            ('t', url), ('t', None), ('t', url), model_name='Kimi-K2.5'
+        )
+    )
+    assert len(bundles) == 1
+    log = bundles[0].log
+    assert log.model_info.id == 'moonshotai/Kimi-K2.5'
+    assert (bundles[0].developer, bundles[0].model) == (
+        'moonshotai',
+        'Kimi-K2.5',
+    )
+    # every row's results reach the one log rather than being split in two
+    assert len(log.evaluation_results) == 3
+
+
+def test_canonical_spelling_prefers_the_hf_url_over_the_slug():
+    hf = ('moonshotai/Kimi-K2.5', 'moonshotai', 'Kimi-K2.5')
+    slug = ('moonshotai/kimi-k2.5', 'moonshotai', 'kimi-k2.5')
+    assert adapter.canonical_spelling({hf, slug}) == hf
+    assert adapter.canonical_spelling({slug, hf}) == hf
+    # a lone spelling is kept as-is, whichever kind it is
+    assert adapter.canonical_spelling({slug}) == slug
+    # urls that disagree in case still resolve to one, and to the same one
+    other = ('moonshotai/KIMI-K2.5', 'moonshotai', 'KIMI-K2.5')
+    assert adapter.canonical_spelling({hf, other}) == adapter.canonical_spelling(
+        {other, hf}
+    )
+
+
+def _availability(*flags):
+    bundles = _build(evaluations=_rows_flagged(*flags))
+    assert len(bundles) == 1
+    return bundles[0].log.model_info.additional_details
+
+
+def test_model_availability_reads_every_row_of_a_model_not_just_the_first():
+    assert _availability('t')['model_availability'] == 'open_weights'
+    assert _availability('f')['model_availability'] == 'closed_weights'
+    assert _availability(None)['model_availability'] == 'unknown'
+    assert _availability('t', 't')['model_availability'] == 'open_weights'
+    # rows that contradict each other name nothing; taking the first row's flag
+    # would make the answer depend on dump order
+    assert _availability('t', 'f')['model_availability'] == 'unknown'
+    assert _availability('f', 't')['model_availability'] == 'unknown'
+    # a stated flag still counts when another row simply omits it
+    assert _availability('t', None)['model_availability'] == 'open_weights'
+    # PwC records what the model is, never how the reporting party reached it
+    assert _availability('t')['deployment_type'] == 'unknown'
 
 
 def test_additional_details_are_all_strings():

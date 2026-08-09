@@ -1011,8 +1011,47 @@ def build_source_metadata(
     )
 
 
+def canonical_spelling(
+    spellings: set[tuple[str, str, str]],
+) -> tuple[str, str, str]:
+    """Pick one ``(model_id, developer, model_slug)`` for one model.
+
+    PwC spells the same model differently from row to row and only some rows
+    carry the HF url that settles it -- ``moonshotai/Kimi-K2.5`` on one,
+    ``kimi-k2.5`` on the next. Each spelling taken at face value becomes its own
+    log, splitting the model's results between two records whose paths differ
+    only in case: two directories on Linux, and on a case-insensitive filesystem
+    one whose name depends on which row was read first.
+
+    HF's spelling wins, and is recognisable without re-reading the row -- the
+    fallback slug is always lowercased, so an uppercase letter means the url.
+    Sorting settles the rest (some PwC urls disagree in case), so the choice
+    never depends on row order.
+    """
+    from_hf = sorted(s for s in spellings if s[0] != s[0].lower())
+    return (from_hf or sorted(spellings))[0]
+
+
+def model_availability(open_flags: set[bool | None]) -> str:
+    """Map PwC's ``is_open`` flags for one model onto the schema's axis.
+
+    ``is_open`` is recorded per leaderboard row, so a model with several rows
+    carries several flags. Only an unambiguous set names the model: an empty one
+    (no row said), or rows that contradict each other, is ``unknown`` rather than
+    a coin toss on whichever row happened to be read first.
+    """
+    stated = {flag for flag in open_flags if flag is not None}
+    if len(stated) != 1:
+        return 'unknown'
+    return 'open_weights' if stated.pop() else 'closed_weights'
+
+
 def build_model_info(
-    model_id: str, developer: str, display_name: str, ev: dict[str, Any]
+    model_id: str,
+    developer: str,
+    display_name: str,
+    ev: dict[str, Any],
+    open_flags: set[bool | None],
 ) -> ModelInfo:
     return ModelInfo(
         name=display_name,
@@ -1023,7 +1062,11 @@ def build_model_info(
                 'raw_model_name': display_name,
                 'hf_model_url': ev.get('hf_model_url'),
                 'num_parameters': ev.get('num_parameters'),
-                'is_open': coerce_bool(ev.get('is_open')),
+                # `is_open` is a claim about the weights, so it names
+                # model_availability. deployment_type keeps the schema's
+                # `unknown`: PwC records what the model is, never how the party
+                # reporting the number reached it.
+                'model_availability': model_availability(open_flags),
             }
         ),
     )
@@ -1078,10 +1121,13 @@ def build_logs(
     reference rather than dropped, so the caller can report every omission and
     exit non-zero.
     """
+    # Keyed on the case-folded model id, so rows that spell one model two ways
+    # land in one log rather than one each (see `canonical_spelling`).
     groups: dict[str, list[EvaluationResult]] = defaultdict(list)
-    infos: dict[str, ModelInfo] = {}
     harnesses: dict[str, set[str]] = defaultdict(set)
-    devmodel: dict[str, tuple[str, str]] = {}
+    open_flags: dict[str, set[bool | None]] = defaultdict(set)
+    spellings: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
+    first_row: dict[str, tuple[str, dict[str, Any]]] = {}
     failures: list[SourceRecordFailure] = []
     total = 0
 
@@ -1152,22 +1198,26 @@ def build_logs(
                 )
             )
             continue
-        groups[model_id].extend(results)
+        key = model_id.lower()
+        groups[key].extend(results)
         harness = _clean_harness(ev.get('harness'))
         if harness:
-            harnesses[model_id].add(harness)
-        if model_id not in infos:
-            infos[model_id] = build_model_info(model_id, developer, display, ev)
-            devmodel[model_id] = (developer, model_slug)
+            harnesses[key].add(harness)
+        open_flags[key].add(coerce_bool(ev.get('is_open')))
+        spellings[key].add((model_id, developer, model_slug))
+        # The remaining model fields repeat across a model's rows; take the first
+        # row of the spelling that wins, so name and url agree with the id.
+        first_row.setdefault(model_id, (display, ev))
 
     bundles: list[LogBundle] = []
-    for model_id, results in sorted(groups.items()):
-        developer, model_slug = devmodel[model_id]
+    for key, results in sorted(groups.items()):
+        model_id, developer, model_slug = canonical_spelling(spellings[key])
+        display, model_row = first_row[model_id]
         # eval_library is reserved for the eval *harness* (inspect_ai/lm-eval/helm).
         # PwC's `harness` column is usually an agent scaffold (SWE-agent, OpenHands)
         # or "Not reported" -- NOT a harness -- so eval_library stays 'unknown' and
         # any scaffold is recorded in additional_details instead.
-        harness_set = harnesses.get(model_id, set())
+        harness_set = harnesses.get(key, set())
         eval_lib_details = (
             {'pwc_harness': ', '.join(sorted(harness_set))}
             if harness_set
@@ -1186,7 +1236,9 @@ def build_logs(
                 version='unknown',
                 additional_details=eval_lib_details,
             ),
-            model_info=infos[model_id],
+            model_info=build_model_info(
+                model_id, developer, display, model_row, open_flags[key]
+            ),
             evaluation_results=sorted(
                 results, key=lambda r: r.evaluation_result_id or ''
             ),
