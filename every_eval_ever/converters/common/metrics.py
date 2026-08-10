@@ -35,6 +35,7 @@ SHARED_METRIC_BOUNDS: dict[str, tuple[float, float]] = {
     'std': (0.0, float('inf')),
     'stddev': (0.0, float('inf')),
     'stderr': (0.0, float('inf')),
+    'bootstrap_stderr': (0.0, float('inf')),
     'var': (0.0, float('inf')),
 }
 
@@ -59,7 +60,7 @@ LOWER_IS_BETTER: frozenset[str] = frozenset(
 # (`uncertainty.standard_error`, `uncertainty.standard_deviation`), so a
 # converter should prefer routing them there over emitting them as scores.
 DISPERSION_METRICS: frozenset[str] = frozenset(
-    {'std', 'stddev', 'stderr', 'var'}
+    {'std', 'stddev', 'stderr', 'bootstrap_stderr', 'var'}
 )
 
 _UNKNOWN_BOUNDS = {'bounds_status': 'unknown'}
