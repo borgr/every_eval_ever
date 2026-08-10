@@ -406,11 +406,6 @@ def _rows(*per_row, model_name='MoGe-2'):
     ]
 
 
-def _rows_flagged(*flags):
-    url = 'https://huggingface.co/Ruicheng/moge-2-vitl'
-    return _rows(*((flag, url) for flag in flags))
-
-
 def test_rows_spelling_one_model_two_ways_make_one_log():
     """PwC spells a model differently per row; only some rows carry the HF url.
 
@@ -450,8 +445,17 @@ def test_canonical_spelling_prefers_the_hf_url_over_the_slug():
     )
 
 
-def _availability(*flags):
-    bundles = _build(evaluations=_rows_flagged(*flags))
+def _availability(*flags, url=None):
+    """One model, one row per ``is_open`` flag, each row linking ``url`` or not.
+
+    The model name is one `helpers.developer` resolves, so a row carrying no url
+    still names a publisher and reaches a log rather than becoming a failure.
+    """
+    bundles = _build(
+        evaluations=_rows(
+            *((flag, url) for flag in flags), model_name='Kimi-K2.5'
+        )
+    )
     assert len(bundles) == 1
     return bundles[0].log.model_info.additional_details
 
@@ -469,6 +473,21 @@ def test_model_availability_reads_every_row_of_a_model_not_just_the_first():
     assert _availability('t', None)['model_availability'] == 'open_weights'
     # PwC records what the model is, never how the reporting party reached it
     assert _availability('t')['deployment_type'] == 'unknown'
+
+
+def test_a_linked_weight_repo_contradicts_a_not_open_flag():
+    """PwC ships this: `osunlp/UGround-V1-7B` is flagged not-open on a row that
+    links the repo its weights are in. Both fields reach the record, so reading
+    the flag alone files a model as closed beside a link to its own weights.
+    """
+    url = 'https://huggingface.co/osunlp/UGround-V1-7B'
+    assert _availability('f', url=url)['model_availability'] == 'unknown'
+    assert _availability('f', 'f', url=url)['model_availability'] == 'unknown'
+    # only a not-open flag is put in doubt; a linked repo agreeing with an open
+    # one is the ordinary case, 738 of the dump's 1,455 models
+    assert _availability('t', url=url)['model_availability'] == 'open_weights'
+    # and a flag with no repo to contradict it still names the model
+    assert _availability('f')['model_availability'] == 'closed_weights'
 
 
 def test_additional_details_are_all_strings():

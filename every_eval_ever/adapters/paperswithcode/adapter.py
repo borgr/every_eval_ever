@@ -1032,18 +1032,25 @@ def canonical_spelling(
     return (from_hf or sorted(spellings))[0]
 
 
-def model_availability(open_flags: set[bool | None]) -> str:
+def model_availability(open_flags: set[bool | None], repo_linked: bool) -> str:
     """Map PwC's ``is_open`` flags for one model onto the schema's axis.
 
     ``is_open`` is recorded per leaderboard row, so a model with several rows
     carries several flags. Only an unambiguous set names the model: an empty one
     (no row said), or rows that contradict each other, is ``unknown`` rather than
     a coin toss on whichever row happened to be read first.
+
+    A ``not open`` flag on a model whose rows link an HF model repo is the same
+    kind of disagreement -- the source names a home for the weights it says are
+    unavailable -- so that is ``unknown`` too, rather than a record whose own two
+    adjacent fields contradict each other.
     """
     stated = {flag for flag in open_flags if flag is not None}
     if len(stated) != 1:
         return 'unknown'
-    return 'open_weights' if stated.pop() else 'closed_weights'
+    if stated.pop():
+        return 'open_weights'
+    return 'unknown' if repo_linked else 'closed_weights'
 
 
 def build_model_info(
@@ -1052,6 +1059,7 @@ def build_model_info(
     display_name: str,
     ev: dict[str, Any],
     open_flags: set[bool | None],
+    repo_linked: bool,
 ) -> ModelInfo:
     return ModelInfo(
         name=display_name,
@@ -1066,7 +1074,7 @@ def build_model_info(
                 # model_availability. deployment_type keeps the schema's
                 # `unknown`: PwC records what the model is, never how the party
                 # reporting the number reached it.
-                'model_availability': model_availability(open_flags),
+                'model_availability': model_availability(open_flags, repo_linked),
             }
         ),
     )
@@ -1126,6 +1134,7 @@ def build_logs(
     groups: dict[str, list[EvaluationResult]] = defaultdict(list)
     harnesses: dict[str, set[str]] = defaultdict(set)
     open_flags: dict[str, set[bool | None]] = defaultdict(set)
+    repo_linked: dict[str, bool] = defaultdict(bool)
     spellings: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
     first_row: dict[str, tuple[str, dict[str, Any]]] = {}
     failures: list[SourceRecordFailure] = []
@@ -1204,6 +1213,7 @@ def build_logs(
         if harness:
             harnesses[key].add(harness)
         open_flags[key].add(coerce_bool(ev.get('is_open')))
+        repo_linked[key] |= bool(ev.get('hf_model_url'))
         spellings[key].add((model_id, developer, model_slug))
         # The remaining model fields repeat across a model's rows; take the first
         # row of the spelling that wins, so name and url agree with the id.
@@ -1237,7 +1247,12 @@ def build_logs(
                 additional_details=eval_lib_details,
             ),
             model_info=build_model_info(
-                model_id, developer, display, model_row, open_flags[key]
+                model_id,
+                developer,
+                display,
+                model_row,
+                open_flags[key],
+                repo_linked[key],
             ),
             evaluation_results=sorted(
                 results, key=lambda r: r.evaluation_result_id or ''
