@@ -30,9 +30,8 @@ results into Every Eval Ever aggregate logs.
   harness is unmistakably `lm-evaluation-harness` (from the `acc,none` /
   `acc_stderr,none` / `bootstrap_iters` keys), so `eval_library` names it.
 - **evaluation_id** is keyed on the result file's own path and timestamp (parsed
-  from the filename), so re-ingesting the same run is idempotent. It deliberately
-  does *not* use the resolved model repo or the registry id: an alias redirect or a
-  registry re-map moves those, and would hand one source file a second identity.
+  from the filename), so re-ingesting the same run is idempotent. It does *not* use
+  the resolved model repo or the registry id, either of which can move.
   Root-level 2-segment baselines (hand-curated closed-model paper numbers, e.g.
   `GPT-4/results_*.json`) have different provenance and are skipped; hidden dirs and
   Jupyter `*-checkpoint.json` files are filtered out.
@@ -53,12 +52,10 @@ alias check), `--replace-existing`.
 Every selected result file is accounted for: a file that yields no record is a
 failure, not a skip, so it lands in `adapter_reports/` and the command exits
 non-zero. The 5 hand-curated baselines are recorded as exclusions and do not fail
-the run. The report is rewritten on every run, a clean one included — an earlier
-run's copy left in place would read as this run's — and it is swapped in atomically,
-so an interrupted write cannot replace a complete report with a truncated one.
+the run. The report is rewritten on every run, a clean one included, and swapped in
+atomically.
 
 Record filenames are fresh uuid4s, so a re-run over a populated output directory is
-an error until `--replace-existing` is passed — otherwise it would add a second copy
-of every `evaluation_id` rather than replace it. With that flag the prior records are
-removed only once this run's records are on disk, so a validation or write failure
-leaves the previous publication whole instead of a gap where it used to be.
+an error until `--replace-existing` is passed. With that flag the prior records are
+removed only once this run's records are on disk, so a failed run leaves the previous
+publication whole rather than a gap where it used to be.
