@@ -49,7 +49,7 @@ from every_eval_ever.converters.common.adapter import (
 )
 from every_eval_ever.converters.common.metrics import (
     count_unknown_bounds,
-    metric_bounds_fields,
+    metric_config_fields,
 )
 from every_eval_ever.converters.common.utils import sha256_file
 from every_eval_ever.converters.helm.instance_level_adapter import (
@@ -59,9 +59,11 @@ from every_eval_ever.converters.helm.instance_level_adapter import (
     _stat_name_part,
 )
 from every_eval_ever.converters.helm.metrics import (
+    HELM_HARNESS_ID,
     HELM_METRIC_BOUNDS,
     is_core_metric,
     metric_bounds_name,
+    metric_parameters,
 )
 from every_eval_ever.converters.helm.utils import extract_reasoning
 from every_eval_ever.eval_types import (
@@ -576,8 +578,12 @@ class HELMAdapter(BaseEvaluationAdapter):
             metric_config = MetricConfig(
                 evaluation_description=metric_name,
                 metric_name=metric_name,
-                **metric_bounds_fields(
-                    metric_bounds_name(metric_name), HELM_METRIC_BOUNDS
+                **metric_config_fields(
+                    metric_name,
+                    harness=HELM_HARNESS_ID,
+                    bounds_table=HELM_METRIC_BOUNDS,
+                    lookup_name=metric_bounds_name(metric_name),
+                    metric_parameters=metric_parameters(metric_name),
                 ),
             )
 
