@@ -108,6 +108,20 @@ def test_the_same_metric_name_can_mean_two_scales():
     assert (helm_bleu.min_score, helm_bleu.max_score) == (0.0, 1.0)
 
 
+def test_a_multi_class_brier_score_is_allowed_its_full_range():
+    """A Brier score over `n` classes runs to 2.0, not to 1.0.
+
+    lm-eval computes `mean(sum((softmax(lls) - one_hot(gold)) ** 2))`, so a model
+    putting all its mass on one wrong class scores 2.0. Declaring `[0, 1]` makes
+    the validator warn that a legitimate score is out of range, which the
+    converter suite treats as a failure.
+    """
+    config = _config('brier_score')
+
+    assert (config.min_score, config.max_score) == (0.0, 2.0)
+    assert config.lower_is_better is True
+
+
 def test_a_harness_table_can_override_the_shared_bounds():
     shared = _config('accuracy')
     overridden = _config('accuracy', {'accuracy': (0.0, 100.0)})

@@ -39,7 +39,9 @@ SHARED_METRIC_BOUNDS: dict[str, tuple[float, float]] = {
     'precision': (0.0, 1.0),
     'recall': (0.0, 1.0),
     'mcc': (-1.0, 1.0),
-    'brier_score': (0.0, 1.0),
+    # Not [0, 1]: the multi-class Brier score sums the squared error over every
+    # class, so all the mass on one wrong class costs 2.0.
+    'brier_score': (0.0, 2.0),
     # Dispersion of a score distribution, not a score: non-negative, and
     # unbounded above unless the underlying metric is bounded.
     'std': (0.0, float('inf')),
