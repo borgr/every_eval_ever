@@ -499,9 +499,7 @@ def test_unknown_metric_is_preserved_without_invented_bounds():
     assert result.metric_config.score_type is None
     assert result.metric_config.min_score is None
     assert result.metric_config.max_score is None
-    assert result.metric_config.additional_details == {
-        'bounds_status': 'unknown'
-    }
+    assert result.metric_config.additional_details['bounds_status'] == 'unknown'
 
 
 def test_unknown_metric_count_is_recorded_on_the_log():

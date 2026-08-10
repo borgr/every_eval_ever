@@ -444,9 +444,7 @@ def test_metric_bounds_are_claimed_only_where_they_are_known():
 
     assert by_metric['bleu_2'].min_score is None
     assert by_metric['bleu_2'].max_score is None
-    assert by_metric['bleu_2'].additional_details == {
-        'bounds_status': 'unknown'
-    }
+    assert by_metric['bleu_2'].additional_details['bounds_status'] == 'unknown'
     assert converted_eval.source_metadata.additional_details == {
         'metrics_with_unknown_bounds': '1'
     }

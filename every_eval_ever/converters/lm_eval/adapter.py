@@ -12,7 +12,7 @@ from every_eval_ever.converters.common.adapter import (
 )
 from every_eval_ever.converters.common.metrics import (
     count_unknown_bounds,
-    metric_bounds_fields,
+    metric_config_fields,
 )
 from every_eval_ever.converters.common.utils import get_current_unix_timestamp
 from every_eval_ever.eval_types import (
@@ -39,6 +39,7 @@ from every_eval_ever.helpers.io import (
 )
 
 from .utils import (
+    LM_EVAL_HARNESS_ID,
     LM_EVAL_METRIC_BOUNDS,
     MODEL_TYPE_TO_INFERENCE_ENGINE,
     MODEL_TYPE_TO_INFERENCE_PLATFORM,
@@ -269,8 +270,10 @@ class LMEvalAdapter(BaseEvaluationAdapter):
             if filter_name != 'none':
                 description = f'{metric_name} (filter: {filter_name})'
 
-            metric_fields = metric_bounds_fields(
-                metric_name, LM_EVAL_METRIC_BOUNDS
+            metric_fields = metric_config_fields(
+                metric_name,
+                harness=LM_EVAL_HARNESS_ID,
+                bounds_table=LM_EVAL_METRIC_BOUNDS,
             )
             stated_direction = higher_is_better.get(metric_name)
             if isinstance(stated_direction, bool):

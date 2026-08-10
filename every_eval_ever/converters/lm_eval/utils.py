@@ -126,13 +126,20 @@ MODEL_TYPE_TO_INFERENCE_ENGINE = {
     'gguf': 'llama.cpp',
 }
 
+# The registry's canonical slug for this harness, which is what namespaces the
+# metric ids it reports that the registry does not carry.
+LM_EVAL_HARNESS_ID = 'lm-evaluation-harness'
+
 # Bounds for the metrics lm-eval spells its own way, layered over
-# converters/common/metrics.py::SHARED_METRIC_BOUNDS. lm-eval's `bleu` is
-# sacrebleu, which reports 0-100 rather than the 0-1 of nltk's sentence_bleu.
+# converters/common/metrics.py::SHARED_METRIC_BOUNDS. lm-eval's `bleu`, `chrf`
+# and `ter` are sacrebleu's, which report 0-100 rather than the 0-1 of nltk's
+# sentence_bleu; `ter` has no ceiling, since a hypothesis can need more edits
+# than the reference has tokens.
 LM_EVAL_METRIC_BOUNDS = {
     'mc1': (0.0, 1.0),
     'mc2': (0.0, 1.0),
     'bleu': (0.0, 100.0),
+    'chrf': (0.0, 100.0),
     'rouge1': (0.0, 1.0),
     'rouge2': (0.0, 1.0),
     'rougeL': (0.0, 1.0),

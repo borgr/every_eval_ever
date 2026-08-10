@@ -49,7 +49,7 @@ from every_eval_ever.converters.common.adapter import (
     SupportedLibrary,
 )
 from every_eval_ever.converters.common.error import AdapterError
-from every_eval_ever.converters.common.metrics import metric_bounds_fields
+from every_eval_ever.converters.common.metrics import metric_config_fields
 from every_eval_ever.converters.common.utils import (
     convert_timestamp_to_unix_format,
     get_current_unix_timestamp,
@@ -60,6 +60,7 @@ from every_eval_ever.converters.inspect.instance_level_adapter import (
     evaluation_result_id,
 )
 from every_eval_ever.converters.inspect.utils import (
+    INSPECT_HARNESS_ID,
     apply_supplemental_eval_details,
     extract_model_info_from_model_path,
     parse_supplemental_eval_details,
@@ -178,7 +179,9 @@ class InspectAIAdapter(BaseEvaluationAdapter):
                 evaluation_description=f'{metric_info.name} from scorer {scorer_name}',
                 metric_name=metric_info.name,
                 llm_scoring=llm_grader,
-                **metric_bounds_fields(metric_info.name),
+                **metric_config_fields(
+                    metric_info.name, harness=INSPECT_HARNESS_ID
+                ),
             ),
             score_details=ScoreDetails(
                 score=metric_info.value,

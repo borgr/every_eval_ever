@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Optional
 
+# The registry's canonical slug for this harness, which is what namespaces the
+# metric ids it reports that the registry does not carry.
+HELM_HARNESS_ID = 'helm'
+
 # HELM emits both benchmark metrics and bookkeeping telemetry in stats.json /
 # per_instance_stats.json. In this PR, only benchmark-quality metrics become
 # EEE aggregate/detail metric rows. Bookkeeping can be mapped to token_usage,
@@ -60,3 +64,14 @@ def metric_bounds_name(metric_name: str) -> str:
     result is reported.
     """
     return metric_name.split('@', 1)[0]
+
+
+def metric_parameters(metric_name: str) -> Optional[dict]:
+    """The parameters HELM's ``@k`` suffix states, as the schema's own field.
+
+    The suffix belongs in ``metric_parameters`` rather than only in the metric's
+    name, so a consumer can tell ``exact_match@5`` from ``exact_match@1``
+    without parsing it back out.
+    """
+    _, _, suffix = metric_name.partition('@')
+    return {'k': int(suffix)} if suffix.isdigit() else None

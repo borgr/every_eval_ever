@@ -12,6 +12,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from every_eval_ever.converters.common.error import AdapterError
+from every_eval_ever.converters.common.metrics import (
+    METRIC_ID_REGISTRY_REVISION,
+)
 from every_eval_ever.converters.inspect.adapter import InspectAIAdapter
 from every_eval_ever.converters.inspect.utils import (
     extract_model_info_from_model_path,
@@ -410,7 +413,7 @@ def test_metric_bounds_are_claimed_only_where_they_are_known():
 
     assert by_metric['mean'].min_score is None
     assert by_metric['mean'].max_score is None
-    assert by_metric['mean'].additional_details == {'bounds_status': 'unknown'}
+    assert by_metric['mean'].additional_details['bounds_status'] == 'unknown'
 
 
 def test_num_samples_comes_from_the_results_header():
@@ -604,9 +607,9 @@ def test_a_scorer_reporting_only_dispersion_does_not_repeat_it():
     assert result.metric_config.metric_name == 'std'
     assert result.score_details.score == 0.3
     assert result.score_details.uncertainty.standard_deviation is None
-    assert result.metric_config.additional_details == {
-        'polarity': 'not_applicable'
-    }
+    assert result.metric_config.additional_details['polarity'] == (
+        'not_applicable'
+    )
 
 
 def test_extract_evaluation_results_two_scorers_two_metrics_each():
@@ -776,7 +779,12 @@ def test_supplemental_eval_details_fill_only_top_level_fields():
     # Converter-synthetic defaults are override-eligible.
     assert result.metric_config.lower_is_better is True
     assert result.metric_config.evaluation_description == 'should_not_overwrite'
-    assert result.metric_config.additional_details == {'normalization': 'none'}
+    # Exhaustive: supplied details merge with what the converter resolved rather
+    # than replacing it, and nothing else leaks in.
+    assert result.metric_config.additional_details == {
+        'normalization': 'none',
+        'metric_id_registry_revision': METRIC_ID_REGISTRY_REVISION,
+    }
 
 
 def test_supplemental_eval_details_applies_top_level_score_details():

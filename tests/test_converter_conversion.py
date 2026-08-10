@@ -18,6 +18,7 @@ import json
 
 import pytest
 
+from every_eval_ever.converters.common.metrics import CANONICAL_METRIC_IDS
 from tests.converter_cases import (
     CASES,
     ConverterCase,
@@ -99,6 +100,18 @@ def test_conversion_yields_the_expected_records(case, tmp_path):
             '`metric_config.metric_name`; `None` here means the converter left it '
             'unset, and `evaluation_name` is for the evaluation.'
         )
+    if case.metric_ids is not None:
+        converted = {
+            result['metric_config'].get('metric_id')
+            for log in logs
+            for result in log['evaluation_results']
+        }
+        assert converted == case.metric_ids, (
+            f'{case.source} identified its metrics as '
+            f'{sorted(converted, key=str)}, expected {sorted(case.metric_ids)}. '
+            'This is the field consumers join on across sources, so a change '
+            'here silently splits or merges a query nobody here will run.'
+        )
     if case.uncertainty_keys is not None:
         results = [
             result for log in logs for result in log['evaluation_results']
@@ -158,6 +171,54 @@ def test_conversion_yields_the_expected_records(case, tmp_path):
         assert written == declared, (
             f'{case.source} wrote {written} row(s) but reported {declared}'
         )
+
+
+def test_every_metric_id_is_either_canonical_or_openly_namespaced(
+    case, tmp_path
+):
+    """No converter may mint a global id the registry has not granted.
+
+    An id with no dot claims to be the canonical name for that quantity
+    everywhere, so it has to be one the registry actually carries; anything else
+    says which harness it came from and marks itself unregistered. A bare
+    `quasi_exact_match` would look canonical while joining to nothing, which is
+    the failure this rule exists to prevent. Applies to every case, so a converter
+    added later inherits it without declaring anything.
+    """
+    logs = [
+        json.loads(path.read_text(encoding='utf-8'))
+        for path in convert(case, tmp_path)
+        if path.suffix == '.json'
+    ]
+    canonical = set(CANONICAL_METRIC_IDS.values())
+
+    offenders = []
+    for log in logs:
+        for result in log['evaluation_results']:
+            config = result['metric_config']
+            metric_id = config.get('metric_id')
+            details = config.get('additional_details') or {}
+            unregistered = details.get('metric_id_status') == 'unregistered'
+            if not metric_id:
+                offenders.append(f'{config.get("metric_name")}: no metric_id')
+            elif '.' in metric_id:
+                if not unregistered:
+                    offenders.append(f'{metric_id}: namespaced but unmarked')
+            elif metric_id not in canonical:
+                offenders.append(
+                    f'{metric_id}: bare id, not in the registry map'
+                )
+            elif unregistered:
+                offenders.append(
+                    f'{metric_id}: canonical but marked unregistered'
+                )
+
+    assert not offenders, (
+        f'{case.source} published metric ids that claim more than they can '
+        f'deliver: {offenders}. Map the name in '
+        'converters/common/metrics.py::CANONICAL_METRIC_IDS if the registry '
+        'carries it, and otherwise leave it namespaced.'
+    )
 
 
 def test_required_source_paths_are_present_in_the_fixture(case):
