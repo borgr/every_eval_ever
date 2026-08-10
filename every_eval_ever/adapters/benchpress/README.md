@@ -68,10 +68,10 @@ that is already a full sha is used as given.
   (leaderboard, aggregator, academic paper). `first_party` takes **both** a
   provider-authored `source_type` **and** a citation whose *domain* carries the
   scored model's provider name (`openai.com`, `cdn.amazon.science`,
-  `moonshotai.github.io`). Anything else is `other` — including a provider's own
-  document scored for a competitor's model, and a provider page on a host that
-  does not spell the provider's name (`storage.googleapis.com`,
-  `huggingface.co/Qwen/…`, `lf3-static.bytednsdoc.com`).
+  `moonshotai.github.io`). Anything else is `other` — a competitor's score
+  tabulated in a provider's own document, and a provider's page on a host that
+  does not spell its name (`storage.googleapis.com`, `huggingface.co/Qwen/…`,
+  `lf3-static.bytednsdoc.com`), both land there.
 - A score outside the range its own benchmark declares (the export mixes scales
   within a benchmark — `mt_bench_101` declares 1–10 and carries values up to
   90.2) is reported as an unconvertible source row, not rescaled by guess.
