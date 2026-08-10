@@ -650,15 +650,12 @@ def write_conversion_report(result: SourceConversionResult[LogBundle],
                             output_dir: Path) -> Path:
     """Persist this run's accounting, replacing any previous run's copy in one step.
 
-    Written before publication, because it accounts for the conversion: a
-    publication error is when the record of what was rejected is most worth
-    having. Written on every run, because a report left behind by an earlier run
-    reads as current, and only the run that found nothing to report can say so.
-    The swap is atomic, so an interrupted write cannot leave a truncated report
-    where a complete one was.
+    Called on every run, a clean one included, and before publication.
     """
     final = default_failure_report_path(output_dir)
     staged = save_failure_report(result, final.with_name(final.name + '.tmp'))
+    # Staged then renamed: an interrupted write must not truncate the report
+    # a complete run left behind.
     os.replace(staged, final)
     return final
 
