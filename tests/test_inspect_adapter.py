@@ -68,9 +68,17 @@ def _make_metric(name: str, value: float):
     return SimpleNamespace(name=name, value=value)
 
 
-def _make_scorer(scorer_name: str, metrics: dict[str, object]):
+def _make_scorer(
+    scorer_name: str,
+    metrics: dict[str, object],
+    scored_samples: int | None = None,
+):
     return SimpleNamespace(
-        name=scorer_name, scorer=scorer_name, params=None, metrics=metrics
+        name=scorer_name,
+        scorer=scorer_name,
+        params=None,
+        metrics=metrics,
+        scored_samples=scored_samples,
     )
 
 
@@ -495,6 +503,110 @@ def test_extract_evaluation_results_one_scorer_with_two_metrics():
         'choice:f1',
     }
     assert result_ids_by_scorer == {'choice': ['choice:accuracy', 'choice:f1']}
+
+
+def test_each_scorer_counts_the_samples_it_could_score():
+    """Inspect computes a scorer's metrics over the samples that scorer scored, and
+    says how many those were; the run-wide count includes the ones it skipped."""
+    adapter = InspectAIAdapter()
+    scores = [
+        _make_scorer(
+            'strict',
+            {'accuracy': _make_metric('accuracy', 0.5)},
+            scored_samples=7,
+        ),
+        _make_scorer('lenient', {'accuracy': _make_metric('accuracy', 0.9)}),
+    ]
+
+    results, _ = adapter._extract_evaluation_results(
+        evaluation_task_name='synthetic/task',
+        scores=scores,
+        source_data=SourceDataHf(
+            dataset_name='synthetic_ds', source_type='hf_dataset'
+        ),
+        generation_config=GenerationConfig(),
+        num_samples=10,
+        timestamp='1234567890',
+    )
+
+    by_id = {
+        result.evaluation_result_id: result.score_details.uncertainty
+        for result in results
+    }
+    assert by_id['strict:accuracy'].num_samples == 7
+    # No count of its own, so the run's stands in.
+    assert by_id['lenient:accuracy'].num_samples == 10
+
+
+def test_standard_error_says_how_inspect_computed_it():
+    """`stderr` is the analytic standard error of the mean and `bootstrap_stderr`
+    resamples, so neither should be published without saying which it was."""
+    adapter = InspectAIAdapter()
+    scores = [
+        _make_scorer(
+            'analytic',
+            {
+                'accuracy': _make_metric('accuracy', 0.5),
+                'stderr': _make_metric('stderr', 0.05),
+            },
+        ),
+        _make_scorer(
+            'resampled',
+            {
+                'accuracy': _make_metric('accuracy', 0.5),
+                'bootstrap_stderr': _make_metric('bootstrap_stderr', 0.06),
+            },
+        ),
+    ]
+
+    results, _ = adapter._extract_evaluation_results(
+        evaluation_task_name='synthetic/task',
+        scores=scores,
+        source_data=SourceDataHf(
+            dataset_name='synthetic_ds', source_type='hf_dataset'
+        ),
+        generation_config=GenerationConfig(),
+        num_samples=10,
+        timestamp='1234567890',
+    )
+
+    # Neither dispersion metric is a score of its own.
+    assert {result.evaluation_result_id for result in results} == {
+        'analytic:accuracy',
+        'resampled:accuracy',
+    }
+    by_id = {
+        result.evaluation_result_id: result.score_details.uncertainty
+        for result in results
+    }
+    assert by_id['analytic:accuracy'].standard_error.method == 'analytic'
+    assert by_id['resampled:accuracy'].standard_error.value == 0.06
+    assert by_id['resampled:accuracy'].standard_error.method == 'bootstrap'
+
+
+def test_a_scorer_reporting_only_dispersion_does_not_repeat_it():
+    """`std` stays a score when it is all the scorer reported, so that the run is
+    not left with none; carrying it as its own uncertainty would say it twice."""
+    adapter = InspectAIAdapter()
+
+    results, _ = adapter._extract_evaluation_results(
+        evaluation_task_name='synthetic/task',
+        scores=[_make_scorer('spread', {'std': _make_metric('std', 0.3)})],
+        source_data=SourceDataHf(
+            dataset_name='synthetic_ds', source_type='hf_dataset'
+        ),
+        generation_config=GenerationConfig(),
+        num_samples=10,
+        timestamp='1234567890',
+    )
+
+    [result] = results
+    assert result.metric_config.metric_name == 'std'
+    assert result.score_details.score == 0.3
+    assert result.score_details.uncertainty.standard_deviation is None
+    assert result.metric_config.additional_details == {
+        'polarity': 'not_applicable'
+    }
 
 
 def test_extract_evaluation_results_two_scorers_two_metrics_each():

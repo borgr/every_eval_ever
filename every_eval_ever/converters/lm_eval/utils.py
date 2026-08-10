@@ -16,6 +16,69 @@ def evaluation_result_id(metric_name: str, filter_name: str) -> str:
     return f'{metric_name}:{filter_name}'
 
 
+# How a metric's standard error was computed follows from its *aggregation*, not
+# from its name: `stderr_for_metric` in lm_eval/api/metrics.py bootstraps these
+# aggregations, gives `mean` and `acc_all` an analytic standard error
+# (`sample_stddev / sqrt(n)`), and computes none at all for anything else.
+BOOTSTRAP_AGGREGATIONS: frozenset[str] = frozenset(
+    {
+        'bleu',
+        'chrf',
+        'f1_score',
+        'matthews_corrcoef',
+        'median',
+        'nanmean',
+        'perplexity',
+        'ter',
+    }
+)
+ANALYTIC_AGGREGATIONS: frozenset[str] = frozenset({'acc_all', 'mean'})
+
+# lm-eval resamples these three at `min(bootstrap_iters, 100)`, whatever the run
+# configured, so the configured value is not the number that was used.
+CAPPED_BOOTSTRAP_METRICS: frozenset[str] = frozenset({'bleu', 'chrf', 'ter'})
+BOOTSTRAP_ITERS_CAP = 100
+
+
+def aggregations_by_metric(task_config: Dict) -> Dict[str, str]:
+    """The aggregation each metric of a task was reduced with, where stated.
+
+    lm-eval resolves an unstated aggregation from its own registry at load time
+    and dumps the task's config as written, so a metric absent here has an
+    aggregation we cannot read off the log.
+    """
+    aggregations: Dict[str, str] = {}
+    for entry in task_config.get('metric_list') or []:
+        if not isinstance(entry, dict):
+            continue
+        metric, aggregation = entry.get('metric'), entry.get('aggregation')
+        if isinstance(metric, str) and isinstance(aggregation, str):
+            aggregations[metric] = aggregation
+    return aggregations
+
+
+def standard_error_method(aggregation: Optional[str]) -> Optional[str]:
+    """How lm-eval computed the standard error of a metric aggregated this way."""
+    if aggregation in BOOTSTRAP_AGGREGATIONS:
+        return 'bootstrap'
+    if aggregation in ANALYTIC_AGGREGATIONS:
+        return 'analytic'
+    return None
+
+
+def bootstrap_resamples(
+    metric_name: str,
+    aggregation: Optional[str],
+    configured_iters: Optional[int],
+) -> Optional[int]:
+    """How many resamples went into a bootstrapped standard error."""
+    if configured_iters is None or aggregation not in BOOTSTRAP_AGGREGATIONS:
+        return None
+    if metric_name in CAPPED_BOOTSTRAP_METRICS:
+        return min(configured_iters, BOOTSTRAP_ITERS_CAP)
+    return configured_iters
+
+
 def parse_model_args(model_args: str | None) -> Dict[str, str]:
     """Parse lm-eval model_args string (comma-separated key=value pairs).
 

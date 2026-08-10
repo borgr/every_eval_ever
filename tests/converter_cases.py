@@ -76,9 +76,9 @@ CASES: tuple[ConverterCase, ...] = (
             'math_rephrased_full/exact_match': 0.0004,
         },
         metric_names=frozenset({'exact_match'}),
-        uncertainty_keys=frozenset(
-            {'standard_error', 'num_samples', 'num_bootstrap_samples'}
-        ),
+        # No `num_bootstrap_samples`: `exact_match` aggregates with `mean`, whose
+        # standard error lm-eval computes analytically rather than by resampling.
+        uncertainty_keys=frozenset({'standard_error', 'num_samples'}),
         required_source_paths=(
             'config.model',
             'config.model_args',

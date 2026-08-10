@@ -42,8 +42,11 @@ from .utils import (
     LM_EVAL_METRIC_BOUNDS,
     MODEL_TYPE_TO_INFERENCE_ENGINE,
     MODEL_TYPE_TO_INFERENCE_PLATFORM,
+    aggregations_by_metric,
+    bootstrap_resamples,
     evaluation_result_id,
     parse_model_args,
+    standard_error_method,
 )
 
 
@@ -220,6 +223,7 @@ class LMEvalAdapter(BaseEvaluationAdapter):
             task_name, {}
         )
         n_samples = raw_data.get('n-samples', {}).get(task_name, {})
+        aggregations = aggregations_by_metric(task_config)
         bootstrap_iters = raw_data.get('config', {}).get('bootstrap_iters')
         if not isinstance(bootstrap_iters, int):
             bootstrap_iters = None
@@ -253,9 +257,11 @@ class LMEvalAdapter(BaseEvaluationAdapter):
 
             stderr_key = f'{metric_name}_stderr,{filter_name}'
             stderr_val = task_results.get(stderr_key)
-            # lm-eval emits the string 'N/A' for stderr when it is not bootstrapped
-            # (e.g. aggregated or custom metrics). Treat any non-numeric value as
-            # absent so the StandardError (which requires a float) is simply omitted.
+            # lm-eval writes the string 'N/A' when it computed no standard error
+            # for a metric: its aggregation has no standard-error routine, or the
+            # task has a single item, or the run set bootstrap_iters to 0. Treat
+            # any non-numeric value as absent so the StandardError, which
+            # requires a float, is simply omitted.
             if not isinstance(stderr_val, (int, float)):
                 stderr_val = None
 
@@ -285,15 +291,23 @@ class LMEvalAdapter(BaseEvaluationAdapter):
                 or task_results.get('sample_len')
             )
             if stderr_val is not None or num_samples:
+                aggregation = aggregations.get(metric_name)
                 uncertainty = Uncertainty(
                     standard_error=(
-                        StandardError(value=stderr_val, method='bootstrap')
+                        StandardError(
+                            value=stderr_val,
+                            method=standard_error_method(aggregation),
+                        )
                         if stderr_val is not None
                         else None
                     ),
                     num_samples=num_samples,
                     num_bootstrap_samples=(
-                        bootstrap_iters if stderr_val is not None else None
+                        bootstrap_resamples(
+                            metric_name, aggregation, bootstrap_iters
+                        )
+                        if stderr_val is not None
+                        else None
                     ),
                 )
 

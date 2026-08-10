@@ -119,6 +119,28 @@ def _instance_counts_by_result_id(per_instance_stats: List) -> Dict[str, int]:
     }
 
 
+def _instance_counts_by_split(stats_raw: List) -> Dict[str, int]:
+    """The instance count HELM itself reports for each split.
+
+    HELM emits a ``num_instances`` stat per split, whose mean is that split's
+    instance count. It is the only sample count available for a run converted
+    without its per-instance stats, where the alternative is the run-wide count
+    covering every split at once.
+    """
+    counts: Dict[str, int] = {}
+    for stat in stats_raw:
+        stat_name = getattr(stat, 'name', None)
+        if getattr(stat_name, 'name', None) != 'num_instances':
+            continue
+        if getattr(stat_name, 'perturbation', None) is not None:
+            continue
+        split = _stat_name_part(getattr(stat_name, 'split', None)) or ''
+        mean = getattr(stat, 'mean', None)
+        if isinstance(mean, (int, float)) and mean > 0:
+            counts[split] = int(mean)
+    return counts
+
+
 def _require_helm_dependencies() -> None:
     if _HELM_IMPORT_ERROR is not None:
         raise ImportError(
@@ -530,6 +552,7 @@ class HELMAdapter(BaseEvaluationAdapter):
         evaluation_results: List[EvaluationResult] = []
         seen_evaluation_result_ids: set[str] = set()
         instance_counts = _instance_counts_by_result_id(per_instance_stats_list)
+        split_instance_counts = _instance_counts_by_split(stats_raw)
 
         for stat in stats_raw:
             # The ID helper mirrors the instance-level converter. This is the
@@ -567,23 +590,23 @@ class HELMAdapter(BaseEvaluationAdapter):
             perturbation = getattr(stat.name, 'perturbation', None)
             perturbation_label = _stat_name_part(perturbation)
 
-            # HELM's spread is over train trials, so a single-trial run reports
-            # 0.0 by construction; publishing that would claim the score does not
-            # vary.
-            standard_deviation = (
-                getattr(stat, 'stddev', None) if (stat_count or 0) > 1 else None
-            )
+            # HELM's spread is across train trials, not across samples, so it is
+            # not the `standard_deviation` the schema asks for and it is 0.0 by
+            # construction for the single-trial runs that make up almost every
+            # published suite. It travels as itself instead.
+            trial_stddev = getattr(stat, 'stddev', None)
             # The per-instance stats state the sample count exactly for this
             # split and perturbation. A worst-case-over-perturbations stat has
             # none of its own and is computed over the instances of its split,
-            # which is what the unperturbed stat for the same split counts. The
-            # run's own instance count is the last resort, and covers every
-            # split at once.
+            # which is what the unperturbed stat for the same split counts, and
+            # what HELM's own `num_instances` reports for that split. The run's
+            # instance count is the last resort, and covers every split at once.
             num_samples = (
                 instance_counts.get(evaluation_result_id)
                 or instance_counts.get(
                     _evaluation_result_id(metric_name, split)
                 )
+                or split_instance_counts.get(_stat_name_part(split) or '')
                 or source_data.samples_number
                 or None
             )
@@ -598,16 +621,18 @@ class HELMAdapter(BaseEvaluationAdapter):
                     score_details=ScoreDetails(
                         score=score,
                         uncertainty=(
-                            Uncertainty(
-                                standard_deviation=standard_deviation,
-                                num_samples=num_samples,
-                            )
-                            if standard_deviation is not None or num_samples
+                            Uncertainty(num_samples=num_samples)
+                            if num_samples
                             else None
                         ),
                         details={
                             'num_train_trials': str(
                                 stat_count if stat_count is not None else ''
+                            ),
+                            'stddev_across_train_trials': (
+                                ''
+                                if trial_stddev is None
+                                else str(trial_stddev)
                             ),
                             'split': _stat_name_part(split) or '',
                             'perturbation': perturbation_label or '',

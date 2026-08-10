@@ -302,8 +302,12 @@ def test_num_samples_follows_the_split_a_score_was_computed_on():
     }
 
 
-def test_single_trial_run_reports_no_standard_deviation():
-    """A stat over one trial has a stddev of 0.0 by construction, not by measurement."""
+def test_helm_spread_is_not_the_schemas_standard_deviation():
+    """`standard_deviation` is the spread of the per-sample scores; HELM's is the
+    spread across train trials, which is 0.0 by construction on one trial.
+
+    It is reported as itself, next to the trial count that gives it meaning.
+    """
     import json
 
     stats = json.loads((Path(HELLASWAG_RUN) / 'stats.json').read_text())
@@ -323,6 +327,82 @@ def test_single_trial_run_reports_no_standard_deviation():
         result.score_details.uncertainty.standard_deviation is None
         for result in converted_eval.evaluation_results
     )
+    assert {
+        result.score_details.details['stddev_across_train_trials']
+        for result in converted_eval.evaluation_results
+    } == {'0.0'}
+
+
+def test_multi_trial_spread_is_still_reported_as_a_trial_spread():
+    """A run over several trials has a spread that is not 0.0, and it is still a
+    spread across trials rather than across samples."""
+    adapter = HELMAdapter()
+
+    def three_trials(stats):
+        for stat in stats:
+            if stat.get('count'):
+                stat['count'] = 3
+                stat['stddev'] = 0.05
+        return stats
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        converted_eval = _load_eval(
+            adapter,
+            _run_with_rewritten_stats(tmpdir, three_trials),
+            {
+                'source_organization_name': 'TestOrg',
+                'evaluator_relationship': EvaluatorRelationship.first_party,
+            },
+        )
+
+    for result in converted_eval.evaluation_results:
+        assert result.score_details.uncertainty.standard_deviation is None
+        details = result.score_details.details
+        assert details['num_train_trials'] == '3'
+        assert details['stddev_across_train_trials'] == '0.05'
+        # The samples behind the score are unaffected by how many trials it took.
+        assert result.score_details.uncertainty.num_samples == 10
+
+
+def test_sample_count_survives_a_run_without_per_instance_stats():
+    """HELM reports `num_instances` per split, which is the only sample count left
+    when a run carries no per-instance stats.
+
+    Falling back to the run's own instance count instead would report all 10 of
+    this run's instances for a score computed on the 9 of them in `test`.
+    """
+    import json
+    import shutil
+
+    adapter = HELMAdapter()
+    source = Path(
+        'tests/data/helm/mmlu:subject=philosophy,'
+        'method=multiple_choice_joint,model=openai_gpt2'
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        run_path = Path(tmpdir) / 'run'
+        shutil.copytree(source, run_path)
+        stats_path = run_path / 'per_instance_stats.json'
+        assert stats_path.exists()
+        stats_path.write_text(json.dumps([]), encoding='utf-8')
+
+        converted_eval = _load_eval(
+            adapter,
+            run_path,
+            {
+                'source_organization_name': 'TestOrg',
+                'evaluator_relationship': EvaluatorRelationship.first_party,
+            },
+        )
+
+    by_split = {}
+    for result in converted_eval.evaluation_results:
+        by_split.setdefault(result.score_details.details['split'], set()).add(
+            result.score_details.uncertainty.num_samples
+        )
+
+    assert by_split == {'test': {9}, 'valid': {1}}
 
 
 def test_metric_bounds_are_claimed_only_where_they_are_known():

@@ -104,7 +104,11 @@ logger = logging.getLogger(__name__)
 # Inspect metrics that the schema carries inside `uncertainty` instead of as a
 # score of their own. `var` is deliberately absent: there is no field for a
 # variance, so dropping it as a score would lose the number.
-_UNCERTAINTY_METRICS = frozenset({'std', 'stddev', 'stderr'})
+_STDDEV_METRICS = frozenset({'std', 'stddev'})
+# Inspect's `stderr` is the analytic standard error of the mean; its
+# `bootstrap_stderr` resamples, which the schema records as the method.
+_STDERR_METHODS = {'stderr': 'analytic', 'bootstrap_stderr': 'bootstrap'}
+_UNCERTAINTY_METRICS = _STDDEV_METRICS | frozenset(_STDERR_METHODS)
 
 
 class InspectAIAdapter(BaseEvaluationAdapter):
@@ -131,13 +135,18 @@ class InspectAIAdapter(BaseEvaluationAdapter):
     def _extract_uncertainty(
         self,
         stderr_value: float | None,
+        stderr_method: str | None,
         stddev_value: float | None,
         num_samples: int | None,
-    ) -> Uncertainty:
+    ) -> Uncertainty | None:
+        if stderr_value is None and stddev_value is None and not num_samples:
+            return None
         return Uncertainty(
             # A standard error of exactly 0.0 is what a task every sample
             # scores identically reports, so it is a value, not an absence.
-            standard_error=StandardError(value=stderr_value)
+            standard_error=StandardError(
+                value=stderr_value, method=stderr_method
+            )
             if stderr_value is not None
             else None,
             standard_deviation=stddev_value,
@@ -154,8 +163,9 @@ class InspectAIAdapter(BaseEvaluationAdapter):
         evaluation_timestamp: str,
         generation_config: GenerationConfig,
         stderr_value: float | None = None,
+        stderr_method: str | None = None,
         stddev_value: float | None = None,
-        num_samples: int = 0,
+        num_samples: int | None = None,
     ) -> EvaluationResult:
         return EvaluationResult(
             evaluation_result_id=evaluation_result_id(
@@ -173,7 +183,7 @@ class InspectAIAdapter(BaseEvaluationAdapter):
             score_details=ScoreDetails(
                 score=metric_info.value,
                 uncertainty=self._extract_uncertainty(
-                    stderr_value, stddev_value, num_samples
+                    stderr_value, stderr_method, stddev_value, num_samples
                 ),
             ),
             generation_config=generation_config,
@@ -215,22 +225,30 @@ class InspectAIAdapter(BaseEvaluationAdapter):
                     ),
                 )
 
-            stderr_value = next(
+            stderr_value, stderr_method = next(
                 (
-                    m.value
+                    (m.value, _STDERR_METHODS[m.name])
                     for m in scorer.metrics.values()
-                    if m.name == 'stderr'
+                    if m.name in _STDERR_METHODS
                 ),
-                None,
+                (None, None),
             )
 
             stddev_value = next(
                 (
                     m.value
                     for m in scorer.metrics.values()
-                    if m.name in {'std', 'stddev'}
+                    if m.name in _STDDEV_METRICS
                 ),
                 None,
+            )
+
+            # Inspect computes a scorer's metrics over the samples it could
+            # score, and states how many those were. The run-wide count includes
+            # the samples this scorer returned no value for, and is what a log
+            # from before Inspect reported this per scorer leaves us with.
+            scored_samples = (
+                getattr(scorer, 'scored_samples', None) or num_samples
             )
 
             # Inspect reports dispersion as a metric of the scorer, and the
@@ -247,6 +265,10 @@ class InspectAIAdapter(BaseEvaluationAdapter):
 
             for metric_info in scored_metrics:
                 scorer_name = scorer.name or scorer.scorer
+                # A dispersion metric that had to stay a score is the value of
+                # this result, so repeating it as the result's own uncertainty
+                # would state the same number twice.
+                describes_itself = metric_info.name in _UNCERTAINTY_METRICS
 
                 result = self._build_evaluation_result(
                     evaluation_task_name=evaluation_task_name,
@@ -256,9 +278,10 @@ class InspectAIAdapter(BaseEvaluationAdapter):
                     source_data=source_data,
                     evaluation_timestamp=timestamp,
                     generation_config=generation_config,
-                    stderr_value=stderr_value,
-                    stddev_value=stddev_value,
-                    num_samples=num_samples,
+                    stderr_value=None if describes_itself else stderr_value,
+                    stderr_method=None if describes_itself else stderr_method,
+                    stddev_value=None if describes_itself else stddev_value,
+                    num_samples=scored_samples,
                 )
                 results.append(result)
 
