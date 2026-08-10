@@ -221,6 +221,38 @@ def test_every_metric_id_is_either_canonical_or_openly_namespaced(
     )
 
 
+def test_unknown_bounds_are_counted_in_the_source_metadata(case, tmp_path):
+    """A record has to say how many of its metrics came out without a range.
+
+    Omitting `min_score`/`max_score` is the honest answer for a metric no bounds
+    table carries, but it is invisible without opening every result, so the count
+    goes in `source_metadata.additional_details`. Derived on both sides here
+    deliberately: the question is whether the converter wired the count up at all,
+    which is how the inspect converter was found reporting `null` while publishing
+    an unbounded metric. Applies to every case, so a converter added later
+    inherits it.
+    """
+    for path in convert(case, tmp_path):
+        if path.suffix != '.json':
+            continue
+        log = json.loads(path.read_text(encoding='utf-8'))
+        unbounded = [
+            result['metric_config'].get('metric_name')
+            for result in log['evaluation_results']
+            if result['metric_config'].get('min_score') is None
+            and result['metric_config'].get('max_score') is None
+        ]
+        details = log['source_metadata'].get('additional_details') or {}
+        reported = details.get('metrics_with_unknown_bounds')
+        expected = str(len(unbounded)) if unbounded else None
+        assert reported == expected, (
+            f'{case.source} published {len(unbounded)} metric(s) with no bounds '
+            f'({unbounded}) but source_metadata reports {reported!r}. Pass the '
+            'results through converters/common/metrics.py::count_unknown_bounds '
+            'when building SourceMetadata.'
+        )
+
+
 def test_required_source_paths_are_present_in_the_fixture(case):
     """The keys the converter reads must still exist in the committed log.
 

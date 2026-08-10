@@ -49,7 +49,10 @@ from every_eval_ever.converters.common.adapter import (
     SupportedLibrary,
 )
 from every_eval_ever.converters.common.error import AdapterError
-from every_eval_ever.converters.common.metrics import metric_config_fields
+from every_eval_ever.converters.common.metrics import (
+    count_unknown_bounds,
+    metric_config_fields,
+)
 from every_eval_ever.converters.common.utils import (
     convert_timestamp_to_unix_format,
     get_current_unix_timestamp,
@@ -643,21 +646,6 @@ class InspectAIAdapter(BaseEvaluationAdapter):
                 evaluator_relationship
             )
 
-        source_metadata = SourceMetadata(
-            source_name='inspect_ai',
-            source_type=SourceType.evaluation_run,
-            source_organization_name=metadata_args.get(
-                'source_organization_name', 'unknown'
-            ),
-            source_organization_url=metadata_args.get(
-                'source_organization_url'
-            ),
-            source_organization_logo_url=metadata_args.get(
-                'source_organization_logo_url'
-            ),
-            evaluator_relationship=evaluator_relationship,
-        )
-
         source_data = self._extract_source_data(
             eval_spec.dataset, eval_spec.task
         )
@@ -723,6 +711,31 @@ class InspectAIAdapter(BaseEvaluationAdapter):
             model_info=model_info,
             evaluation_results=evaluation_results,
             supplemental_eval_details=supplemental_eval_details,
+        )
+
+        # Built here rather than beside `eval_library` because the count needs
+        # the finished results, including anything a supplement replaced.
+        unknown_bounds_count = count_unknown_bounds(
+            result.metric_config for result in evaluation_results
+        )
+        source_metadata = SourceMetadata(
+            source_name='inspect_ai',
+            source_type=SourceType.evaluation_run,
+            source_organization_name=metadata_args.get(
+                'source_organization_name', 'unknown'
+            ),
+            source_organization_url=metadata_args.get(
+                'source_organization_url'
+            ),
+            source_organization_logo_url=metadata_args.get(
+                'source_organization_logo_url'
+            ),
+            evaluator_relationship=evaluator_relationship,
+            additional_details=(
+                {'metrics_with_unknown_bounds': str(unknown_bounds_count)}
+                if unknown_bounds_count
+                else None
+            ),
         )
 
         evaluation_id = f'{source_data.dataset_name}/{model_path.replace("/", "_")}/{evaluation_unix_timestamp}'
