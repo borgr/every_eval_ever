@@ -121,6 +121,9 @@ refresh is distinguishable from a complete one.
 - Requires `pyarrow` (parquet reads), declared as the `wild` extra — install it
   first with `uv sync --extra wild` (or `uv sync --all-extras`); a fresh env without
   it fails at import.
+- Aggregation reads only the small columns (fast); `--include-instances` reads the
+  full rows and is the expensive path — use `--limit-shards` / `--max-instances`
+  for smoke runs.
 
 ## Benchmark canonicalization (eval-card-registry follow-up)
 
@@ -138,6 +141,3 @@ benchmarks, 20 resolve today; the rest are follow-ups for the registry:
   dataset repos are worth recording.
 - The AI2-ARC canonical currently has no `dataset_repo`; `allenai/ai2_arc` should be
   added, and easy/challenge are collapsed into one canonical upstream.
-- Aggregation reads only the small columns (fast); `--include-instances` reads the
-  full rows and is the expensive path — use `--limit-shards` / `--max-instances`
-  for smoke runs.
