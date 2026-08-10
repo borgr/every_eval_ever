@@ -23,12 +23,33 @@ from pathlib import Path
 from every_eval_ever.converters.common.metrics import (
     CANONICAL_METRIC_IDS,
     DISPERSION_METRICS,
+    LOWER_IS_BETTER,
     METRIC_ID_REGISTRY_REVISION,
     METRIC_KINDS,
+    METRIC_UNITS,
+    SHARED_METRIC_BOUNDS,
 )
-from every_eval_ever.converters.helm.metrics import HELM_HARNESS_ID
+from every_eval_ever.converters.helm.metrics import (
+    HELM_HARNESS_ID,
+    HELM_METRIC_BOUNDS,
+)
 from every_eval_ever.converters.inspect.utils import INSPECT_HARNESS_ID
-from every_eval_ever.converters.lm_eval.utils import LM_EVAL_HARNESS_ID
+from every_eval_ever.converters.lm_eval.utils import (
+    LM_EVAL_HARNESS_ID,
+    LM_EVAL_METRIC_BOUNDS,
+)
+
+# Every table a converter looks a metric name up in. A name in any of them is a
+# name we can publish, so it is a name that needs an id — including one that has
+# bounds but no `metric_kind`, which is how `mc2` escaped this check.
+LOOKUP_TABLES: tuple[dict, ...] = (
+    CANONICAL_METRIC_IDS,
+    METRIC_KINDS,
+    METRIC_UNITS,
+    SHARED_METRIC_BOUNDS,
+    HELM_METRIC_BOUNDS,
+    LM_EVAL_METRIC_BOUNDS,
+)
 
 
 def normalize(surface: str) -> str:
@@ -103,8 +124,9 @@ def main(argv: list[str] | None = None) -> int:
 
     harnesses = args.seed.parent / 'harnesses.yaml'
     index = registry_index(args.seed)
-    # Every name the converters can look up, mapped or not.
-    known_names = set(CANONICAL_METRIC_IDS) | set(METRIC_KINDS)
+    # Every name the converters can look up, mapped or not. LOWER_IS_BETTER is a
+    # set rather than a table, so it is unioned separately.
+    known_names = set(LOWER_IS_BETTER).union(*LOOKUP_TABLES)
 
     stale: list[str] = []
     ambiguous: list[str] = []
