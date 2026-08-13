@@ -709,13 +709,16 @@ def _and_others(count: int) -> str:
 def _normalize_metric_id(metric_id: str) -> str:
     """Lowercase and unify separators before matching a spelling.
 
-    ``-`` and ``_`` are the same separator in practice: the registry spells its
-    ids ``exact-match`` and ``mean-score`` where adapters write ``exact_match``
-    and ``mean_score``. ``.`` and ``/`` are left alone — those *are* namespace
-    separators, so ``lmarena.elo`` and ``mmlu_pro/overall`` stay qualified and
-    do not match a generic word.
+    ``-``, ``_`` and internal whitespace are the same separator in practice: the
+    registry spells its ids ``exact-match`` and ``mean-score`` where adapters
+    write ``exact_match`` and ``mean_score``, and a ``mean score`` names that
+    same non-metric — the space alone must not carry it past the heuristic.
+    ``.`` and ``/`` are left alone — those *are* namespace separators, so
+    ``lmarena.elo`` and ``mmlu_pro/overall`` stay qualified and do not match a
+    generic word.
     """
-    return metric_id.strip().lower().replace('-', '_')
+    normalized = metric_id.strip().lower().replace('-', '_')
+    return '_'.join(normalized.split())
 
 
 def check_model_deployment(data: dict[str, Any]) -> list[str]:

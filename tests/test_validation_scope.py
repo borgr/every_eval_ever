@@ -447,7 +447,7 @@ def test_metric_id_must_name_a_quantity():
     assert check_metric_identity(data) == []
 
     # A word any other leaderboard could also pick for its headline number,
-    # in either separator spelling and either case.
+    # in any separator spelling (dash, underscore, space) and either case.
     for colliding in (
         'score',
         'Score',
@@ -455,6 +455,8 @@ def test_metric_id_must_name_a_quantity():
         'elo',
         'mean_score',
         'mean-score',
+        'mean score',
+        'Total Score',
         'overall',
         'total-score',
         'value',
