@@ -9,7 +9,9 @@ unless marked warning.*
    semantic checks (`validator/validation_core.py`, `REGISTERED_CHECKS`). The in-library
    `validate_file(path)` used by unit tests defaults to semantic checks off, so a
    green test does *not* mean the gate is green. Semantic checks also need the file at its
-   final `data/<collection>/<dev>/<model>/` path.
+   final `data/<collection>/<dev>/<model>/` path. The exit status is the machine verdict:
+   `0` clean, `1` when any record has errors (errors win over warnings), `2` when the only
+   findings are warnings.
 2. **The datastore bot**: comment `/eee validate changed` on the HF PR. It runs its own
    deployed version, which may be pinned to an older compatibility version with older
    enum vocabularies. Treat a bot complaint that contradicts this file as a version skew,
