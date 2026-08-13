@@ -76,15 +76,25 @@ def test_conversion_yields_the_expected_records(case, tmp_path):
             f'expected {case.results}'
         )
     if case.scores is not None:
-        converted = {
-            f'{result["evaluation_name"]}/'
-            f'{result.get("evaluation_result_id") or result["metric_config"]["evaluation_description"]}': result[
-                'score_details'
-            ]['score']
+        scored = [
+            (
+                f'{result["evaluation_name"]}/'
+                f'{result.get("evaluation_result_id") or result["metric_config"]["evaluation_description"]}',
+                result['score_details']['score'],
+            )
             for log in logs
             for result in log['evaluation_results']
-        }
-        assert converted == case.scores
+        ]
+        # Collected as pairs, not straight into a dict: two results sharing a key
+        # is the quietly-lost data this test exists to catch, and a dict would
+        # merge them before the comparison below could see the collision.
+        keys = [key for key, _ in scored]
+        assert len(keys) == len(set(keys)), (
+            f'{case.source} produced two results with the same '
+            f'evaluation_name/evaluation_result_id: '
+            f'{sorted(key for key in set(keys) if keys.count(key) > 1)}'
+        )
+        assert dict(scored) == case.scores
 
     for log, path in zip(logs, aggregates, strict=True):
         detailed = log.get('detailed_evaluation_results')
