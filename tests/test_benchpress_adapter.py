@@ -204,6 +204,20 @@ def test_model_id_and_evaluation_id():
     assert log.evaluation_id.startswith("benchpress/other/openai_gpt-oss-120b/")
     assert log.retrieved_timestamp == adapter._iso_to_epoch_str(
         "2026-05-07T04:54:26.048511+00:00")
+    # The immutable dataset revision anchors the id: two content-differing
+    # snapshots that share one manifest timestamp still get distinct ids.
+    assert log.evaluation_id.endswith(
+        "/fbe2869d4e1581372830f02a11c64c08365cf656")
+
+
+def test_model_availability_is_derived_from_open_weights():
+    """BenchPress ships an open_weights flag; recording a blanket 'unknown' would
+    throw the one availability signal the source provides away."""
+    openai = _logs_by_relationship("openai")["other"].log.model_info.additional_details
+    assert openai["model_availability"] == "open_weights"   # open_weights="true"
+    assert openai["deployment_type"] == "unknown"           # no serving platform recorded
+    anthropic = _logs_by_relationship("anthropic")["other"].log.model_info.additional_details
+    assert anthropic["model_availability"] == "closed_weights"  # open_weights="false"
 
 
 def test_citation_url_and_reported_by():
@@ -333,6 +347,17 @@ def test_a_missing_id_column_is_a_structural_error_not_a_bad_row():
         adapter._parse_scores([{'benchmark_id': 'b', 'score': '1.0'}])
 
 
+def test_a_missing_audit_status_column_is_a_structural_error_not_an_empty_run():
+    """audit_status gates accept/exclude, so a vanished column must not silently
+    exclude every row and exit 0 -- it is a structural mismatch like a missing id."""
+    with pytest.raises(KeyError):
+        adapter._parse_scores([{'model_id': 'm', 'benchmark_id': 'b', 'score': '1.0'}])
+    # A present column with an empty *value* is still just one unaccepted row.
+    parsed = adapter._parse_scores(
+        [{'model_id': 'm', 'benchmark_id': 'b', 'score': '1.0', 'audit_status': ''}])
+    assert parsed[0]['audit_status'] is None
+
+
 # --------------------------------------------------------------------------- #
 # snapshot provenance
 # --------------------------------------------------------------------------- #
@@ -422,6 +447,10 @@ def test_an_exclusions_only_run_itemizes_every_excluded_row(tmp_path):
         'gpt-oss-120b/codeforces_rating', 'gpt-oss-120b/aime_2025',
         'gpt-oss-120b/aime_2025']
     assert all('dropped' in e['reason'] for e in report['excluded_records'])
+    # The excluded row itself is carried, like a failure: repeated source_refs
+    # (three gpt-oss-120b/aime_2025 here) are distinguishable in the report.
+    assert all('source_record' in e for e in report['excluded_records'])
+    assert report['excluded_records'][0]['source_record']['model_id'] == 'gpt-oss-120b'
 
 
 def test_the_accounting_report_replaces_the_previous_run_s_copy(tmp_path):

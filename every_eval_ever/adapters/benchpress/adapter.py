@@ -147,6 +147,27 @@ def _str_map(pairs: dict) -> dict:
     return out
 
 
+_OPEN_WEIGHTS_TRUE = frozenset({'true', 't', 'yes', 'y', '1', 'open', 'open_weights'})
+_OPEN_WEIGHTS_FALSE = frozenset({'false', 'f', 'no', 'n', '0', 'closed', 'closed_weights'})
+
+
+def _model_availability(open_weights: Any) -> str:
+    """BenchPress's ``open_weights`` flag -> the schema's model_availability enum.
+
+    Only a clear yes/no is mapped; an absent or unrecognized value stays
+    ``unknown`` rather than being guessed in either direction.
+    """
+    value = _clean(open_weights)
+    if value is None:
+        return 'unknown'
+    token = str(value).strip().lower()
+    if token in _OPEN_WEIGHTS_TRUE:
+        return 'open_weights'
+    if token in _OPEN_WEIGHTS_FALSE:
+        return 'closed_weights'
+    return 'unknown'
+
+
 def _slug(text: Any) -> str:
     return ''.join(c if c.isalnum() else '-' for c in str(text).strip().lower()).strip('-')
 
@@ -231,13 +252,15 @@ def _parse_scores(rows: list[dict]) -> list[dict]:
     # The score stays as the source wrote it: it is parsed per row in make_logs,
     # where a value that will not parse is that row's failure rather than the end
     # of the run. The id columns stay strict -- one missing from the header is a
-    # structural mismatch, not one bad row.
+    # structural mismatch, not one bad row. audit_status is strict for the same
+    # reason: it gates accept/exclude, so a vanished column would silently exclude
+    # every row and still exit 0 (an empty successful run) instead of failing loud.
     return [{
         'model_id': r['model_id'], 'benchmark_id': r['benchmark_id'],
         'score': _clean(r.get('score')),
         'reference_url': _clean(r.get('reference_url')),
         'source_type': _clean(r.get('source_type')),
-        'audit_status': _clean(r.get('audit_status')),
+        'audit_status': _clean(r['audit_status']),
         'matches_canonical': _clean(r.get('matches_canonical')),
         'reported_setting': _json_obj(r.get('reported_setting_json')),
         'notes': _clean(r.get('notes')),
@@ -350,6 +373,13 @@ def normalize_model_info(model: dict) -> tuple[ModelInfo, str, str]:
         id=f'{org}/{slug}',
         developer=provider,
         additional_details=_str_map({
+            # deployment_type + model_availability are required in
+            # additional_details (schema + validator's model-deployment check).
+            # BenchPress records no serving platform, so deployment_type is
+            # unknown; model_availability is derived from the open_weights flag,
+            # whose raw value is kept alongside it.
+            'deployment_type': 'unknown',
+            'model_availability': _model_availability(model.get('open_weights')),
             'benchpress_model_id': slug,
             'release_date': model.get('release_date'),
             'params_total_M': model.get('params_total_M'),
@@ -357,7 +387,7 @@ def normalize_model_info(model: dict) -> tuple[ModelInfo, str, str]:
             'architecture': model.get('architecture'),
             'is_reasoning': model.get('is_reasoning'),
             'open_weights': model.get('open_weights'),
-        }) or None,
+        }),
     )
     return info, org, slug
 
@@ -544,6 +574,11 @@ def make_logs(payload: dict[str, Any],
         timestamp = _iso_to_epoch_str(version['generated_at_utc'])
     timestamp = timestamp or str(time.time())
 
+    # The retrieved_timestamp comes from the manifest, which can lag the CSVs, so
+    # two content-differing snapshots can share one timestamp. The dataset commit
+    # is immutable per snapshot, so it anchors the evaluation_id's uniqueness.
+    revision = version.get('dataset_revision') or 'unknown-revision'
+
     exclusions: list[SourceRecordExclusion] = []
     failures: list[SourceRecordFailure] = []
     # (developer, model, relationship) -> benchmark id -> result. Keyed by the
@@ -560,6 +595,7 @@ def make_logs(payload: dict[str, Any],
                 source_ref=_score_ref(score),
                 reason=(f'BenchPress audit_status={audit_status!r} is outside its '
                         'own accepted set; pass --include-unaccepted to export it'),
+                source_record=score,
             ))
             continue
         model = models.get(score['model_id'])
@@ -625,7 +661,7 @@ def make_logs(payload: dict[str, Any],
                          key=lambda r: r.evaluation_result_id or '')
         log = EvaluationLog(
             schema_version=SCHEMA_VERSION,
-            evaluation_id=f'benchpress/{relationship}/{sanitized}/{timestamp}',
+            evaluation_id=f'benchpress/{relationship}/{sanitized}/{timestamp}/{revision}',
             retrieved_timestamp=timestamp,
             source_metadata=source_metadata(relationship, version),
             eval_library=EvalLibrary(name='BenchPress', version='unknown'),
