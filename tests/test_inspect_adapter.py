@@ -788,6 +788,40 @@ def test_supplemental_eval_details_fails_on_duplicate_key(key_field, key):
             )
 
 
+def test_supplemental_eval_details_fails_when_one_entry_sets_both_selectors():
+    """An id selects one result; a name selects every result of the evaluation.
+
+    An entry that sets both applies to its own result by id and, through the
+    shared name, to that result's siblings as well -- never what one entry is
+    meant to do. The two behaviours are still available through two entries, so
+    the ambiguous single entry is rejected rather than silently fanned out.
+    """
+    adapter = InspectAIAdapter()
+    metadata_args = {
+        'source_organization_name': 'TestOrg',
+        'evaluator_relationship': EvaluatorRelationship.first_party,
+        'supplemental_eval_details': {
+            'evaluation_results': [
+                {
+                    'evaluation_result_id': 'choice:accuracy',
+                    'evaluation_name': 'inspect_evals/pubmedqa',
+                    'score_details': {'details': {'a': 1}},
+                },
+            ]
+        },
+    }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        metadata_args = dict(metadata_args)
+        metadata_args['file_uuid'] = TEST_UUID
+        metadata_args['parent_eval_output_dir'] = tmpdir
+        with pytest.raises(AdapterError):
+            adapter.transform_from_file(
+                Path('tests/data/inspect/data_pubmedqa_gpt4o_mini.json'),
+                metadata_args=metadata_args,
+            )
+
+
 def test_supplemental_eval_details_fails_on_invalid_schema():
     adapter = InspectAIAdapter()
     metadata_args = {

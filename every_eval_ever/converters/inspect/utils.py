@@ -573,6 +573,20 @@ def apply_supplemental_eval_details(
         )
 
     result_supplements = supplemental_eval_details.evaluation_results or []
+    both_selectors = [
+        supplement
+        for supplement in result_supplements
+        if supplement.evaluation_result_id is not None
+        and supplement.evaluation_name is not None
+    ]
+    if both_selectors:
+        raise ValueError(
+            'A supplemental_eval_details.evaluation_results entry sets both '
+            'evaluation_result_id and evaluation_name. An id selects one result '
+            'and a name selects every result of that evaluation, so an entry '
+            'carrying both would apply to that one result and, separately, to '
+            'every sibling sharing the name. Use one selector per entry.'
+        )
     by_result_id = _key_supplements(result_supplements, 'evaluation_result_id')
     by_evaluation_name = _key_supplements(result_supplements, 'evaluation_name')
     unkeyed_supplements = [
