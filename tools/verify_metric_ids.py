@@ -145,13 +145,22 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     # Dispersion belongs in `score_details.uncertainty`, not in the registry as a
-    # metric of its own, so its absence is not a gap.
+    # metric of its own, so its absence is not counted as a gap -- but a converter
+    # can still publish one namespaced (Inspect does for `var` and lone dispersion
+    # metrics), so list them separately rather than dropping them from the report.
+    dispersion_unregistered = sorted(
+        (known_names & DISPERSION_METRICS) - set(CANONICAL_METRIC_IDS)
+    )
     unregistered = sorted(
         known_names - set(CANONICAL_METRIC_IDS) - DISPERSION_METRICS
     )
 
     print(f'registry seed: {args.seed}')
-    print(f'ids resolved against revision {METRIC_ID_REGISTRY_REVISION}')
+    print(
+        f"ids resolved against the map's pinned revision "
+        f'{METRIC_ID_REGISTRY_REVISION} (the seed file above is read as given; '
+        f'its own checkout revision is not verified)'
+    )
     print(
         f'{len(CANONICAL_METRIC_IDS)} mapped, {len(known_names)} names checked'
     )
@@ -168,6 +177,13 @@ def main(argv: list[str] | None = None) -> int:
     # publish them namespaced in the meantime.
     print(f'\nNAMESPACED, WANTING A REGISTRY ENTRY: {len(unregistered)}')
     for name in unregistered:
+        print(f'  {name}')
+    print(
+        f'\nDISPERSION, NAMESPACED WHEN PUBLISHED '
+        f'(belongs in uncertainty, not a registry gap): '
+        f'{len(dispersion_unregistered)}'
+    )
+    for name in dispersion_unregistered:
         print(f'  {name}')
     print(f'\nHARNESS SLUGS: {harness_report(harnesses)}')
 
