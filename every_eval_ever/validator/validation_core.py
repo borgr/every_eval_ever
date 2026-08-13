@@ -608,6 +608,20 @@ def check_developer_slug(data: dict[str, Any]) -> list[str]:
     if not isinstance(model_info, dict):
         return []
 
+    # A slash-bearing id with an empty component ('/model', 'org/', 'a//b') is
+    # unroutable: `datastore_path_components` rejects it by the same
+    # `any(not part ...)` rule, so the record files nowhere and splits no
+    # directory. Left to the path and schema errors rather than reported here,
+    # where an empty prefix would otherwise read as a flat id and pin the split
+    # on model_info.developer — a routing claim the record cannot make.
+    model_id = model_info.get('id')
+    if (
+        isinstance(model_id, str)
+        and '/' in model_id
+        and any(not part for part in model_id.strip().split('/'))
+    ):
+        return []
+
     # Keyed by the organization, not the spelling: one publisher needs one
     # rename, and a per-spelling key warns again next run for the field the
     # first message did not name ('zhipu' and 'zhipu-ai' are both zai).

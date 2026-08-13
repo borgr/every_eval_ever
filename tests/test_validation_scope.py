@@ -728,6 +728,20 @@ def test_developer_slug_check_tolerates_missing_and_malformed_fields():
         assert check_developer_slug(data) == [], data
 
 
+def test_an_unroutable_id_splits_no_directory_and_is_left_to_the_path_error():
+    # A slash-bearing id with an empty component is what datastore_path_components
+    # rejects, so the record files nowhere and this check has no split to report —
+    # even when a field carries a registry second name. The empty prefix must not
+    # read as a flat id and pin the split on model_info.developer.
+    for model_info in (
+        {'id': '/model', 'developer': 'mistral'},
+        {'id': 'mistral/', 'developer': 'kimi'},
+        {'id': 'mistral//large'},
+        {'id': '/', 'developer': 'glm'},
+    ):
+        assert check_developer_slug({'model_info': model_info}) == [], model_info
+
+
 def test_developer_slug_reports_one_warning_per_publisher():
     # One publisher needs one rename, so it gets one warning naming every field
     # to change and every spelling in play. Reporting per spelling would warn
