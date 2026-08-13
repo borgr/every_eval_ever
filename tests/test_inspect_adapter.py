@@ -587,6 +587,40 @@ def test_standard_error_says_how_inspect_computed_it():
     assert by_id['resampled:accuracy'].standard_error.method == 'bootstrap'
 
 
+def test_both_stderrs_prefer_analytic_and_keep_the_bootstrap_value():
+    """A scorer that reports both the analytic stderr and a bootstrap resample of
+    it should publish the analytic one as the standard error and keep the bootstrap
+    value in the score details, not let dict order pick one and drop the other."""
+    adapter = InspectAIAdapter()
+    results, _ = adapter._extract_evaluation_results(
+        evaluation_task_name='synthetic/task',
+        scores=[
+            _make_scorer(
+                'both',
+                {
+                    'accuracy': _make_metric('accuracy', 0.5),
+                    # bootstrap first, so the old order-dependent pick took it.
+                    'bootstrap_stderr': _make_metric('bootstrap_stderr', 0.06),
+                    'stderr': _make_metric('stderr', 0.05),
+                },
+            )
+        ],
+        source_data=SourceDataHf(
+            dataset_name='synthetic_ds', source_type='hf_dataset'
+        ),
+        generation_config=GenerationConfig(),
+        num_samples=10,
+        timestamp='1234567890',
+    )
+
+    [result] = results
+    assert result.metric_config.metric_name == 'accuracy'
+    standard_error = result.score_details.uncertainty.standard_error
+    assert (standard_error.value, standard_error.method) == (0.05, 'analytic')
+    # The bootstrap value is preserved, not silently dropped.
+    assert result.score_details.details['bootstrap_stderr'] == '0.06'
+
+
 def test_a_scorer_reporting_only_dispersion_does_not_repeat_it():
     """`std` stays a score when it is all the scorer reported, so that the run is
     not left with none; carrying it as its own uncertainty would say it twice."""
