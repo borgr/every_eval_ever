@@ -18,6 +18,9 @@ from every_eval_ever.converters.helm.metrics import (
     metric_bounds_name,
     metric_parameters,
 )
+from every_eval_ever.converters.inspect.supplemental_eval_details import (
+    SupplementalMetricConfig,
+)
 from every_eval_ever.converters.inspect.utils import (
     INSPECT_HARNESS_ID,
     SYNTHETIC_METRIC_CONFIG_FIELDS,
@@ -78,12 +81,38 @@ def test_an_unknown_metric_gets_no_range_at_all():
 
     assert config.min_score is None
     assert config.max_score is None
-    assert config.additional_details == {'bounds_status': 'unknown'}
+    assert config.additional_details == {
+        'polarity': 'unknown',
+        'bounds_status': 'unknown',
+    }
 
 
 def test_a_metric_whose_definition_fixes_its_direction_says_so():
     assert _config('word_perplexity').lower_is_better is True
     assert _config('exact_match').lower_is_better is False
+
+
+def test_an_unknown_direction_metric_marks_its_fallback_a_guess():
+    """`lower_is_better` is required, so an unrecognized metric serializes False.
+
+    A `polarity: unknown` marker keeps that from reading as an asserted
+    higher-is-better, the same way `bounds_status` keeps a missing range from
+    reading as [0, 1]. A metric whose direction its definition fixes, or one
+    for which direction does not apply, is stated rather than hedged.
+    """
+    unknown = _config('semantic_similarity_v3')
+    assert unknown.lower_is_better is False
+    assert unknown.additional_details['polarity'] == 'unknown'
+
+    # Known direction, still without a resolved range: no hedge.
+    known = _config('word_perplexity')
+    assert known.lower_is_better is True
+    assert 'polarity' not in (known.additional_details or {})
+
+    # A recognized higher-is-better metric is a claim, not a guess.
+    accuracy = _config('accuracy')
+    assert accuracy.lower_is_better is False
+    assert accuracy.additional_details is None
 
 
 def test_a_dispersion_metric_claims_no_direction():
@@ -252,7 +281,10 @@ def test_a_derived_field_can_be_corrected_by_a_caller():
     """Inspect drops a supplied `metric_config` field that it does not synthesize.
 
     Every field resolved from a table here is therefore listed as synthetic, or a
-    caller could see a wrong id without being able to replace it.
+    caller could see a wrong id without being able to replace it. A listed field
+    the strict supplement model forbids is the same dead end from the other side
+    -- the allowlist waves it through but the caller can never supply it -- so
+    every overridable field must also be a `SupplementalMetricConfig` field.
     """
     assert {
         'metric_id',
@@ -260,6 +292,9 @@ def test_a_derived_field_can_be_corrected_by_a_caller():
         'metric_unit',
         'metric_parameters',
     } <= SYNTHETIC_METRIC_CONFIG_FIELDS
+    assert SYNTHETIC_METRIC_CONFIG_FIELDS <= set(
+        SupplementalMetricConfig.model_fields
+    )
 
 
 def test_every_canonical_id_is_shaped_like_a_registry_slug():

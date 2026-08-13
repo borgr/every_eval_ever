@@ -173,6 +173,7 @@ _PERCENT_BOUNDS = (0.0, 100.0)
 
 _UNKNOWN_BOUNDS = {'bounds_status': 'unknown'}
 _NO_POLARITY = {'polarity': 'not_applicable'}
+_UNKNOWN_POLARITY = {'polarity': 'unknown'}
 _UNREGISTERED_ID = {'metric_id_status': 'unregistered'}
 # Both a resolved id and an unresolved one are claims about a registry state, so
 # each says which state it was: an `unregistered` marker with no revision beside
@@ -200,6 +201,13 @@ def metric_bounds_fields(
     details = dict(_NO_POLARITY) if name in DISPERSION_METRICS else {}
 
     if bounds is None:
+        # `lower_is_better` is required, so an unrecognized metric defaults to
+        # False; for one whose direction we cannot resolve that default is a
+        # guess a ranking consumer would misread as an asserted "higher is
+        # better", so it is marked like an unresolved range. A known direction
+        # (LOWER_IS_BETTER) or an inapplicable one (dispersion) keeps its answer.
+        if name not in LOWER_IS_BETTER and name not in DISPERSION_METRICS:
+            details = {**details, **_UNKNOWN_POLARITY}
         return {
             'lower_is_better': name in LOWER_IS_BETTER,
             'additional_details': {**details, **_UNKNOWN_BOUNDS},

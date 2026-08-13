@@ -787,6 +787,54 @@ def test_supplemental_eval_details_fill_only_top_level_fields():
     }
 
 
+def test_supplemental_eval_details_can_correct_a_resolved_metric_identity():
+    """The identity a converter resolves from a table is a caller-overrideable value.
+
+    `metric_id`, `metric_kind`, `metric_unit` and `metric_parameters` are listed
+    as synthetic so a caller who can see a wrong value may replace it. That path
+    is only real if the supplement model accepts those fields; a strict model
+    that forbids them rejects the supplement before the allowlist runs, leaving
+    the listing dead. Overriding them here has to reach the output.
+    """
+    adapter = InspectAIAdapter()
+    metadata_args = {
+        'source_organization_name': 'TestOrg',
+        'evaluator_relationship': EvaluatorRelationship.first_party,
+        'supplemental_eval_details': {
+            'evaluation_results': [
+                {
+                    'evaluation_result_id': 'choice:accuracy',
+                    'metric_config': {
+                        'metric_id': 'accuracy-corrected',
+                        'metric_kind': 'classification',
+                        'metric_unit': 'percent',
+                        'metric_parameters': {'strategy': 'greedy'},
+                    },
+                },
+            ],
+        },
+    }
+
+    converted_eval = _load_eval(
+        adapter,
+        'tests/data/inspect/data_pubmedqa_gpt4o_mini.json',
+        metadata_args,
+    )
+    result = next(
+        r
+        for r in converted_eval.evaluation_results
+        if r.evaluation_result_id == 'choice:accuracy'
+    )
+
+    # Each override differs from what the converter resolves for `accuracy`
+    # (`accuracy` / `accuracy` / `proportion` / no params), so a value that
+    # survived is one the override replaced, not one that happened to match.
+    assert result.metric_config.metric_id == 'accuracy-corrected'
+    assert result.metric_config.metric_kind == 'classification'
+    assert result.metric_config.metric_unit == 'percent'
+    assert result.metric_config.metric_parameters == {'strategy': 'greedy'}
+
+
 def test_supplemental_eval_details_applies_top_level_score_details():
     adapter = InspectAIAdapter()
     metadata_args = {
