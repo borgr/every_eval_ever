@@ -649,9 +649,9 @@ def check_developer_slug(data: dict[str, Any]) -> list[str]:
             'filing under both puts one publisher in two datastore '
             'directories, neither listing complete'
             if directory_field in locations
-            else 'the id prefix picks the directory here, so this field '
-            'splits none, but it disagrees with that directory and groups '
-            'this record apart from any spelled the other way'
+            else f'the {prefix!r} id prefix picks the directory here, so '
+            'this field splits none, but it disagrees with that directory '
+            'and groups this record apart from any spelled the other way'
         )
         found = '/'.join(repr(spelling) for spelling in sorted(spellings))
         warnings.append(
