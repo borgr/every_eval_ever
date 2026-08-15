@@ -713,7 +713,7 @@ def export_logs(bundles: list[LogBundle], output_dir: Path) -> list[Path]:
 # CLI
 # --------------------------------------------------------------------------- #
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Convert the BenchPress score matrix to EEE.')
     parser.add_argument('--input-json', type=Path, default=None,
                         help='Replay a saved payload offline instead of fetching from HF.')
@@ -727,7 +727,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--include-unaccepted', action='store_true',
                         help='Also export scores BenchPress marks dropped, '
                              'needs_review or flagged (excluded by default).')
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _is_subpath(child: Path, parent: Path) -> bool:
