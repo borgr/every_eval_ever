@@ -62,6 +62,10 @@ CASES: tuple[ConverterCase, ...] = (
         log_path=REPO_ROOT
         / 'tests/data/lm_eval/results_2026-01-21T03-44-18.458309.json',
         aggregates=2,
+        # Two tasks, one `exact_match` result each. Stated even though `scores`
+        # already lists both, because `scores` is a dict: without a count, a
+        # third result that collided on an existing key would be merged away.
+        results=2,
         # The fixture ships a samples file for only one of its two tasks, so
         # --include_samples would (correctly) report a partial conversion.
         model_id=(
