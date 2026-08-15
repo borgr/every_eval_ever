@@ -425,3 +425,130 @@ def test_a_run_with_nothing_convertible_fails_loudly(tmp_path: Path):
 
     with pytest.raises(SystemExit, match='no convertible logs'):
         adapter.run(_args(tmp_path, logs_dir))
+
+
+def test_differing_iteration_budgets_are_not_averaged_together(tmp_path: Path):
+    logs_dir = _write(
+        tmp_path / 'logs',
+        [
+            _log(bounty='0', max_iterations=10),
+            _log(bounty='1', max_iterations=40),
+        ],
+    )
+    logs, _kept, _attempts, _result = adapter.convert(_args(tmp_path, logs_dir))
+
+    assert len(logs) == 2
+    fingerprints = {
+        log.evaluation_results[0].metric_config.additional_details[
+            'config_fingerprint'
+        ]
+        for log in logs
+    }
+    assert len(fingerprints) == 2
+    message_limits = {
+        log.evaluation_results[
+            0
+        ].generation_config.generation_args.eval_limits.message_limit
+        for log in logs
+    }
+    assert message_limits == {10, 40}
+
+
+def test_concurrent_model_commands_keep_distinct_paired_calls(tmp_path: Path):
+    # Two model commands open before either result arrives; each result must
+    # pair to its own call, with no overwritten, orphaned, or duplicated call.
+    actions = [
+        {'resource_id': 'model', 'command': 'cat a'},
+        {'resource_id': 'model', 'command': 'cat b'},
+        {'resource_id': 'kali_env', 'command': 'cat a', 'message': 'A\n'},
+        {'resource_id': 'kali_env', 'command': 'cat b', 'message': 'B\n'},
+    ]
+    messages = adapter.build_messages_from_phases(
+        _log(actions=actions)['phase_messages']
+    )
+
+    calls = [call for message in messages for call in message.tool_calls or []]
+    results = [message for message in messages if message.role == 'tool']
+    assert [call.id for call in calls] == ['call_0', 'call_1']
+    assert [call.arguments['command'] for call in calls] == ['cat a', 'cat b']
+    assert [message.tool_call_id for message in results] == [
+        ['call_0'],
+        ['call_1'],
+    ]
+    assert [message.content for message in results] == ['A\n', 'B\n']
+
+
+def test_best_attempt_ties_break_toward_the_earliest_start(tmp_path: Path):
+    logs_dir = _write(
+        tmp_path / 'logs',
+        [
+            _log(
+                bounty='0',
+                success=True,
+                complete=True,
+                start='2026-03-26T12:00:00.000000',
+                end='2026-03-26T12:04:00.000000',
+            ),
+            _log(
+                bounty='0',
+                success=True,
+                complete=True,
+                start='2026-03-26T10:00:00.000000',
+                end='2026-03-26T10:04:00.000000',
+            ),
+        ],
+    )
+    _logs, kept, _attempts, _result = adapter.convert(
+        _args(tmp_path, logs_dir, attempt_policy='best')
+    )
+
+    assert len(kept[0]) == 1
+    assert kept[0][0]['start_time'] == '2026-03-26T10:00:00.000000'
+
+
+def test_all_startup_config_records_each_log_once(tmp_path: Path):
+    # Two startup attempts under one configuration: each is excluded exactly
+    # once, with no extra synthetic group-level exclusion doubling the count.
+    logs_dir = _write(
+        tmp_path / 'logs',
+        [
+            _log(bounty='0', max_iterations=0),
+            _log(bounty='1', max_iterations=0),
+        ],
+    )
+    logs, _kept, _attempts, result = adapter.convert(_args(tmp_path, logs_dir))
+
+    assert logs == []
+    assert len(result.exclusions) == 2
+    assert all(
+        'startup failure' in exclusion.reason for exclusion in result.exclusions
+    )
+
+
+def test_a_log_without_start_time_is_a_recorded_failure(tmp_path: Path):
+    payload = _log()
+    payload.pop('start_time')
+    logs_dir = _write(tmp_path / 'logs', [payload])
+    args = _args(tmp_path, logs_dir)
+
+    _parsed, failures, _total = adapter.collect_logs(
+        logs_dir, args.source_timezone, None
+    )
+    assert 'start_time' in failures[0].reason
+
+    with pytest.raises(SystemExit, match='could not be parsed'):
+        adapter.run(args)
+    assert not (tmp_path / 'data').exists()
+
+
+def test_output_dir_must_end_in_the_collection_name(tmp_path: Path):
+    logs_dir = _write(tmp_path / 'logs', [_log()])
+    args = _args(tmp_path, logs_dir)
+    args.output_dir = tmp_path / 'data' / 'not-bountybench'
+
+    with pytest.raises(SystemExit, match="must end in 'bountybench'"):
+        adapter.run(args)
+    assert not (tmp_path / 'data').exists()
+
+    args.dry_run = True
+    adapter.run(args)

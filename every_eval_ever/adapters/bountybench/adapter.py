@@ -205,9 +205,12 @@ def parse_bounty_log(
     if phase_messages:
         max_iterations = phase_messages[0].get('max_iterations', 0) or 0
 
-    start_time = data.get('start_time') or ''
+    # start_time keys the evaluation's identity, so a log without one is
+    # rejected here — one recorded failure — rather than aborting the whole
+    # batch later when its group has no timestamp to build an aggregate from.
+    start_time = _require(data.get('start_time'), 'start_time')
     end_time = data.get('end_time') or ''
-    start_dt = parse_source_time(start_time, source_tz) if start_time else None
+    start_dt = parse_source_time(start_time, source_tz)
     end_dt = parse_source_time(end_time, source_tz) if end_time else None
     duration_ms = None
     if start_dt and end_dt:
@@ -264,10 +267,19 @@ def config_fingerprint(log: dict[str, Any]) -> str:
 
     BountyBench records no run id, so the configuration is the finest run
     boundary the source supports, and one aggregate reporting one set of
-    generation settings must not average over two of them.
+    generation settings must not average over two of them. The agent's
+    iteration budget is one of those settings — a run allowed 40 steps and a
+    run allowed 10 did not evaluate the model under the same conditions — so it
+    joins the model config in the fingerprint rather than being averaged over.
     """
     payload = json.dumps(
-        log['model_config'], sort_keys=True, separators=(',', ':'), default=str
+        {
+            'model_config': log['model_config'],
+            'max_iterations': log['max_iterations'],
+        },
+        sort_keys=True,
+        separators=(',', ':'),
+        default=str,
     )
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:12]
 
@@ -304,13 +316,19 @@ def select_attempts(
         )
 
     def rank(log: dict[str, Any]) -> tuple:
+        epoch = float(log['start_epoch']) if log['start_epoch'] else 0.0
         if policy == 'latest':
-            return (not log['startup_failure'], log['start_time'])
+            # The latest attempt that produced a scorable run: prefer a
+            # non-startup log, then the one that started last.
+            return (not log['startup_failure'], epoch)
+        # best: success, then completion, then a scored attempt, then the
+        # earliest start, as documented — so a tie resolves to the first run,
+        # not the last.
         return (
             log['success'],
             log['complete'],
             not log['startup_failure'],
-            log['start_time'],
+            -epoch,
         )
 
     kept = [max(group, key=rank) for group in attempts.values()]
@@ -318,12 +336,11 @@ def select_attempts(
     return kept, {key: len(group) for key, group in attempts.items()}
 
 
-def partition_usable(
+def startup_exclusions(
     logs: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[SourceRecordExclusion]]:
-    """Split off startup failures, which carry no attempt to score."""
-    usable = [log for log in logs if not log['startup_failure']]
-    excluded = [
+) -> list[SourceRecordExclusion]:
+    """Record every startup-failure log, which carries no attempt to score."""
+    return [
         SourceRecordExclusion(
             source_ref=str(log['path']),
             reason='startup failure: no agent iteration ran, so the log holds '
@@ -332,7 +349,6 @@ def partition_usable(
         for log in logs
         if log['startup_failure']
     ]
-    return usable, excluded
 
 
 def build_aggregate(
@@ -363,7 +379,9 @@ def build_aggregate(
     success_rate = n_success / n_total
     standard_error = math.sqrt(success_rate * (1 - success_rate) / n_total)
 
-    limits = sorted({log['max_iterations'] for log in logs})
+    # max_iterations is part of the fingerprint, so every log in this partition
+    # shares one iteration budget.
+    iteration_limit = first['max_iterations']
     metric_details = {
         'config_fingerprint': fingerprint,
         'attempt_selection': args.attempt_policy,
@@ -372,10 +390,6 @@ def build_aggregate(
             sum(1 for count in attempts.values() if count > 1)
         ),
     }
-    if len(limits) > 1:
-        metric_details['iteration_limits'] = ','.join(
-            str(limit) for limit in limits
-        )
     score_breakdown = {
         'successes': str(n_success),
         'total': str(n_total),
@@ -403,7 +417,7 @@ def build_aggregate(
                     ),
                 ]
             ),
-            eval_limits=EvalLimits(message_limit=max(limits)),
+            eval_limits=EvalLimits(message_limit=iteration_limit),
             sandbox=Sandbox(type='docker'),
         ),
         additional_details=generation_details or None,
@@ -488,19 +502,39 @@ def _truncate(text: str) -> str:
     return f'{text[:TOOL_OUTPUT_CHAR_LIMIT]}\n[truncated {dropped} characters]'
 
 
+def _claim_open_call(
+    open_calls: list[tuple[str, str]], command: str
+) -> str | None:
+    """Pop the call one result belongs to, matching command then arrival order.
+
+    The executor result carries the command it ran, so a result is paired to
+    the earliest still-open call for that exact command; a result with no
+    command (or no match) falls back to the oldest open call. Either way one
+    call is claimed at most once, so two open calls never share a result.
+    """
+    for index, (open_command, call_id) in enumerate(open_calls):
+        if command and open_command == command:
+            open_calls.pop(index)
+            return call_id
+    if open_calls:
+        return open_calls.pop(0)[1]
+    return None
+
+
 def build_messages_from_phases(phase_messages: list[dict]) -> list[Message]:
     """Flatten BountyBench phases into one ordered EEE transcript.
 
     BountyBench records a command twice: once as the model's chosen action, and
     again as the executing resource's action carrying its output. Each
     execution must therefore become exactly one tool call plus, where the log
-    has output for it, one tool result naming that call's id.
+    has output for it, one tool result naming that call's id. Several calls can
+    be open at once, so open calls are held in a FIFO and each result claims the
+    matching one — consecutive model commands no longer overwrite one another.
     """
     messages: list[Message] = []
     turn_idx = 0
     call_seq = 0
-    open_call: str | None = None
-    open_command: str | None = None
+    open_calls: list[tuple[str, str]] = []
 
     def add(**fields: Any) -> None:
         nonlocal turn_idx
@@ -520,23 +554,23 @@ def build_messages_from_phases(phase_messages: list[dict]) -> list[Message]:
                 meta = action.get('additional_metadata') or {}
                 command = action.get('command') or meta.get('command') or ''
                 result = action.get('message') or ''
-                # An executor echoing the still-unanswered command is the same
+                # An executor echoing a still-open command is the same
                 # execution, not a second one.
                 echoes = (
-                    open_call is not None
-                    and command == open_command
-                    and resource != 'model'
+                    resource != 'model'
+                    and command
+                    and any(cmd == command for cmd, _ in open_calls)
                 )
                 if command and not echoes:
-                    open_call = f'call_{call_seq}'
-                    open_command = command
+                    call_id = f'call_{call_seq}'
                     call_seq += 1
+                    open_calls.append((command, call_id))
                     add(
                         role='assistant',
                         content=None,
                         tool_calls=[
                             ToolCall(
-                                id=open_call,
+                                id=call_id,
                                 name='bash'
                                 if resource == 'model'
                                 else resource,
@@ -545,12 +579,12 @@ def build_messages_from_phases(phase_messages: list[dict]) -> list[Message]:
                         ],
                     )
                 if result and resource != 'model':
+                    claimed = _claim_open_call(open_calls, command)
                     add(
                         role='tool',
                         content=_truncate(result),
-                        tool_call_id=[open_call] if open_call else None,
+                        tool_call_id=[claimed] if claimed else None,
                     )
-                    open_call = open_command = None
     return messages
 
 
@@ -710,9 +744,12 @@ def convert(
     # nothing to convert cannot decide whether the later ones are written.
     for key, group in sorted(group_logs(parsed).items()):
         model_id, workflow, fingerprint = key
+        # Record startup failures from the whole group, before per-bounty
+        # selection can drop an attempt whose bounty also has a usable one, and
+        # exactly once — no synthetic group-level exclusion on top.
+        exclusions.extend(startup_exclusions(group))
         kept, attempts = select_attempts(group, args.attempt_policy)
-        usable, excluded = partition_usable(kept)
-        exclusions.extend(excluded)
+        usable = [log for log in kept if not log['startup_failure']]
         logger.info(
             '%s / %s / %s: %d log(s) -> %d bount(ies), %d usable',
             model_id,
@@ -723,13 +760,6 @@ def convert(
             len(usable),
         )
         if not usable:
-            exclusions.append(
-                SourceRecordExclusion(
-                    source_ref=f'{model_id}/{workflow}/{fingerprint}',
-                    reason='no usable bounty: every attempt in this configuration '
-                    'failed at startup',
-                )
-            )
             continue
         logs.append(
             build_aggregate(usable, attempts, fingerprint, args, retrieved_unix)
@@ -749,6 +779,15 @@ def convert(
 
 def run(args: argparse.Namespace) -> int:
     """Convert one BountyBench log tree and publish it."""
+    # Publication forces the collection to COLLECTION, so a requested directory
+    # whose final component is anything else would be silently redirected. Fail
+    # instead, before any work, so the written location matches the flag. A
+    # dry run writes nothing, so it need not care where output would land.
+    if not args.dry_run and args.output_dir.name != COLLECTION:
+        raise SystemExit(
+            f'--output-dir must end in {COLLECTION!r}, the datastore '
+            f'collection this adapter writes; got {args.output_dir}'
+        )
     logger.info('scanning %s for BountyBench logs', args.logs_dir)
     logs, kept_logs, attempt_counts, result = convert(args)
 

@@ -222,10 +222,11 @@ uv run python -m every_eval_ever.adapters.bountybench.adapter \
 ```
 
 **One record per (model, workflow, configuration).** A BountyBench log records
-no run id, so a configuration — the sha256 of `resources_used.model.config`,
-reported as `config_fingerprint` — is the finest run boundary the source
-supports. Grouping any coarser would let one aggregate report a temperature or
-token budget that only some of its bounties were run under. The three workflows
+no run id, so a configuration — the sha256 of `resources_used.model.config`
+together with the agent's iteration budget (`max_iterations`), reported as
+`config_fingerprint` — is the finest run boundary the source supports. Grouping
+any coarser would let one aggregate report a temperature, token budget, or step
+limit that only some of its bounties were run under. The three workflows
 are separate evaluations (`bountybench.detect`, `.exploit`, `.patch`), each with
 `evaluation_result_id` equal to its slug, and `evaluation_id` carries the
 workflow and the fingerprint so they cannot collide.
@@ -233,8 +234,10 @@ workflow and the fingerprint so they cannot collide.
 **Repeated attempts are rejected by default.** With no run id, two logs for one
 bounty under one configuration may be a retry or a second run, and they
 disagree on the score, so `--attempt-policy reject` (the default) stops rather
-than picking. `best` (success, then completion, then earliest) and `latest`
-collapse them and disclose the choice: `attempt_selection`, `n_attempts_total`
+than picking. `best` (success, then completion, then a scored attempt, then the
+earliest start) and `latest` (the last-started attempt that produced a scorable
+run) collapse them and disclose the choice: `attempt_selection`,
+`n_attempts_total`
 (every source log in the partition, including excluded ones),
 `n_bounties_with_multiple_attempts`, and `GenerationArgs.max_attempts`.
 
