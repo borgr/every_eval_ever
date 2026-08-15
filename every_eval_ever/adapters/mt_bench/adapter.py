@@ -58,6 +58,7 @@ from every_eval_ever.helpers import (
     default_failure_report_path,
     get_developer,
     get_model_id,
+    raw_capture,
     require_identity,
     sanitize_filename,
     save_evaluation_logs,
@@ -174,7 +175,7 @@ class ModelScores:
                 self.latest_judgment_ts = ts
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Convert MT-Bench LMSYS judgments to EEE records.'
     )
@@ -205,14 +206,24 @@ def parse_args() -> argparse.Namespace:
             '--output-dir when any row fails.'
         ),
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def fetch_judgments(url: str) -> Iterable[dict]:
     import requests
 
-    response = requests.get(url, timeout=120, stream=True)
+    # The judgment file is streamed so a manual run does not hold it all in
+    # memory. Raw capture needs the whole body, so buffer only when a sink is
+    # active and leave the manual path exactly as it was.
+    capturing = raw_capture.active_sink() is not None
+    response = requests.get(url, timeout=120, stream=not capturing)
     response.raise_for_status()
+    if capturing:
+        raw_capture.record(
+            url=response.url,
+            content=response.content,
+            content_type=response.headers.get('Content-Type'),
+        )
     for line in response.iter_lines(decode_unicode=True):
         if not line:
             continue
