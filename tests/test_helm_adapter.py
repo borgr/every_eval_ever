@@ -190,7 +190,7 @@ def test_narrativeqa_eval():
 
 
 HELLASWAG_RUN = (
-    'tests/data/helm/commonsense:dataset=hellaswag,'
+    'tests/data/helm/commonsense-dataset=hellaswag,'
     'method=multiple_choice_joint,model=eleutherai_pythia-1b-v0'
 )
 
