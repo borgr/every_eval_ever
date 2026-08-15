@@ -12,6 +12,7 @@ from every_eval_ever.helpers.io import (
     generate_output_path,
     raise_for_failed_records,
     require_uuid4,
+    sanitize_filename,
     save_failure_report,
 )
 
@@ -54,6 +55,20 @@ def test_basic_output_path_replaces_colons_for_windows(tmp_path):
     )
 
     assert path == tmp_path / 'developer' / 'model__revision'
+
+
+@pytest.mark.parametrize(
+    ('raw_name', 'safe_name'),
+    [
+        ('model. ', 'model'),
+        ('model\x00name\x1fname', 'model_name_name'),
+        ('CON', '_CON'),
+        ('con.json', '_con.json'),
+        ('LPT9', '_LPT9'),
+    ],
+)
+def test_sanitize_filename_produces_portable_names(raw_name, safe_name):
+    assert sanitize_filename(raw_name) == safe_name
 
 
 def test_evaluation_output_flattens_nested_model_path_and_colons():
