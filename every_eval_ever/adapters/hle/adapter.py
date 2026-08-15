@@ -68,6 +68,7 @@ from every_eval_ever.helpers import (
     SourceRecordFailure,
     default_failure_report_path,
     get_model_id,
+    raw_capture,
     require_finite_number,
     require_identity,
     sanitize_filename,
@@ -147,7 +148,7 @@ class LeaderboardRow:
         return str(value) if value else None
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Convert Scale SEAL's Humanity's Last Exam leaderboard to EEE "
@@ -189,7 +190,7 @@ def parse_args() -> argparse.Namespace:
             '--output-dir when any row fails.'
         ),
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def fetch_html(url: str) -> str:
@@ -197,6 +198,11 @@ def fetch_html(url: str) -> str:
 
     response = requests.get(url, timeout=120)
     response.raise_for_status()
+    raw_capture.record(
+        url=response.url,
+        content=response.content,
+        content_type=response.headers.get('Content-Type'),
+    )
     return response.text
 
 

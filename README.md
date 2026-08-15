@@ -10,18 +10,18 @@
 - 🔧 **Validation** that checks data against the schema before it enters the repository
 - 🔌 **Converters** for [Inspect AI](every_eval_ever/converters/inspect/), [HELM](every_eval_ever/converters/helm/), and [lm-eval-harness](every_eval_ever/converters/lm_eval/), so you can transform your existing evaluation logs into the standard format
 
-Install the package:
+Add the package to your project:
 
 ```bash
-pip install every-eval-ever
+uv add every-eval-ever
 ```
 
 Optional converter dependencies:
 
 ```bash
-pip install 'every-eval-ever[inspect]'
-pip install 'every-eval-ever[helm]'
-pip install 'every-eval-ever[all]'
+uv add 'every-eval-ever[inspect]'
+uv add 'every-eval-ever[helm]'
+uv add 'every-eval-ever[all]'
 ```
 
 > [!NOTE]
@@ -298,7 +298,7 @@ uv run python -m every_eval_ever.post_codegen
 
 Changing the schema or the validator also changes what a contributor has to produce, so
 `tests/test_skill_conversion.py` re-validates the contributor-facing
-[`eee-dataset-conversion` skill](.claude/skills/eee-dataset-conversion/SKILL.md) — its
+[`eee-dataset-conversion` skill](.agents/skills/eee-dataset-conversion/SKILL.md) — its
 templates and one frozen reference conversion — against the live validator. If it goes
 red, the guidance is what needs updating; the failure message says which file and gives
 the regeneration command. Don't skip it: it is the check that keeps the docs from

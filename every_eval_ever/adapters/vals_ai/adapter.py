@@ -41,6 +41,7 @@ from every_eval_ever.helpers import (
     default_failure_report_path,
     get_developer,
     get_model_id,
+    raw_capture,
     sanitize_filename,
     save_evaluation_logs,
     save_failure_report,
@@ -129,9 +130,12 @@ def fetch_text(url: str) -> str:
     request = Request(url, headers={'User-Agent': USER_AGENT})
     try:
         with urlopen(request, timeout=30) as response:
-            return response.read().decode('utf-8')
+            body = response.read()
+            content_type = response.headers.get('Content-Type')
     except URLError as exc:
         raise RuntimeError(f'Failed to fetch {url}: {exc}') from exc
+    raw_capture.record(url=url, content=body, content_type=content_type)
+    return body.decode('utf-8')
 
 
 def extract_benchmark_slugs(index_html: str) -> list[str]:
@@ -957,7 +961,7 @@ def _optional_positive_int(value: Any) -> int | None:
     return parsed
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Convert Vals.ai benchmark leaderboards to EEE JSON.'
     )
@@ -998,7 +1002,7 @@ def parse_args() -> argparse.Namespace:
             '--output-dir when any row fails.'
         ),
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main() -> None:

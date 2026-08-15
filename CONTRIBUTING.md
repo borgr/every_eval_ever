@@ -4,7 +4,7 @@ Thanks for contributing! This repo defines the **Every Eval Ever (EEE)** schema 
 
 For what the schema *is* and how to read a record, start with the [README](README.md) — [The Schema in Practice](README.md#-the-schema-in-practice), [Instance-Level Data](README.md#-instance-level-data), and [`eval.schema.json`](every_eval_ever/schemas/eval.schema.json) itself. This guide covers authoring and submitting: how your PR gets reviewed, how to submit data, and what to do when you change the schema or the tooling.
 
-> **Using an AI coding agent?** This repo ships an `eee-dataset-conversion` skill ([`.claude/skills/eee-dataset-conversion/`](.claude/skills/eee-dataset-conversion/), indexed from [AGENTS.md](AGENTS.md)) that walks an agent through a conversion — schema field traps, aggregate + instance records, verification, and a decision log to paste into the PR. The rules below apply to agent-authored PRs too, and the agent is expected to follow them.
+> **Using an AI coding agent?** This repo ships an `eee-dataset-conversion` skill ([`.agents/skills/eee-dataset-conversion/`](.agents/skills/eee-dataset-conversion/), indexed from [AGENTS.md](AGENTS.md)) that walks an agent through a conversion — schema field traps, aggregate + instance records, verification, and a decision log to paste into the PR. The rules below apply to agent-authored PRs too, and the agent is expected to follow them.
 
 ## 🔍 How your PR gets reviewed
 
@@ -88,6 +88,30 @@ Note: each file can contain multiple individual results related to one model. Se
 
 Before opening the PR, validate locally — see [Data Validation](README.md#-data-validation).
 
+### Automated (cron) submissions
+
+Some data arrives without a person: a daily GitHub Actions run refreshes each
+supported adapter and opens **one pull request per adapter**, reused across days
+(`[Submission] cron: <adapter> (automated ingestion)`). Every record it publishes
+carries, in `source_metadata.additional_details`:
+
+| Key | Value |
+|---|---|
+| `type_of_addition` | `cron` |
+| `cron_run_date` | the UTC date the source was pulled |
+| `cron_adapter` | the adapter that produced it |
+| `cron_run_url` | the workflow run, when available |
+| `cron_unknown_inferred_fields` | which of `deployment_type` and `model_availability` came out `unknown`; absent when both are known |
+
+That is what turns a later correction, "redo everything this adapter published that
+day", into a query rather than a scan. Nothing else about the record differs from a
+hand-submitted one, and the same validator gates it.
+
+The run keeps a snapshot of each source it fetched, so a record can be checked
+against the input it came from. Operating it, adding an adapter to the schedule, and
+its limitations are documented in
+[`every_eval_ever/cron/README.md`](every_eval_ever/cron/README.md).
+
 ## 🧾 Filling in the schema
 
 Conventions for authoring records. For what each field *means*, see [The Schema in Practice](README.md#-the-schema-in-practice) and [`eval.schema.json`](every_eval_ever/schemas/eval.schema.json); the schema is always the source of truth.
@@ -134,7 +158,7 @@ These change what a *contribution* has to look like, so they are slow-lane by de
 
 1. **Regenerate the Pydantic types** and commit the result — the commands are in [Auto-generation of Pydantic Classes](README.md#-auto-generation-of-pydantic-classes-for-schema).
 
-2. **Run `tests/test_skill_conversion.py`.** It re-validates the [`eee-dataset-conversion` skill](.claude/skills/eee-dataset-conversion/SKILL.md) — its templates and one frozen reference conversion — through the real CLI with semantic checks on. When it goes red, fix the **skill**, not the test: the failure message names the file and gives the regeneration command. This test is the reason there is no checklist of skill files to update here; it catches the drift that a checklist used to be relied on for.
+2. **Run `tests/test_skill_conversion.py`.** It re-validates the [`eee-dataset-conversion` skill](.agents/skills/eee-dataset-conversion/SKILL.md) — its templates and one frozen reference conversion — through the real CLI with semantic checks on. When it goes red, fix the **skill**, not the test: the failure message names the file and gives the regeneration command. This test is the reason there is no checklist of skill files to update here; it catches the drift that a checklist used to be relied on for.
 
 3. **Consider a `schema_version` bump.** A field-optionality change moved it `0.2.2 → 0.2.3` (see #212), and it has since moved to `0.3.0`. Whether a given change warrants a bump is a judgement call, not a rule — decide, and flag it in the PR so a reviewer can weigh in.
 
