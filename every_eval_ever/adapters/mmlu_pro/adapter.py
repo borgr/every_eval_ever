@@ -52,15 +52,20 @@ from every_eval_ever.helpers import (
     SCHEMA_VERSION,
     EvaluationLogOutput,
     SourceConversionResult,
+    SourceRecordExclusion,
     SourceRecordFailure,
     default_failure_report_path,
     get_developer,
     get_model_id,
+    raw_capture,
     sanitize_filename,
     save_evaluation_logs,
     save_failure_report,
 )
-from every_eval_ever.helpers.io import require_identity
+from every_eval_ever.helpers.io import (
+    datastore_path_components,
+    require_identity,
+)
 
 SOURCE_NAME = 'MMLU-Pro Leaderboard'
 SOURCE_ORGANIZATION = 'TIGER-Lab'
@@ -105,6 +110,40 @@ DATA_SOURCE_NORMALIZATIONS: dict[str, str] = {
 # A few MMLU-Pro models aren't covered by the helpers/developer.py
 # pattern map. Provide explicit overrides for those.
 DEVELOPER_OVERRIDES: dict[str, str] = {
+    'llemma': 'eleutherai',
+    # Some Gemini rows include a parenthesized MM/YY date. Match the family
+    # before get_developer mistakes that slash for an organization namespace.
+    'gemini': 'google',
+    'openchat': 'openchat',
+    'zephyr': 'huggingface',
+    'neo': 'm-a-p',
+    # The upstream CSV and paper spell Starling-7B as "Staring-7B".
+    'staring': 'berkeley-nest',
+    'internmath': 'shanghai-ai-lab',
+    'mathstral': 'mistralai',
+    'magnum': 'anthracite',
+    # The leaderboard does not publish an organization for this self-reported
+    # model. Keep a stable family namespace instead of silently losing it.
+    'rrd2.5': 'rrd',
+    'ministral': 'mistralai',
+    'smollm': 'huggingface',
+    'qwq': 'alibaba',
+    'skythought': 'novasky',
+    'minimax': 'minimax-ai',
+    'hunyuan': 'tencent',
+    'doubao': 'bytedance',
+    'azerogpt': 'soundai',
+    'llada': 'gsai',
+    'reka': 'reka-ai',
+    'nemotron': 'nvidia',
+    'mimo': 'xiaomi',
+    'general-reasoner': 'tiger-lab',
+    'echo_ego': 'mythworx',
+    'ernie': 'baidu',
+    'seed': 'bytedance',
+    'intern-s1': 'internlm',
+    'longcat': 'meituan',
+    'k2.5': 'moonshotai',
     'exaone': 'lg-ai',
     'mammoth': 'tiger-lab',
     'smaug': 'abacus-ai',
@@ -120,7 +159,7 @@ DEVELOPER_OVERRIDES: dict[str, str] = {
 }
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Convert the MMLU-Pro leaderboard CSV into EEE records.'
     )
@@ -153,7 +192,7 @@ def parse_args() -> argparse.Namespace:
             '--output-dir when any row fails.'
         ),
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def fetch_csv(url: str) -> str:
@@ -161,6 +200,11 @@ def fetch_csv(url: str) -> str:
 
     response = requests.get(url, timeout=120)
     response.raise_for_status()
+    raw_capture.record(
+        url=response.url,
+        content=response.content,
+        content_type=response.headers.get('Content-Type'),
+    )
     return response.text
 
 
@@ -304,6 +348,9 @@ def make_log(
     )
     model_slug = slugify(model_name)
     model_id = get_model_id(model_slug, developer)
+    _, route_developer, route_model = datastore_path_components(
+        'mmlu-pro', model_id, developer
+    )
     raw_data_source = row.get('Data Source', '').strip()
     data_source = normalize_data_source(raw_data_source)
     size_b = parse_size(row.get('Model Size(B)', ''))
@@ -374,7 +421,7 @@ def make_log(
         ),
         evaluation_results=results,
     )
-    return log, developer, model_slug
+    return log, route_developer, route_model
 
 
 def convert_logs(
@@ -392,6 +439,7 @@ def convert_logs(
     # survive and exact dupes are dropped.
     seen: set[tuple[str, str, str]] = set()
     failures: list[SourceRecordFailure] = []
+    exclusions: list[SourceRecordExclusion] = []
     for index, row in enumerate(rows):
         try:
             result = make_log(row, timestamp)
@@ -431,6 +479,13 @@ def convert_logs(
         )
         key = (log.model_info.id, data_source, overall)
         if key in seen:
+            exclusions.append(
+                SourceRecordExclusion(
+                    source_ref=f'CSV row {index + 2}',
+                    reason='exact duplicate leaderboard row',
+                    source_record=row,
+                )
+            )
             continue
         seen.add(key)
         bundles.append((log, developer, slug))
@@ -441,6 +496,7 @@ def convert_logs(
         total_records=len(rows),
         records=bundles,
         failures=failures,
+        exclusions=exclusions,
     )
 
 
@@ -480,12 +536,13 @@ def run(args: argparse.Namespace) -> int:
     paths = export(result.records, args.output_dir)
     for path in paths:
         print(path)
-    if result.failures:
+    if result.failures or result.exclusions:
         report_path = save_failure_report(
             result,
             args.failure_report or default_failure_report_path(args.output_dir),
         )
         print(f'Failure report: {report_path}')
+    if result.failures:
         result.raise_if_incomplete()
     return len(paths)
 
