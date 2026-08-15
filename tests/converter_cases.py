@@ -97,7 +97,7 @@ CASES: tuple[ConverterCase, ...] = (
         source='helm',
         log_path=REPO_ROOT
         / 'tests/data/helm'
-        / 'commonsense:dataset=hellaswag,method=multiple_choice_joint,'
+        / 'commonsense-dataset=hellaswag,method=multiple_choice_joint,'
         'model=eleutherai_pythia-1b-v0',
         aggregates=1,
         sidecars=1,
