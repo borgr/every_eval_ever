@@ -34,7 +34,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from every_eval_ever.eval_types import EvaluationLog
-from every_eval_ever.helpers import SCHEMA_VERSION
+from every_eval_ever.helpers import SCHEMA_VERSION, raw_capture
 from every_eval_ever.helpers.io import (
     EvaluationLogOutput,
     SourceConversionResult,
@@ -406,7 +406,10 @@ def _fetch_page(url: str) -> str:
     """Fetch a URL and return the HTML body as a string."""
     req = Request(url, headers={'User-Agent': 'Mozilla/5.0 (EEE-adapter)'})
     with urlopen(req, timeout=30) as resp:
-        return resp.read().decode('utf-8', errors='replace')
+        body = resp.read()
+        content_type = resp.headers.get('Content-Type')
+    raw_capture.record(url=url, content=body, content_type=content_type)
+    return body.decode('utf-8', errors='replace')
 
 
 def _clean_cell(html_fragment: str) -> str:
@@ -960,7 +963,7 @@ def process_benchmark(
     return len(paths), len(result.failures)
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Fetch HAL leaderboard data and convert to EEE schema.'
     )
@@ -976,7 +979,11 @@ def main() -> None:
         default=Path('data'),
         help='Root output directory (default: data/)',
     )
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
 
     benchmarks = (
         list(BENCHMARK_BY_SLUG.values())

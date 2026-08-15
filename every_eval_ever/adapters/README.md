@@ -14,17 +14,53 @@ re-validates those templates against the live validator, so they stay current.
 
 Each adapter is run with `uv run python -m every_eval_ever.adapters.<name>.adapter`.
 
+## The automation contract
+
+[`catalog.py`](catalog.py) declares which adapters the daily ingestion run may
+execute, the datastore collections each may write, the exact argv that keeps its
+output out of the checkout, and how long it may take. Every adapter package must
+appear there or in `LEGACY_ADAPTERS`, and `tests/test_adapter_catalog.py` checks
+each entry against the adapter's own parser, so a renamed flag fails a test rather
+than a scheduled run. It is called the catalog, not the registry, because "the
+registry" in this project is [`eval-card-registry`](https://github.com/evaleval/eval-card-registry).
+
+An adapter that automation runs must therefore:
+
+- expose `parse_args(argv: list[str] | None = None)` at module level;
+- accept `--output-dir`, and write **only** under it;
+- write records at `<output>/…/<developer>/<model>/{uuid4}.json`; the runner refuses
+  anything else, including a collection the catalog did not declare;
+- account for dropped source rows through `SourceConversionResult` +
+  `save_failure_report` + a non-zero exit, which is what lets a partial refresh be
+  told apart from a crash.
+
+`bfcl`, `cocoabench` and `sciarena` are registered as `runnable=False`: they need a
+local input file and have no live fetch path.
+
+## Raw source snapshots
+
+[`helpers/raw_capture.py`](../helpers/raw_capture.py) keeps the bytes an adapter
+converted, so a later correction can be checked against the input. It is inert unless
+`EEE_RAW_CAPTURE_DIR` is set, which only the cron does, so a manual run is unchanged.
+
+Adapters that fetch through `helpers.fetch.fetch_json` / `fetch_csv` are captured
+without any adapter code. An adapter with its own HTTP call site calls
+`raw_capture.record(...)` there. A source already addressable at a revision, such as
+a Hugging Face dataset or a git clone, records a pointer with
+`raw_capture.record_hf_dataset(...)` / `record_git_checkout(...)` rather than
+re-hosting bytes that are already durably stored.
+
 ## Adapters
 
 | Adapter | Data Source | Description |
 |---------|-------------|-------------|
-| `arc_agi` | ARC Prize leaderboard JSON | Converts ARC-AGI leaderboard data and merges canonical model aliases. |
+| `arc_agi` | ARC Prize leaderboard JSON | Fetches the JSON files behind arcprize.org/leaderboard, maps models to developers via the provider table, and merges canonical model aliases. |
 | `artificial_analysis` | Artificial Analysis LLM API | Converts Artificial Analysis LLM benchmark, pricing, and performance results into `data/artificial-analysis-llms/`. |
 | `vals_ai` | Vals.ai benchmark leaderboards | Scrapes Vals.ai benchmark pages and converts their embedded leaderboard results into `data/vals-ai/`. |
 | `bfcl` | BFCL leaderboard CSV | Converts BFCL leaderboard data with per-metric evaluation names and bounded continuous scores. |
 | `sciarena` | SciArena leaderboard API | Converts SciArena leaderboard results. |
 | `global_mmlu_lite` | Kaggle API | Fetches Global MMLU Lite leaderboard results from Kaggle. |
-| `hfopenllm_v2` | HuggingFace Spaces API | Fetches the Open LLM Leaderboard v2 (4576+ models). |
+| `hfopenllm_v2` | HuggingFace Spaces API | Fetches the Open LLM Leaderboard v2 (4576+ models). The leaderboard is no longer maintained upstream, so this converts a frozen archive and is not scheduled. |
 | `helm` | HELM leaderboard | Converts HELM leaderboard data. Supports `--leaderboard_name` for Capabilities/Lite/Classic/Instruct/MMLU. |
 | `llm_stats` | LLM Stats API | Converts LLM Stats model, benchmark, and score API data into `data/llm-stats/`. |
 | `mercor_eval` | Mercor Evaluation Exports API | Fetches authenticated Mercor benchmark leaderboards and writes aggregate EEE records. |
@@ -117,11 +153,28 @@ single `create_commit`.
 
 ### Legacy integrations
 
-`arc_agi`, `livecodebenchpro`, and `mercor_eval` are retained for historical
-and offline use, but their upstream sources are no longer usable for an active
-refresh (`mercor_eval` currently returns an empty response). They are excluded
+`livecodebenchpro` is retained for historical and offline use, but its
+upstream source is no longer usable for an active refresh. It is excluded
 from active-adapter migration and compliance requirements. Deterministic
-offline tests for their existing behavior may remain in the test suite.
+offline tests for its existing behavior may remain in the test suite.
+
+`arc_agi` left this list on 2026-08-12: its old endpoint
+(`/media/data/leaderboard/evaluations.json`) is gone, but the leaderboard
+itself is live, rendered from JSON files under
+`https://arcprize.org/media/data/`. The adapter now fetches those
+(evaluations, models, providers, datasets), takes each model's developer
+from the provider table instead of name heuristics, and is scheduled daily.
+
+`mercor_eval` is paused: its Exports API is broken upstream as of
+2026-08-12, so the catalog marks it `runnable=False` until Mercor serves
+data again. The adapter itself is healthy and still runs by hand; it exits
+`75` on an unreachable API and `1` on a rejected key.
+
+`helm_*` and `rewardbench` are paused for staleness rather than breakage:
+HELM's leaderboards are effectively static and RewardBench has not updated
+in a while, so a weekly refresh refetches unchanged data. Both sources
+still serve, both adapters still run by hand, and re-enabling either is one
+`runnable` flip in the catalog.
 
 ### Partial conversions and provenance
 
