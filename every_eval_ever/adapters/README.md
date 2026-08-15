@@ -229,7 +229,10 @@ any coarser would let one aggregate report a temperature, token budget, or step
 limit that only some of its bounties were run under. The three workflows
 are separate evaluations (`bountybench.detect`, `.exploit`, `.patch`), each with
 `evaluation_result_id` equal to its slug, and `evaluation_id` carries the
-workflow and the fingerprint so they cannot collide.
+workflow and the fingerprint so they cannot collide. A log whose
+`workflow_name` is none of the three is rejected as a failure rather than
+converted under a derived name — a new BountyBench workflow needs a slug added
+deliberately, so two unmapped names can never normalize to one identity.
 
 **Repeated attempts are rejected by default.** With no run id, two logs for one
 bounty under one configuration may be a retry or a second run, and they

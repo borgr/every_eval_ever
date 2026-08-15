@@ -427,6 +427,20 @@ def test_a_run_with_nothing_convertible_fails_loudly(tmp_path: Path):
         adapter.run(_args(tmp_path, logs_dir))
 
 
+def test_an_unknown_workflow_is_rejected_rather_than_slugged(tmp_path: Path):
+    logs_dir = _write(tmp_path / 'logs', [_log(workflow='MysteryWorkflow')])
+    args = _args(tmp_path, logs_dir)
+
+    _parsed, failures, _total = adapter.collect_logs(
+        logs_dir, args.source_timezone, None
+    )
+    assert 'unknown workflow' in failures[0].reason
+
+    with pytest.raises(SystemExit, match='could not be parsed'):
+        adapter.run(args)
+    assert not (tmp_path / 'data').exists()
+
+
 def test_differing_iteration_budgets_are_not_averaged_together(tmp_path: Path):
     logs_dir = _write(
         tmp_path / 'logs',

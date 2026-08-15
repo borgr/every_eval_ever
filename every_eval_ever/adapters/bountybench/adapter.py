@@ -22,7 +22,6 @@ import hashlib
 import json
 import logging
 import math
-import re
 import tempfile
 import uuid
 from collections import defaultdict
@@ -95,11 +94,14 @@ WORKFLOW_SLUGS = {
 
 
 def workflow_slug(workflow: str) -> str:
-    """Return the short evaluation name for a BountyBench workflow."""
-    if workflow in WORKFLOW_SLUGS:
-        return WORKFLOW_SLUGS[workflow]
-    slug = re.sub(r'[^a-z0-9]+', '_', workflow.lower()).strip('_')
-    return re.sub(r'_?workflow$', '', slug) or 'unknown'
+    """Return the short evaluation name for a BountyBench workflow.
+
+    Only the workflows in ``WORKFLOW_SLUGS`` have a slug. ``parse_bounty_log``
+    rejects any other name before it reaches here, so an evaluation identity is
+    never derived from an unmapped label (where two distinct names could
+    normalize to one slug and collide).
+    """
+    return WORKFLOW_SLUGS[workflow]
 
 
 def parse_source_time(value: str, source_tz: tzinfo) -> datetime:
@@ -197,6 +199,14 @@ def parse_bounty_log(
         workflow_metadata.get('workflow_name'),
         'workflow_metadata.workflow_name',
     )
+    if workflow not in WORKFLOW_SLUGS:
+        raise ValueError(
+            f'unknown workflow {workflow!r}; BountyBench defines '
+            f'{", ".join(sorted(WORKFLOW_SLUGS))}. A new workflow needs an '
+            'entry in WORKFLOW_SLUGS before its logs convert, so its '
+            'evaluation identity is assigned deliberately rather than derived '
+            'from the raw name and possibly collided with another.'
+        )
 
     # max_iterations is the configured agent budget; a log that records no
     # phase never ran an iteration, i.e. the harness failed at startup.
