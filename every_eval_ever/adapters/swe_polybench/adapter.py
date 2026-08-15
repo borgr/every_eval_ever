@@ -15,10 +15,12 @@ Score = resolved_count_in_lang / total_instances_for_lang_from_hf_dataset
 One EvaluationLog is written per (dataset x submission x language).
 
 Usage:
-    cd every_eval_ever
-    .venv/bin/python -m every_eval_ever.adapters.swe_polybench.adapter
+    uv run python -m every_eval_ever.adapters.swe_polybench.adapter
+    uv run python -m every_eval_ever.adapters.swe_polybench.adapter \
+        --output-dir /tmp/smoke/data/swe-polybench-leaderboard
 """
 
+import argparse
 import json
 import re
 import subprocess
@@ -55,6 +57,7 @@ from every_eval_ever.helpers import (
     default_failure_report_path,
     get_developer,
     get_model_id,
+    raw_capture,
     save_evaluation_logs,
     save_failure_report,
 )
@@ -200,6 +203,7 @@ def load_hf_instance_maps(ds: str) -> tuple[dict[str, str], Counter]:
 
     hf_repo = DATASETS[ds]
     print(f'  Loading HF dataset {hf_repo} ...')
+    raw_capture.record_hf_dataset(hf_repo, label=ds)
     dataset = load_dataset(hf_repo, split='test')
     id_to_lang: dict[str, str] = {}
     lang_counts: Counter = Counter()
@@ -402,12 +406,27 @@ def process_submission(
     return result.records
 
 
-def main():
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description='Convert the SWE-PolyBench leaderboard to EEE records.'
+    )
+    parser.add_argument(
+        '--output-dir',
+        type=Path,
+        default=Path(OUTPUT_BASE),
+        help=f'Datastore collection directory (default: {OUTPUT_BASE}).',
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None):
+    args = parse_args(argv)
+    output_dir = args.output_dir
     try:
         import yaml
     except ImportError as e:
         raise ImportError(
-            'pyyaml is required to run this adapter. Install it with: pip install pyyaml'
+            'pyyaml is required to run this adapter. Install it with: uv add pyyaml'
         ) from e
 
     retrieved_timestamp = str(time.time())
@@ -434,6 +453,7 @@ def main():
             ],
             check=True,
         )
+        raw_capture.record_git_checkout(POLY_REPO, tmpdir, ref=POLY_BRANCH)
 
         outputs = []
         failures = []
@@ -481,7 +501,7 @@ def main():
                         outputs.append(
                             EvaluationLogOutput(
                                 eval_log=eval_log,
-                                base_dir=OUTPUT_BASE,
+                                base_dir=output_dir,
                                 developer=developer,
                                 model_name=model_name,
                             )
@@ -520,13 +540,13 @@ def main():
         if result.failures:
             report_path = save_failure_report(
                 result,
-                default_failure_report_path(OUTPUT_BASE),
+                default_failure_report_path(output_dir),
             )
             print(f'Failure report: {report_path}')
 
     print(
         f'\nGenerated {len(paths)} files, {len(result.failures)} errors '
-        f'→ {OUTPUT_BASE}/'
+        f'→ {output_dir}/'
     )
     result.raise_if_incomplete()
 

@@ -177,8 +177,16 @@ def sanitize_filename(name: str) -> str:
     Returns:
         Sanitized string safe for filesystem use
     """
-    # Replace characters invalid on Windows/Unix filesystems
-    return re.sub(r'[<>:"/\\|?*]', '_', name)
+    # ``/`` is not part of ``_INVALID_PATH_CHARS`` because it is meaningful
+    # while parsing model namespaces. It is never safe inside one filename.
+    sanitized = _INVALID_PATH_CHARS.sub('_', name.replace('/', '_'))
+    sanitized = sanitized.rstrip('. ')
+    if (
+        sanitized
+        and sanitized.split('.', 1)[0].upper() in _WINDOWS_RESERVED_NAMES
+    ):
+        sanitized = f'_{sanitized}'
+    return sanitized
 
 
 def require_identity(value: str | None, field_name: str) -> str:
