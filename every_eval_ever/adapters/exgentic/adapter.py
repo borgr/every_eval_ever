@@ -11,7 +11,7 @@ results and converts them to EEE-conformant JSON files.
 
 Data source:
 - Exgentic experiments output: results.json files produced by `exgentic batch aggregate`
-- HuggingFace dataset: https://huggingface.co/datasets/Exgentic/open-agent-leaderboard-results
+- HuggingFace dataset: https://huggingface.co/datasets/Exgentic/results
 
 Usage:
     # From local experiment results
@@ -50,19 +50,22 @@ from every_eval_ever.helpers import (
     SourceConversionResult,
     SourceRecordFailure,
     default_failure_report_path,
+    raw_capture,
     save_evaluation_logs,
     save_failure_report,
 )
 from every_eval_ever.helpers.io import require_identity
 
 OUTPUT_DIR = 'data/exgentic'
-HF_DATASET = 'Exgentic/open-agent-leaderboard-results'
+HF_DATASET = 'Exgentic/results'
 
 # Map model name prefixes to developer organizations
 MODEL_DEVELOPER_MAP = {
     'claude': ('Anthropic', 'anthropic'),
     'gpt': ('OpenAI', 'openai'),
     'gemini': ('Google', 'google'),
+    'deepseek': ('DeepSeek', 'deepseek'),
+    'kimi': ('Moonshot AI', 'moonshot'),
 }
 
 
@@ -284,6 +287,7 @@ def load_results_from_hf() -> list[dict]:
         )
         sys.exit(1)
 
+    raw_capture.record_hf_dataset(HF_DATASET)
     ds = load_dataset(HF_DATASET, split='train')
     return list(ds)
 
@@ -332,7 +336,7 @@ def convert_results(
     )
 
 
-def main():
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Convert Exgentic results to Every Eval Ever format'
     )
@@ -350,10 +354,15 @@ def main():
         default=OUTPUT_DIR,
         help=f'Output directory for EEE JSON files (default: {OUTPUT_DIR})',
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if not args.results_dir and not args.from_hf:
         parser.error('Specify either --results-dir or --from-hf')
+    return args
+
+
+def main(argv: list[str] | None = None):
+    args = parse_args(argv)
 
     if args.results_dir:
         loaded = collect_results_from_dir(args.results_dir)

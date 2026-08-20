@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from every_eval_ever.adapters.mmlu_pro import adapter
 from every_eval_ever.eval_types import EvaluationLog
 from every_eval_ever.helpers.io import SourceRecordsError
+from every_eval_ever.validate import validate_file
 
 
 def sample_rows() -> list[dict]:
@@ -222,11 +225,33 @@ def test_data_source_typos_are_normalized():
 
 
 def test_exact_duplicate_rows_are_dropped():
-    bundles = adapter.make_logs(sample_rows(), retrieved_timestamp='123.0')
+    result = adapter.convert_logs(sample_rows(), retrieved_timestamp='123.0')
+    bundles = result.records
     duplicated = [
         b for b in bundles if 'gpt-4-turbo' in b[0].model_info.id.lower()
     ]
     assert len(duplicated) == 1
+    assert len(result.exclusions) == 1
+    assert result.exclusions[0].source_ref == 'CSV row 6'
+    assert result.exclusions[0].reason == 'exact duplicate leaderboard row'
+
+
+def test_current_live_model_families_have_stable_developers():
+    expected = {
+        'Gemini-3-Flash(12/25)': 'google',
+        'Llemma-7B': 'eleutherai',
+        'OpenChat-3.5-8B': 'openchat',
+        'Staring-7B': 'berkeley-nest',
+        'RRD2.5-9B': 'rrd',
+        'ECHO_Ego_v2_14B': 'mythworx',
+        'Seed2.0-Pro': 'bytedance',
+        'K2.5-1T-A32B': 'moonshotai',
+        'Nemotron-3-Nano-30B-A3B(BF16)': 'nvidia',
+    }
+
+    assert {
+        model: adapter.normalize_developer(model) for model in expected
+    } == expected
 
 
 def test_export_preflights_all_paths_before_writing(tmp_path):
@@ -243,6 +268,72 @@ def test_export_preflights_all_paths_before_writing(tmp_path):
         raise AssertionError('expected invalid output identity to fail')
 
     assert list(output_dir.rglob('*.json')) == []
+
+
+def test_seed_model_names_use_portable_paths_and_preserve_source_names(
+    tmp_path: Path,
+):
+    source_names = [
+        'Seed-OSS-36B-Base(w/ syn.)',
+        'Seed-OSS-36B-Base(w/o syn.)',
+    ]
+    rows = [
+        {
+            'Models': name,
+            'Data Source': 'TIGER-Lab',
+            'Model Size(B)': '36',
+            'Overall': '0.5',
+        }
+        for name in source_names
+    ]
+
+    bundles = adapter.make_logs(rows, retrieved_timestamp='123.0')
+
+    assert [bundle[2] for bundle in bundles] == [
+        'seed-oss-36b-base-w-syn',
+        'seed-oss-36b-base-w-o-syn',
+    ]
+    assert [bundle[0].model_info.name for bundle in bundles] == source_names
+    assert [
+        bundle[0].model_info.additional_details['raw_model_name']
+        for bundle in bundles
+    ] == source_names
+
+    output_dir = tmp_path / 'data' / 'mmlu-pro'
+    paths = adapter.export(bundles, output_dir)
+    assert {path.parent.name for path in paths} == {
+        'seed-oss-36b-base-w-syn',
+        'seed-oss-36b-base-w-o-syn',
+    }
+    for path in paths:
+        report = validate_file(
+            path,
+            repo_path=str(path.relative_to(tmp_path)),
+            available_files=frozenset(),
+            run_semantic_checks=True,
+        )
+        assert report.valid, report.errors
+
+
+def test_unsafe_mmlu_route_is_reported_with_its_csv_row(monkeypatch):
+    monkeypatch.setattr(adapter, 'slugify', lambda _value: 'unsafe.')
+
+    result = adapter.convert_logs(
+        [
+            {
+                'Models': 'GPT-4o',
+                'Data Source': 'TIGER-Lab',
+                'Overall': '0.5',
+            }
+        ],
+        retrieved_timestamp='123.0',
+    )
+
+    assert result.records == []
+    assert result.failures[0].source_ref == 'CSV row 2'
+    assert 'not a safe single datastore path component' in (
+        result.failures[0].reason
+    )
 
 
 def test_developer_override_for_exaone():

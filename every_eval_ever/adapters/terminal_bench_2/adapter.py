@@ -45,6 +45,7 @@ from every_eval_ever.helpers import (
     SourceConversionResult,
     SourceRecordFailure,
     default_failure_report_path,
+    raw_capture,
     sanitize_filename,
     save_evaluation_logs,
     save_failure_report,
@@ -137,7 +138,10 @@ def fetch_leaderboard_html(url: str = LEADERBOARD_URL) -> str:
     """Fetch the rendered Terminal-Bench leaderboard page."""
     request = Request(url, headers={'User-Agent': 'EEE-adapter/1.0'})
     with urlopen(request, timeout=60) as response:
-        return response.read().decode('utf-8', errors='strict')
+        body = response.read()
+        content_type = response.headers.get('Content-Type')
+    raw_capture.record(url=url, content=body, content_type=content_type)
+    return body.decode('utf-8', errors='strict')
 
 
 def save_raw_html(html: str, path: Path | None) -> None:
@@ -448,7 +452,7 @@ def export(
     )
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Fetch and convert the Terminal-Bench 2.0 leaderboard.',
     )
@@ -481,7 +485,7 @@ def parse_args() -> argparse.Namespace:
             '--output-dir when any row fails.'
         ),
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main() -> None:
