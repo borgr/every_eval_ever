@@ -69,6 +69,7 @@ from every_eval_ever.helpers import (
     SourceRecordFailure,
     default_failure_report_path,
     get_developer,
+    raw_capture,
     require_identity,
     sanitize_filename,
     save_evaluation_logs,
@@ -1525,7 +1526,7 @@ def remove_superseded_records(
     return removed
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description='Convert Papers with Code dumps to Every Eval Ever format.'
     )
@@ -1596,7 +1597,7 @@ def parse_args() -> argparse.Namespace:
         default=Path(DEFAULT_OUTPUT_DIR),
         help=f'Output directory (default: {DEFAULT_OUTPUT_DIR}).',
     )
-    return ap.parse_args()
+    return ap.parse_args(argv)
 
 
 # --- metric-family triage table --------------------------------------------
@@ -1793,14 +1794,30 @@ def run(args: argparse.Namespace) -> int:
         source_bucket: str | None = (
             None  # local dump -> no bucket provenance claim
         )
+        pointer_kind = 'local_dump'
+        source_reference = str(Path(dump_path).resolve())
     else:
         remote = args.remote_path or latest_dump_remote_path(args.bucket)
         dump_path = download_dump(args.bucket, remote, args.raw_dir)
         source_bucket = args.bucket
+        pointer_kind = 'hf_bucket_dump'
+        source_reference = f'{args.bucket}:{remote}'
 
     dump_version = dump_version_from_path(dump_path)
     dump_file = Path(dump_path).name
     retrieved_ts = retrieved_ts_from_dump(dump_version)
+
+    # The dump is content-addressed by its date-stamped filename and stays put
+    # in the bucket, so a pointer at that revision is the whole provenance; the
+    # multi-GB payload itself would blow the sink's size caps and buys nothing.
+    raw_capture.record_pointer(
+        kind=pointer_kind,
+        reference=source_reference,
+        revision=dump_version,
+        url=f'{PWC_SITE}',
+        label='Papers with Code postgres dump',
+        revision_required=True,
+    )
 
     print(f'loading dump {dump_path} ...')
     dump = load_dump(dump_path)
