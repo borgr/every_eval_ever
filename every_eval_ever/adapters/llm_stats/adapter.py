@@ -44,10 +44,12 @@ from every_eval_ever.helpers import (
     EvaluationLogOutput,
     FetchError,
     SourceConversionResult,
+    SourceRecordExclusion,
     SourceRecordFailure,
     default_failure_report_path,
     fetch_json,
     get_developer,
+    raw_capture,
     require_finite_number,
     sanitize_filename,
     save_evaluation_logs,
@@ -61,6 +63,15 @@ DEFAULT_BASE_URL = 'https://api.llm-stats.com'
 ATTRIBUTION_URL = 'https://llm-stats.com/'
 DEVELOPER_PAGE_URL = 'https://llm-stats.com/developer'
 DEFAULT_OUTPUT_DIR = 'data/llm-stats'
+AA_OMNISCIENCE_BENCHMARK_ID = 'aa-omniscience-index'
+AA_OMNISCIENCE_MIN_SCORE = -100.0
+AA_OMNISCIENCE_MAX_SCORE = 100.0
+VENDING_BENCH_2_BENCHMARK_ID = 'vending-bench-2'
+VENDING_BENCH_2_SCALE_URL = 'https://andonlabs.com/evals/vending-bench-2'
+COMMUNITY_LEADERBOARD_EXCLUSION_REASON = (
+    'community dataset leaderboard requires the separate '
+    '/v1/dataset-leaderboards API and is not supported by this adapter yet'
+)
 
 RELATIONSHIP_VALUES = {item.value for item in EvaluatorRelationship}
 
@@ -214,7 +225,7 @@ class LogBundle:
     model: str
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Convert LLM Stats API data to Every Eval Ever format.'
     )
@@ -258,7 +269,7 @@ def parse_args() -> argparse.Namespace:
             '--output-dir when any row fails.'
         ),
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def stringify(value: Any) -> str:
@@ -377,11 +388,18 @@ def fetch_payload(api_key: str, base_url: str) -> dict[str, Any]:
     )
 
     source_failures: list[SourceRecordFailure] = []
+    source_exclusions: list[SourceRecordExclusion] = []
     try:
         scores = fetch_json(api_url(base_url, '/v1/scores'), headers=headers)
+        source_record_count = len(extract_collection(scores, 'scores'))
     except FetchError:
+        benchmark_rows = extract_collection(benchmarks, 'benchmarks')
+        standard_benchmarks, source_exclusions = partition_community_benchmarks(
+            benchmark_rows
+        )
+        source_record_count = len(benchmark_rows)
         scores, source_failures = fetch_benchmark_score_payloads(
-            extract_collection(benchmarks, 'benchmarks'),
+            standard_benchmarks,
             base_url,
             headers,
         )
@@ -396,7 +414,41 @@ def fetch_payload(api_key: str, base_url: str) -> dict[str, Any]:
         'source_failures': [
             failure.model_dump() for failure in source_failures
         ],
+        'source_exclusions': [
+            exclusion.model_dump() for exclusion in source_exclusions
+        ],
+        'source_record_count': source_record_count,
     }
+
+
+def partition_community_benchmarks(
+    benchmarks: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[SourceRecordExclusion]]:
+    """Separate dataset leaderboards from standard benchmark summaries."""
+    standard: list[dict[str, Any]] = []
+    exclusions: list[SourceRecordExclusion] = []
+    for index, benchmark in enumerate(benchmarks):
+        is_community = first_present(benchmark, ('is_community', 'isCommunity'))
+        if is_community is True or (
+            isinstance(is_community, str)
+            and is_community.strip().lower() == 'true'
+        ):
+            raw_id = first_present(benchmark, BENCHMARK_ID_KEYS)
+            source_ref = (
+                f'community benchmark {raw_id!r}'
+                if raw_id not in (None, '')
+                else f'community benchmark row {index}'
+            )
+            exclusions.append(
+                SourceRecordExclusion(
+                    source_ref=source_ref,
+                    reason=COMMUNITY_LEADERBOARD_EXCLUSION_REASON,
+                    source_record=benchmark,
+                )
+            )
+        else:
+            standard.append(benchmark)
+    return standard, exclusions
 
 
 def fetch_benchmark_score_payloads(
@@ -449,9 +501,14 @@ def fetch_text(url: str) -> str:
     try:
         response = requests.get(url, timeout=60)
         response.raise_for_status()
-        return response.text
     except requests.exceptions.RequestException as exc:
         raise FetchError(f'Failed to fetch {url}: {exc}') from exc
+    raw_capture.record(
+        url=response.url,
+        content=response.content,
+        content_type=response.headers.get('Content-Type'),
+    )
+    return response.text
 
 
 def llm_stats_model_page_url(model_id: str) -> str:
@@ -1456,12 +1513,75 @@ def metric_bounds_and_unit(
     max_score = parse_float(max_raw)
 
     normalized_unit = normalize_metric_unit(raw_unit)
+    if normalize_slug(benchmark_source_id(benchmark)) == (
+        AA_OMNISCIENCE_BENCHMARK_ID
+    ):
+        if not (
+            AA_OMNISCIENCE_MIN_SCORE <= score_value <= AA_OMNISCIENCE_MAX_SCORE
+        ):
+            raise ValueError(
+                'AA-Omniscience canonical score must be within [-100, 100]; '
+                f'got {score_value}'
+            )
+        return (
+            AA_OMNISCIENCE_MIN_SCORE,
+            AA_OMNISCIENCE_MAX_SCORE,
+            'points',
+            'aa_omniscience_signed_scale',
+        )
+
+    if normalize_slug(benchmark_source_id(benchmark)) == (
+        VENDING_BENCH_2_BENCHMARK_ID
+    ):
+        if score_value < 0:
+            raise ValueError(
+                'Vending-Bench 2 final bank balance must be non-negative; '
+                f'got {score_value}'
+            )
+        # The benchmark owner defines the score as the final bank balance in
+        # dollars and explicitly documents that the benchmark has no ceiling.
+        # LLM Stats currently advertises max_score=1 for this benchmark, which
+        # is incompatible with its own dollar-valued source rows.
+        return (
+            0.0,
+            float('inf'),
+            'usd',
+            'vending_bench_2_unbounded_dollars',
+        )
+
     if min_score is not None and max_score is not None:
         if score_value > max_score and max_score == 1.0 and score_value <= 100:
             return 0.0, 100.0, 'percent', 'inferred_percent_from_score'
+        if not min_score <= score_value <= max_score:
+            raise ValueError(
+                f'score {score_value} is outside documented benchmark bounds '
+                f'[{min_score}, {max_score}]'
+            )
         if not normalized_unit:
             normalized_unit = 'proportion' if max_score == 1.0 else 'points'
         return min_score, max_score, normalized_unit, 'benchmark_bounds'
+
+    if score_value < 0:
+        raise ValueError(
+            f'negative score {score_value} has no documented adapter-specific '
+            'lower bound'
+        )
+
+    if max_score is not None:
+        if max_score == 1.0 and score_value > max_score and score_value <= 100:
+            return 0.0, 100.0, 'percent', 'inferred_percent_from_score'
+        if max_score <= 0:
+            raise ValueError(
+                f'benchmark max_score must be positive; got {max_score}'
+            )
+        if score_value > max_score:
+            raise ValueError(
+                f'score {score_value} exceeds documented benchmark max_score '
+                f'{max_score}'
+            )
+        if not normalized_unit:
+            normalized_unit = 'proportion' if max_score == 1.0 else 'points'
+        return 0.0, max_score, normalized_unit, 'benchmark_max_with_zero_min'
 
     if normalized_unit == 'percent' or (1.0 < score_value <= 100.0):
         return 0.0, 100.0, 'percent', 'inferred_percent'
@@ -1549,10 +1669,26 @@ def make_metric_details(
         'raw_score_field': raw_score_field,
         'bound_strategy': bound_strategy,
     }
+    raw_min_score = first_present(
+        benchmark,
+        ('min_score', 'minScore', 'minimum_score', 'minimumScore', 'min'),
+    )
+    raw_max_score = first_present(
+        benchmark,
+        ('max_score', 'maxScore', 'maximum_score', 'maximumScore', 'max'),
+    )
+    if raw_min_score not in (None, ''):
+        details['raw_min_score'] = raw_min_score
+    if raw_max_score not in (None, ''):
+        details['raw_max_score'] = raw_max_score
     for key in BENCHMARK_DETAIL_KEYS:
         value = first_present(benchmark, (key,))
         if value not in (None, ''):
             details[f'raw_{normalize_slug(key).replace("-", "_")}'] = value
+    if normalize_slug(benchmark_source_id(benchmark)) == (
+        VENDING_BENCH_2_BENCHMARK_ID
+    ):
+        details['canonical_scale_source_url'] = VENDING_BENCH_2_SCALE_URL
     return stringify_details(details)
 
 
@@ -1565,6 +1701,8 @@ def make_score_details(
     raw_score_value: Any,
     raw_unit: str | None,
     urls: list[str],
+    normalized_score_value: Any = None,
+    transformation_strategy: str | None = None,
 ) -> ScoreDetails:
     details: dict[str, Any] = {
         'raw_score': raw_score_value,
@@ -1573,7 +1711,12 @@ def make_score_details(
         'raw_model_id': model_source_id(model),
         'raw_benchmark_id': benchmark_source_id(benchmark),
         'source_urls_json': urls,
+        'transformation_strategy': transformation_strategy,
     }
+    if transformation_strategy is not None:
+        # Preserve an explicit upstream null as ``"null"`` so reviewers can
+        # distinguish it from an adapter that never inspected the field.
+        details['raw_normalized_score'] = stringify(normalized_score_value)
 
     score_id = first_present(score, ('id', 'score_id', 'scoreId'))
     if score_id not in (None, ''):
@@ -1586,13 +1729,73 @@ def make_score_details(
     )
 
 
+def canonical_score_value(
+    score: dict[str, Any],
+    benchmark: dict[str, Any],
+) -> tuple[float | None, str | None, Any, Any, str | None]:
+    """Return the datastore score plus the source fields used to derive it."""
+    value, raw_score_field, raw_score_value = score_value_and_field(score)
+    if normalize_slug(benchmark_source_id(benchmark)) != (
+        AA_OMNISCIENCE_BENCHMARK_ID
+    ):
+        return value, raw_score_field, raw_score_value, None, None
+
+    normalized_raw = first_present(
+        score, ('normalized_score', 'normalizedScore')
+    )
+    if normalized_raw not in (None, ''):
+        normalized = parse_float(normalized_raw)
+        if normalized is None or not 0.0 <= normalized <= 1.0:
+            raise ValueError(
+                'AA-Omniscience normalized_score must be within [0, 1]; '
+                f'got {normalized_raw!r}'
+            )
+        return (
+            normalized * 200.0 - 100.0,
+            raw_score_field,
+            raw_score_value,
+            normalized_raw,
+            'normalized_score_to_signed_range',
+        )
+
+    self_reported = first_present(score, ('self_reported', 'selfReported'))
+    if self_reported is True:
+        if value is None:
+            raise ValueError(
+                'AA-Omniscience self-reported row has no raw score'
+            )
+        if not AA_OMNISCIENCE_MIN_SCORE <= value <= AA_OMNISCIENCE_MAX_SCORE:
+            raise ValueError(
+                'AA-Omniscience self-reported raw score must be within '
+                f'[-100, 100]; got {value}'
+            )
+        return (
+            value,
+            raw_score_field,
+            raw_score_value,
+            None,
+            'self_reported_signed_raw_score',
+        )
+
+    raise ValueError(
+        'AA-Omniscience row has no normalized_score and is not explicitly '
+        'self-reported; cannot determine its score scale'
+    )
+
+
 def make_evaluation_result(
     score: dict[str, Any],
     model: dict[str, Any],
     benchmark: dict[str, Any],
     base_url: str,
 ) -> EvaluationResult | None:
-    value, raw_score_field, raw_score_value = score_value_and_field(score)
+    (
+        value,
+        raw_score_field,
+        raw_score_value,
+        normalized_score_value,
+        transformation_strategy,
+    ) = canonical_score_value(score, benchmark)
     if value is None:
         return None
 
@@ -1654,6 +1857,8 @@ def make_evaluation_result(
             raw_score_value,
             raw_unit,
             urls,
+            normalized_score_value,
+            transformation_strategy,
         ),
     )
 
@@ -1698,6 +1903,15 @@ def convert_logs(
         )
         for failure in payload.get('source_failures', [])
         if isinstance(failure, dict)
+    ]
+    source_exclusions = [
+        SourceRecordExclusion(
+            source_ref=str(exclusion.get('source_ref') or 'unknown source'),
+            reason=str(exclusion.get('reason') or 'unknown exclusion'),
+            source_record=exclusion.get('source_record'),
+        )
+        for exclusion in payload.get('source_exclusions', [])
+        if isinstance(exclusion, dict)
     ]
     model_index = build_index(models, MODEL_ID_KEYS)
     benchmark_index = build_index(benchmarks, BENCHMARK_ID_KEYS)
@@ -1760,9 +1974,12 @@ def convert_logs(
         )
 
     failures = [*source_failures, *score_failures]
-    if not bundles and not failures:
+    if not bundles and not failures and not source_exclusions:
         raise ValueError('LLM Stats: converted 0 source records')
-    if source_failures and score_failures:
+    captured_source_count = payload.get('source_record_count')
+    if isinstance(captured_source_count, int) and captured_source_count >= 0:
+        total_records = captured_source_count
+    elif source_failures and score_failures:
         total_records = len(benchmarks) + len(scores)
     elif source_failures:
         total_records = len(benchmarks)
@@ -1773,6 +1990,7 @@ def convert_logs(
         total_records=total_records,
         records=bundles,
         failures=failures,
+        exclusions=source_exclusions,
     )
 
 
@@ -1822,13 +2040,13 @@ def run(args: argparse.Namespace) -> int:
     paths = export_logs(result.records, args.output_dir)
     for path in paths:
         print(path)
-    if result.failures:
+    if result.failures or result.exclusions:
         report_path = save_failure_report(
             result,
             args.failure_report or default_failure_report_path(args.output_dir),
         )
         print(f'Failure report: {report_path}')
-        result.raise_if_incomplete()
+    result.raise_if_incomplete()
     return len(paths)
 
 
