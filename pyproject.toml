@@ -64,6 +64,7 @@ every_eval_ever = [
     "adapters/**/*.md",
     "adapters/**/*.sh",
     "adapters/**/registry_snapshot.json",
+    "cron/*.md",
     "tools/*.md",
 ]
 [dependency-groups]
