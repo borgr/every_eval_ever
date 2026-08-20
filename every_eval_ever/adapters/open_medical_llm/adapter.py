@@ -44,6 +44,7 @@ from every_eval_ever.eval_types import (
 )
 from every_eval_ever.helpers import (
     SCHEMA_VERSION,
+    raw_capture,
     EvaluationLogOutput,
     SourceConversionResult,
     SourceRecordExclusion,
@@ -566,7 +567,7 @@ def existing_records(
     )
 
 
-def main() -> dict:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-dir", default="data/open-medical-llm")
     ap.add_argument("--limit", type=int, default=None, help="Process only the first N models.")
@@ -587,7 +588,11 @@ def main() -> dict:
              "populated output directory is an error, because a re-run would add "
              "a second copy of every record.",
     )
-    args = ap.parse_args()
+    return ap.parse_args(argv)
+
+
+def main() -> dict:
+    args = parse_args()
     resolve_enabled = not args.no_registry_resolve
     # Checked before the source listing, so a mistyped limit costs no requests.
     if args.limit is not None and args.limit < 0:
@@ -598,6 +603,11 @@ def main() -> dict:
         )
 
     retrieved_ts = str(time.time())
+    # Snapshot the source for the scheduled runner's provenance gate. Every
+    # per-model result file read below lives in the one openlifescienceai/results
+    # dataset, so a pointer at its resolved commit covers them all; re-storing
+    # the files buys nothing over the commit. No-op unless capture is active.
+    raw_capture.record_hf_dataset(REPO, label="Open Medical-LLM results")
     paths = list_result_files()
     chosen, baselines = latest_per_model(paths)
     if args.limit is not None:
