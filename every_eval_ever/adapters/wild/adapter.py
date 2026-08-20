@@ -26,8 +26,6 @@ from datetime import timezone
 from pathlib import Path
 from typing import Iterator
 
-import pyarrow.parquet as pq
-
 from every_eval_ever.converters.common.publication import (
     publish_evaluation_logs,
 )
@@ -47,7 +45,7 @@ from every_eval_ever.eval_types import (
     SourceDataPrivate,
     SourceMetadata,
 )
-from every_eval_ever.helpers import SCHEMA_VERSION
+from every_eval_ever.helpers import SCHEMA_VERSION, raw_capture
 from every_eval_ever.helpers.developer import get_developer
 from every_eval_ever.helpers.io import (
     SourceConversionResult,
@@ -142,6 +140,11 @@ def iter_batches(parquet: list[str] | None, columns: list[str],
     would hold every selected column for all of them at once — several GB for the
     instance columns, even when ``--max-instances`` stops after the first few.
     """
+    # Imported here, not at module load: pyarrow is the adapter's own extra
+    # (`every-eval-ever[wild]`), absent from the base environment the catalog
+    # test imports every adapter under.
+    import pyarrow.parquet as pq
+
     for label, opener in _shard_handles(parquet, limit_shards, revision):
         with opener() as fh:
             pf = pq.ParquetFile(fh)
@@ -644,6 +647,25 @@ def run(args: argparse.Namespace) -> int:
     # Checked before any lookup or read, so a mistyped destination costs nothing.
     base_output_dir = resolve_base_output_dir(args.output_dir)
     revision, commit_ts = resolve_source_revision(args.revision, args.parquet)
+    # Snapshot the source for the scheduled runner's provenance gate. A remote
+    # read is a Hugging Face dataset pinned to a commit, so a pointer at that
+    # commit is the whole of it -- re-storing the parquet buys nothing. Local
+    # --parquet has no commit to pin, so the bytes themselves are kept instead.
+    # Both no-op unless a capture sink is active (i.e. under automation).
+    if raw_capture.active_sink() is not None:
+        if revision:
+            raw_capture.record_pointer(
+                kind='hf_dataset', reference=HF_REPO_ID, revision=revision,
+                url=HF_DATASET_URL, label=SOURCE_NAME, revision_required=True,
+            )
+        else:
+            for path in args.parquet or []:
+                raw_capture.record(
+                    url=Path(path).resolve().as_uri(),
+                    content=Path(path).read_bytes(),
+                    content_type='application/octet-stream',
+                    label=f'{SOURCE_NAME} parquet',
+                )
     # retrieved = when this record was created (now); evaluation = when WILD ran it.
     eval_ts = resolve_eval_timestamp(args.evaluation_timestamp, commit_ts)
     retrieved_ts = str(args.retrieved_timestamp) if args.retrieved_timestamp else str(time.time())
@@ -748,7 +770,7 @@ def run(args: argparse.Namespace) -> int:
     return len(published)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description='Convert kensho/WILD-raw to Every Eval Ever.')
     # nargs='+' so a bare --parquet errors instead of silently converting all 15
     # remote shards.
@@ -778,7 +800,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--revision', default=None,
                    help='Pin a specific kensho/WILD-raw commit SHA/tag for reproducible '
                         'reruns (default: resolve the current main commit and pin that).')
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 if __name__ == '__main__':
