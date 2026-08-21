@@ -150,7 +150,6 @@ class LMEvalInstanceLevelAdapter:
             (metric_name, float(sample[metric_name]))
             for metric_name in metrics
             if isinstance(sample.get(metric_name), (int, float))
-            and not isinstance(sample.get(metric_name), bool)
         ]
 
         # Build sample hash from input + reference for cross-model comparison

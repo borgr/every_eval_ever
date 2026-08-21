@@ -372,9 +372,9 @@ def test_instance_level_non_numeric_metrics_only():
                     'doc_id': 7,
                     'target': 'yes',
                     'filter': 'none',
-                    'metrics': ['verdict', 'passed'],
+                    'metrics': ['verdict', 'rationale'],
                     'verdict': 'correct',
-                    'passed': True,
+                    'rationale': 'looks right',
                     'arguments': {'gen_args_0': {'arg_0': 'Is this right?'}},
                     'filtered_resps': ['yes'],
                 }
@@ -393,8 +393,51 @@ def test_instance_level_non_numeric_metrics_only():
     # The unscored values are still recoverable from the row.
     assert json.loads(logs[0].metadata['lm_eval_metrics']) == {
         'verdict': 'correct',
-        'passed': True,
+        'rationale': 'looks right',
     }
+
+
+def test_instance_level_bool_metric_is_canonicalized_to_float():
+    """A per-sample boolean metric joins like the aggregate path.
+
+    Python bool is a subclass of int, so the aggregate adapter already stores
+    True/False as 1.0/0.0. The sidecar mirrors that: a boolean value
+    canonicalizes to a real scored row that joins on its evaluation_result_id,
+    not a synthetic 0.0 row with no result to point at.
+    """
+    inst_adapter = LMEvalInstanceLevelAdapter()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        samples_path = _write_samples(
+            tmpdir,
+            [
+                {
+                    'doc_id': 0,
+                    'target': 'yes',
+                    'filter': 'none',
+                    'metrics': ['passed', 'failed'],
+                    'passed': True,
+                    'failed': False,
+                    'arguments': {'gen_args_0': {'arg_0': 'Is this right?'}},
+                    'filtered_resps': ['yes'],
+                }
+            ],
+        )
+        logs = inst_adapter.transform_samples(
+            samples_path,
+            evaluation_id='test/eval/123',
+            model_id='test-model',
+            task_name='mytask',
+        )
+
+    assert [
+        (log.evaluation_result_id, log.evaluation.score) for log in logs
+    ] == [
+        ('passed', 1.0),
+        ('failed', 0.0),
+    ]
+    assert [log.evaluation.is_correct for log in logs] == [True, False]
+    # No unjoined synthetic row was emitted.
+    assert all(log.evaluation_result_id is not None for log in logs)
 
 
 def test_na_stderr_treated_as_absent():
