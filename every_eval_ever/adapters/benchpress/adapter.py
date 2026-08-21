@@ -639,7 +639,16 @@ def make_logs(payload: dict[str, Any],
         previous = kept.get(result.evaluation_result_id)
         if previous is not None:
             if previous.model_dump() == result.model_dump():
-                continue  # the same cell reported twice: nothing to add or report
+                # The same cell reported twice: nothing new to convert, but the
+                # row is still accounted as an exclusion so converted + failed +
+                # excluded reconciles with total_records.
+                exclusions.append(SourceRecordExclusion(
+                    source_ref=_score_ref(score),
+                    reason=(f'exact duplicate of {result.evaluation_result_id} '
+                            f'already reported for this model as {relationship}'),
+                    source_record=score,
+                ))
+                continue
             failures.append(SourceRecordFailure(
                 source_ref=_score_ref(score),
                 reason=(f'{result.evaluation_result_id} is already reported for '

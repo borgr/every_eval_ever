@@ -134,11 +134,15 @@ def test_a_second_result_for_one_benchmark_is_reported_not_dropped():
     assert [f.source_ref for f in result.failures] == ["claude-opus-4.6/aime_2025"]
     assert "https://anthropic.com/news" in result.failures[0].reason
 
-    # The same cell reported twice carries nothing new, so it is not a conflict.
+    # The same cell reported twice carries nothing new, so it is not a conflict;
+    # it is accounted as an exclusion so the ledger still reconciles.
     payload["scores"][-1] = dict(payload["scores"][2])
     repeated = adapter.make_logs(payload)
     assert repeated.failures == []
     assert len(repeated.records) == len(adapter.make_logs(sample_payload()).records)
+    baseline = adapter.make_logs(sample_payload())
+    assert len(repeated.exclusions) == len(baseline.exclusions) + 1
+    assert any('exact duplicate' in e.reason for e in repeated.exclusions)
 
 
 def test_a_shared_host_never_identifies_a_publisher():
