@@ -12,6 +12,10 @@ from every_eval_ever.helpers.io import SourceRecordsError
 
 
 def _results_obj():
+    # A complete leaderboard file carries all nine benchmarks (verified 180/180
+    # upstream). convert() treats a shortfall as a failure, so the canonical good
+    # fixture is complete; medmcqa/pubmedqa/mmlu_anatomy keep their special metric
+    # shapes (stderr present / absent) that the make_result unit tests assert on.
     return {
         "config": {"model_name": "acme/med-x", "model_dtype": "float16",
                    "model_args": "pretrained=acme/med-x"},
@@ -19,8 +23,23 @@ def _results_obj():
             "medmcqa": {"acc,none": 0.61, "acc_stderr,none": 0.012, "alias": "medmcqa"},
             "pubmedqa": {"acc,none": 0.75, "acc_stderr,none": 0.02},
             "mmlu_anatomy": {"acc,none": 0.55},  # no stderr -> no uncertainty
+            "medqa_4options": {"acc,none": 0.58, "acc_stderr,none": 0.01},
+            "mmlu_clinical_knowledge": {"acc,none": 0.62, "acc_stderr,none": 0.01},
+            "mmlu_college_biology": {"acc,none": 0.64, "acc_stderr,none": 0.01},
+            "mmlu_college_medicine": {"acc,none": 0.60, "acc_stderr,none": 0.01},
+            "mmlu_medical_genetics": {"acc,none": 0.66, "acc_stderr,none": 0.01},
+            "mmlu_professional_medicine": {"acc,none": 0.63, "acc_stderr,none": 0.01},
         },
     }
+
+
+def _partial_results_obj():
+    """A file missing some of the nine benchmarks — an upstream shortfall."""
+    obj = _results_obj()
+    for task in ("mmlu_college_biology", "mmlu_college_medicine",
+                 "mmlu_medical_genetics", "mmlu_professional_medicine"):
+        del obj["results"][task]
+    return obj
 
 
 def test_make_log_is_valid_and_mapped():
@@ -39,9 +58,7 @@ def test_make_log_is_valid_and_mapped():
     assert v.eval_library.name == "lm-evaluation-harness"
     # one result per medical benchmark; accuracy / proportion / [0,1]
     names = {r.evaluation_name for r in v.evaluation_results}
-    assert names == {"open-medical-llm-leaderboard.medmcqa",
-                     "open-medical-llm-leaderboard.pubmedqa",
-                     "open-medical-llm-leaderboard.mmlu_anatomy"}
+    assert names == {f"open-medical-llm-leaderboard.{t}" for t in adapter.TASKS}
     r0 = v.evaluation_results[0].metric_config
     assert (r0.score_type.value, r0.min_score, r0.max_score) == ("continuous", 0.0, 1.0)
     assert r0.metric_kind == "accuracy"
@@ -218,6 +235,55 @@ def test_every_selected_file_is_accounted_for(monkeypatch):
         "GPT-4/results_2024-03-01T00:00:00.json"]
     with pytest.raises(SourceRecordsError):
         result.raise_if_incomplete()
+
+
+def test_a_partial_file_keeps_its_record_but_fails_the_run(monkeypatch):
+    """A file missing benchmarks is an upstream shortfall: keep it, but fail."""
+    chosen = {
+        "acme/med-x": "acme/med-x/results_2024-05-01 00:00:00.json",   # complete
+        "acme/short": "acme/short/results_2024-05-01 00:00:00.json",   # partial
+    }
+    short = _partial_results_obj()
+    short["config"] |= {"model_name": "acme/short",
+                        "model_args": "pretrained=acme/short"}
+    objs = {chosen["acme/med-x"]: _results_obj(),
+            chosen["acme/short"]: short}
+    monkeypatch.setattr(adapter, "fetch_json", lambda path: objs[path])
+    result, _flagged = adapter.convert(chosen, [], "1700000000.0",
+                                       resolve_enabled=False, workers=1)
+    # both records are kept — the partial one is not dropped
+    assert {developer + "/" + model for _log, developer, model in result.records} == {
+        "acme/med-x", "acme/short"}
+    # ...but the shortfall is reported, so the run exits non-zero
+    assert [f.source_ref for f in result.failures] == [chosen["acme/short"]]
+    assert "4 of 9" in result.failures[0].reason
+    with pytest.raises(SourceRecordsError):
+        result.raise_if_incomplete()
+
+
+def test_a_complete_file_publishes_clean(monkeypatch):
+    """A full nine-benchmark file has no shortfall and does not fail the run."""
+    chosen = {"acme/med-x": "acme/med-x/results_2024-05-01 00:00:00.json"}
+    monkeypatch.setattr(adapter, "fetch_json", lambda path: _results_obj())
+    result, _flagged = adapter.convert(chosen, [], "1700000000.0",
+                                       resolve_enabled=False, workers=1)
+    assert len(result.records) == 1
+    assert result.failures == []
+    result.raise_if_incomplete()  # no shortfall -> clean
+
+
+def test_route_follows_the_canonical_id_when_the_resolver_remaps_it(monkeypatch):
+    """The datastore route must follow model_info.id, not the raw HF repo path,
+    so a canonical-id consumer finds the record after a resolver remap."""
+    built = adapter.make_log(
+        "acme/med-x", _results_obj(),
+        "acme/med-x/results_2024-05-01 00:00:00.123.json", "1700000000.0",
+        model_id="OpenBioLLM/med-x",   # canonical id differs from the HF repo path
+    )
+    log, developer, model = built
+    assert log.model_info.id == "OpenBioLLM/med-x"
+    # route derives from the canonical id, not from "acme/med-x"
+    assert (developer, model) == ("OpenBioLLM", "med-x")
 
 
 def test_existing_records_are_reported_before_a_second_copy_is_written(tmp_path):

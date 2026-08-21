@@ -54,6 +54,7 @@ from every_eval_ever.helpers import (
     save_evaluation_logs,
     save_failure_report,
 )
+from every_eval_ever.helpers.io import datastore_path_components
 
 REPO = "openlifescienceai/results"
 RESOLVE = "https://huggingface.co/datasets/openlifescienceai/results/resolve/main/"
@@ -407,6 +408,11 @@ def make_log(
 
     resolved_id = model_id or model_repo  # join key; raw_slug keys evaluation_id
     raw_slug = (dataset_repo or model_repo).replace("/", "_")
+    # Route by the registry-canonical model_info.id (as mmlu_pro / openeval / hal
+    # do), so a canonical-id consumer finds the published record even when the
+    # resolver remapped the id away from the HF repo path. model_repo stays as
+    # provenance (source_model_repo, above) and raw_slug still keys evaluation_id.
+    _, route_developer, route_model = datastore_path_components(SRC, resolved_id, developer)
 
     md_details: dict = {
         # `pretrained=<hf repo>` is lm-evaluation-harness loading a checkpoint
@@ -459,7 +465,7 @@ def make_log(
         model_info=model_info,
         evaluation_results=sorted(ev_results, key=lambda r: r.evaluation_name),
     )
-    return log, developer, model
+    return log, route_developer, route_model
 
 
 def convert(
@@ -495,22 +501,37 @@ def convert(
                         f'({identity["model_identity_dataset_path"]} vs '
                         f'{identity["model_identity_run_config"]}) and they could not '
                         f'be reconciled ({identity["model_identity_source"]}), so '
-                        f'which model was evaluated is unknown', None)
+                        f'which model was evaluated is unknown', None, None)
             model_id, prov = resolve_model_id(evaluated, enabled=resolve_enabled)
             built = make_log(evaluated, obj, chosen[model_repo], retrieved_ts,
                              model_id=model_id, dataset_repo=model_repo,
                              resolution_details={**identity, **prov})
         except Exception as e:  # noqa: BLE001
-            return ("ERR", model_repo, str(e), None)
+            return ("ERR", model_repo, str(e), None, None)
         if built is None:
             return ("ERR", model_repo,
-                    'none of the leaderboard tasks carry an `acc,none` score', None)
-        return ("OK", model_repo, built, prov)
+                    'none of the leaderboard tasks carry an `acc,none` score', None, None)
+        # Every chosen file is a model's latest leaderboard result and is expected
+        # to carry all nine benchmarks. A shortfall means a task failed to run or
+        # report upstream, so keep the converted record BUT report it, so the run
+        # exits non-zero rather than publishing a silent partial.
+        covered = {r.evaluation_name for r in built[0].evaluation_results}
+        missing = [t for t in TASKS if f"{SRC}.{t}" not in covered]
+        return ("OK", model_repo, built, prov, missing)
 
     with cf.ThreadPoolExecutor(max_workers=workers) as ex:
-        for status, model_repo, payload, prov in ex.map(worker, sorted(chosen)):
+        for status, model_repo, payload, prov, missing in ex.map(worker, sorted(chosen)):
             if status == "OK":
                 records.append(payload)
+                if missing:
+                    failures.append(SourceRecordFailure(
+                        source_ref=chosen[model_repo],
+                        reason=(f'{len(missing)} of {len(TASKS)} leaderboard '
+                                f'benchmarks have no `acc,none` score '
+                                f'({", ".join(missing)}); the converted record is '
+                                f'kept, but the source file is incomplete'),
+                    ))
+                    print(f"  PARTIAL {model_repo}: missing {missing}")
                 if resolve_enabled and _needs_registry_review(prov):
                     flagged.append((model_repo, prov))
             else:
