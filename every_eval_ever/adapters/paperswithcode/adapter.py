@@ -1393,8 +1393,13 @@ def read_papers_subset(dump, paper_ids: set[Any]) -> dict[Any, dict[str, Any]]:
 
 
 def dump_version_from_path(dump_path: str | Path) -> str:
-    m = re.search(r'(\d{8})(?:_\d+)?', Path(dump_path).name)
-    return m.group(1) if m else Path(dump_path).stem
+    # Keep any sub-day suffix (e.g. `_HHMMSS`) so two dumps on the same date get
+    # distinct versions, hence distinct evaluation_ids. A date-only filename still
+    # yields just the date, so the common one-dump-per-day case is unchanged.
+    m = re.search(r'(\d{8})(_\d+)?', Path(dump_path).name)
+    if not m:
+        return Path(dump_path).stem
+    return m.group(1) + (m.group(2) or '')
 
 
 # ---------------------------------------------------------------------------

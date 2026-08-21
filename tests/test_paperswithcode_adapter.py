@@ -813,6 +813,20 @@ def test_retrieved_ts_from_dump_is_deterministic():
     assert adapter.retrieved_ts_from_dump('weird-version') == 'weird-version'
 
 
+def test_dump_version_retains_subday_suffix_for_distinct_same_day_dumps():
+    # A date-only filename yields just the date (the one-dump-per-day case).
+    assert adapter.dump_version_from_path('pwc_20260716.dump') == '20260716'
+    # Two dumps on the same date keep their _HHMMSS suffix, so they get distinct
+    # versions -> distinct evaluation_ids rather than colliding on the date.
+    v1 = adapter.dump_version_from_path('paperswithcode_hf_20260716_031511.dump')
+    v2 = adapter.dump_version_from_path('paperswithcode_hf_20260716_144207.dump')
+    assert v1 == '20260716_031511'
+    assert v2 == '20260716_144207'
+    assert v1 != v2
+    # A name with no date still falls back to the stem rather than raising.
+    assert adapter.dump_version_from_path('weird.dump') == 'weird'
+
+
 def test_superseded_records_are_removed_and_kept_ones_survive(tmp_path):
     out = tmp_path / 'out'
     (out / 'dev' / 'model').mkdir(parents=True)
