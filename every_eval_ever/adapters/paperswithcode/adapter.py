@@ -1602,6 +1602,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=Path(DEFAULT_OUTPUT_DIR),
         help=f'Output directory (default: {DEFAULT_OUTPUT_DIR}).',
     )
+    ap.add_argument(
+        '--emit-source-version',
+        action='store_true',
+        help='Print the current dump version (its date stamp) and exit without '
+        'converting. Resolves the latest dump by listing the bucket, without '
+        'downloading it; a --dump path names that file instead. The scheduler '
+        'uses this to skip a run whose dump has not rolled over.',
+    )
     return ap.parse_args(argv)
 
 
@@ -1794,6 +1802,19 @@ def _imperfection_report(resolver: MetricResolver) -> str:
 
 
 def run(args: argparse.Namespace) -> int:
+    if getattr(args, 'emit_source_version', False):
+        # The dump's date stamp is this source's version, the way a commit is
+        # git's. Resolving it means only listing the bucket (no multi-GB
+        # download), so the scheduler can decide to skip cheaply. A local --dump
+        # names that file's stamp; otherwise the latest remote dump names it.
+        if args.dump is not None:
+            version = dump_version_from_path(args.dump)
+        else:
+            remote = args.remote_path or latest_dump_remote_path(args.bucket)
+            version = dump_version_from_path(remote)
+        print(version)
+        return 0
+
     if args.dump is not None:
         dump_path = args.dump
         source_bucket: str | None = (

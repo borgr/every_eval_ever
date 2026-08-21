@@ -944,3 +944,50 @@ def test_latest_dump_remote_path_lists_postgres_recursively(monkeypatch):
     # nested files are found (recursive) and the newest is chosen
     assert got == 'postgres/paperswithcode_hf_20260716_031511.dump'
     assert seen == {'prefix': 'postgres', 'recursive': True}
+
+
+def test_emit_source_version_names_a_local_dump_without_network(capsys):
+    # A --dump path is named from its own stamp, so the probe touches no bucket.
+    exit_code = adapter.run(
+        adapter.parse_args(
+            [
+                '--emit-source-version',
+                '--dump',
+                '/tmp/pwc-raw/paperswithcode_hf_20260716_031511.dump',
+            ]
+        )
+    )
+
+    assert exit_code == 0
+    # One line, the dump version, and nothing converted -- this is what the
+    # scheduler compares to decide whether a run can be skipped.
+    assert capsys.readouterr().out.strip() == '20260716_031511'
+
+
+def test_emit_source_version_resolves_the_latest_dump_by_listing(
+    monkeypatch, capsys
+):
+    class _Entry:
+        def __init__(self, path):
+            self.path = path
+
+    downloaded = []
+
+    class _FakeApi:
+        def list_bucket_tree(self, bucket, prefix=None, recursive=False):
+            return [
+                _Entry('postgres/paperswithcode_hf_20260715_010101.dump'),
+                _Entry('postgres/paperswithcode_hf_20260716_031511.dump'),
+            ]
+
+        def download_bucket_files(self, *args, **kwargs):
+            downloaded.append(args)  # a probe must never download the dump
+
+    monkeypatch.setattr('huggingface_hub.HfApi', _FakeApi)
+
+    exit_code = adapter.run(adapter.parse_args(['--emit-source-version']))
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.strip() == '20260716_031511'
+    # The probe lists the bucket; it must not download the multi-GB dump.
+    assert downloaded == []
