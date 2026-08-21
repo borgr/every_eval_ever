@@ -94,7 +94,7 @@ SAMPLE_DATASET_SLUGS = ('eth3d-relative', 're10k-2-view')
 SNAPSHOT_PATH = Path(__file__).with_name('registry_snapshot.json')
 
 HF_MODEL_RE = re.compile(
-    r'https?://huggingface\.co/(?!datasets/|spaces/)([^/\s]+)/([^/?#\s]+)'
+    r'https?://huggingface\.co/(?!datasets/|spaces/|collections/)([^/\s]+)/([^/?#\s]+)'
 )
 HF_DATASET_RE = re.compile(
     r'https?://huggingface\.co/datasets/([^/\s]+/[^/?#\s]+)'

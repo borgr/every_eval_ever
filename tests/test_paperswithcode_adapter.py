@@ -249,6 +249,18 @@ def test_model_identity_guesses_developer_from_name():
     assert name == 'GPT-5.5 Pro (xhigh)'  # raw display name preserved
 
 
+def test_collection_url_is_not_read_as_a_model_identity():
+    # huggingface.co/collections/<owner>/<slug> is a collection page, not a
+    # model repo. It must not resolve to the `collections/<owner>` identity;
+    # the URL is ignored and the developer comes from the display name.
+    mid, dev, slug, name = adapter.model_identity(
+        'GPT-5.5 Pro (xhigh)',
+        'https://huggingface.co/collections/openai/reasoning-o1',
+    )
+    assert dev == 'openai'
+    assert not mid.startswith('collections/')
+
+
 def test_unestablished_developer_is_reported_not_dropped(tmp_path):
     conversion = _convert()
     assert conversion.total_records == len(_evaluations())
