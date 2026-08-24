@@ -1500,22 +1500,38 @@ def existing_records(output_dir: str | Path) -> list[Path]:
     return sorted(output_dir.rglob('*.json'))
 
 
-def remove_superseded_records(
-    stale: Iterable[Path], keep: set[Path], root: str | Path
-) -> int:
-    """Delete records from a previous run once the new set is fully written.
+def _record_evaluation_id(path: Path) -> str | None:
+    """Return a record's ``evaluation_id``, or ``None`` if it cannot be read."""
+    try:
+        return json.loads(path.read_text(encoding='utf-8')).get('evaluation_id')
+    except (OSError, ValueError):
+        return None
 
-    Each file is named by a fresh ``uuid4``, so a re-run would otherwise pile up
-    records that differ only by filename. Removing the old ones only after
-    publication succeeds means the output directory always holds one complete
-    set: the previous run's if this one fails, this run's if it succeeds.
-    Returns the number of records removed.
+
+def remove_superseded_records(
+    stale: Iterable[Path],
+    keep: set[Path],
+    superseded_ids: set[str],
+    root: str | Path,
+) -> int:
+    """Delete a previous run's copies of the evaluations THIS run rewrote.
+
+    Each file is named by a fresh ``uuid4``, so re-running the same selection
+    would otherwise pile up records that differ only by filename. A stale file is
+    removed only when it is not one we just wrote and its ``evaluation_id`` is one
+    this run re-emitted; records for evaluations outside this run's selection --
+    other datasets already in an existing export, say -- are left untouched, so a
+    partial run cannot wipe them. Deletion happens only after publication
+    succeeds, so a failure leaves the previous run's output intact. Returns the
+    number of records removed.
     """
     root = Path(root).resolve()
     removed = 0
     emptied = set()
     for path in stale:
         if path in keep or not path.exists():
+            continue
+        if _record_evaluation_id(path) not in superseded_ids:
             continue
         path.unlink()
         emptied.add(path.parent.resolve())
@@ -1967,7 +1983,9 @@ def run(args: argparse.Namespace) -> int:
     # Replace, don't accumulate: uuid4 filenames mean a re-run would otherwise
     # pile up duplicate records. The whole batch is validated and written before
     # any record of the previous run is removed, so a failure here leaves that
-    # run's output intact rather than a half-replaced directory.
+    # run's output intact rather than a half-replaced directory. Supersession is
+    # scoped to the evaluation ids this run re-emitted, so a partial selection
+    # (e.g. the default two-dataset sample) never deletes the rest of an export.
     stale = existing_records(args.output_dir)
     written = save_evaluation_logs(
         [
@@ -1980,7 +1998,10 @@ def run(args: argparse.Namespace) -> int:
             for bundle in bundles
         ]
     )
-    removed = remove_superseded_records(stale, set(written), args.output_dir)
+    superseded_ids = {bundle.log.evaluation_id for bundle in bundles}
+    removed = remove_superseded_records(
+        stale, set(written), superseded_ids, args.output_dir
+    )
     if removed:
         print(f'removed {removed} superseded record(s) from the previous run')
     total_results = sum(len(b.log.evaluation_results) for b in bundles)

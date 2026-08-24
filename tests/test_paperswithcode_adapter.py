@@ -833,13 +833,14 @@ def test_superseded_records_are_removed_and_kept_ones_survive(tmp_path):
     old_a = out / 'dev' / 'model' / 'a.json'
     old_b = out / 'dev' / 'model' / 'b.json'
     fresh = out / 'dev' / 'model' / 'c.json'
+    # All three are copies of the same evaluation (a re-run's uuid pileup).
     for path in (old_a, old_b, fresh):
-        path.write_text('{}')
+        path.write_text(json.dumps({'evaluation_id': 'eid'}))
 
     stale = adapter.existing_records(out)
     assert stale == [old_a, old_b, fresh]
 
-    removed = adapter.remove_superseded_records(stale, {fresh}, out)
+    removed = adapter.remove_superseded_records(stale, {fresh}, {'eid'}, out)
     assert removed == 2
     assert fresh.exists() and not old_a.exists() and not old_b.exists()
     assert out.exists()
@@ -852,9 +853,9 @@ def test_emptied_directories_are_pruned_no_higher_than_the_output_root(
     out = tmp_path / 'out'
     (out / 'dev' / 'model').mkdir(parents=True)
     record = out / 'dev' / 'model' / 'a.json'
-    record.write_text('{}')
+    record.write_text(json.dumps({'evaluation_id': 'eid'}))
 
-    adapter.remove_superseded_records([record], set(), out)
+    adapter.remove_superseded_records([record], set(), {'eid'}, out)
 
     assert not (out / 'dev').exists()
     assert out.exists() and tmp_path.exists()
@@ -991,3 +992,60 @@ def test_emit_source_version_resolves_the_latest_dump_by_listing(
     assert capsys.readouterr().out.strip() == '20260716_031511'
     # The probe lists the bucket; it must not download the multi-GB dump.
     assert downloaded == []
+
+
+# --- supersession scope ---------------------------------------------------------
+
+
+def _record_file(path, evaluation_id):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({'evaluation_id': evaluation_id}), encoding='utf-8'
+    )
+    return path
+
+
+def test_supersession_only_removes_reemitted_ids_not_the_rest(tmp_path):
+    """A partial run must not wipe records outside its selection.
+
+    The default command converts only the two sample datasets, so a run against
+    an existing full export must delete only its own prior copies, never the
+    other datasets' records.
+    """
+    out = tmp_path / 'data' / 'paperswithcode'
+    reemitted = 'paperswithcode/meta_llama/v1'
+    # A prior copy of an evaluation this run re-emits (old uuid, same id)...
+    old_copy = _record_file(out / 'meta/llama/aaaa.json', reemitted)
+    # ...an unrelated dataset's record this run never touches...
+    other = _record_file(
+        out / 'openai/gpt/bbbb.json', 'paperswithcode/openai_gpt/v1'
+    )
+    # ...and the file this run just wrote for the re-emitted evaluation.
+    fresh = _record_file(out / 'meta/llama/cccc.json', reemitted)
+
+    removed = adapter.remove_superseded_records(
+        stale=[old_copy, other],
+        keep={fresh},
+        superseded_ids={reemitted},
+        root=out,
+    )
+
+    assert removed == 1
+    assert not old_copy.exists()  # superseded duplicate gone
+    assert other.exists()  # unrelated export preserved
+    assert fresh.exists()
+
+
+def test_supersession_leaves_unreadable_stale_files(tmp_path):
+    """An unreadable stale file is never deleted -- fail safe, not open."""
+    out = tmp_path / 'data' / 'paperswithcode'
+    bad = out / 'x/y/zzzz.json'
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_text('{not json', encoding='utf-8')
+
+    removed = adapter.remove_superseded_records(
+        stale=[bad], keep=set(), superseded_ids={'anything'}, root=out
+    )
+
+    assert removed == 0
+    assert bad.exists()
