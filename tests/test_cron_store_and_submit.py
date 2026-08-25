@@ -35,6 +35,34 @@ def _repo_not_found(repo_id: object) -> RepositoryNotFoundError:
     )
     return RepositoryNotFoundError(f'{repo_id} not found', response=response)
 
+@pytest.fixture(autouse=True)
+def retry_waits(monkeypatch) -> list[int]:
+    """Record the commit backoff instead of waiting it out.
+
+    Every commit path here retries a lost race, so without this the module
+    spends the real backoff — a minute per test that exhausts its attempts.
+    Tests that care assert on the recorded attempt numbers.
+    """
+    waits: list[int] = []
+    monkeypatch.setattr(store, 'wait_before_retry', waits.append)
+    return waits
+
+
+def _conflict(status: int, message: str) -> Exception:
+    """Build the Hub's refusal of a commit that lost a race.
+
+    ``huggingface_hub>=1.0`` attaches the httpx response its errors came
+    from, and the status on it is what distinguishes a moved head from a
+    held commit lock.
+    """
+    response = httpx.Response(
+        status, request=httpx.Request('POST', 'https://huggingface.co')
+    )
+    error = RuntimeError(message)
+    error.response = response
+    return error
+
+
 RUN_DATE = date(2026, 8, 10)
 YESTERDAY = date(2026, 8, 9)
 #: Where today's snapshot goes, and where yesterday's went. Both carry a run
@@ -638,7 +666,9 @@ def test_two_adapters_from_one_head_both_record_their_state() -> None:
     assert hub.files['state/mt_bench.fingerprints'].split() == ['b']
 
 
-def test_a_rejected_commit_that_is_not_a_race_still_fails() -> None:
+def test_a_rejected_commit_that_is_not_a_race_still_fails(
+    retry_waits,
+) -> None:
     """A permission or transport error must not be retried into silence."""
     hub = FakeHub(sha='headsha')
     raw_store = store.RawStore(hub)
@@ -651,6 +681,81 @@ def test_a_rejected_commit_that_is_not_a_race_still_fails() -> None:
             message='hle',
             parent_commit=state.parent_commit,
         )
+
+    assert retry_waits == []
+
+
+def test_a_held_commit_lock_is_waited_out_not_reported(retry_waits) -> None:
+    """The head has not moved, and it is still a race.
+
+    Four adapter jobs of one matrix commit to this branch at once and the Hub
+    serialises them, so the losers are refused with 409 before the winner's
+    commit has moved the head at all. Reading an unmoved head as evidence
+    against a race fails the job for the one reason a retry would fix.
+    """
+    hub = FakeHub(sha='headsha')
+    raw_store = store.RawStore(hub)
+    state = raw_store.read_state('hle')
+    state.fingerprints.add('a')
+    held = _conflict(
+        409,
+        '409 Client Error: Conflict for url: .../commit/main\n\nAnother '
+        'commit operation is in progress for this repository. Please try '
+        'again later.',
+    )
+    attempts: list[dict] = []
+    real_create_commit = hub.create_commit
+
+    def hold_the_lock_once(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise held
+        return real_create_commit(**kwargs)
+
+    hub.create_commit = hold_the_lock_once
+
+    raw_store.commit(
+        store.state_operations(state),
+        message='hle',
+        parent_commit=state.parent_commit,
+    )
+
+    assert hub.files['state/hle.fingerprints'].split() == ['a']
+    assert retry_waits == [1], 'one wait, before the second attempt'
+
+
+def test_a_lock_that_never_clears_fails_after_its_attempts(
+    retry_waits,
+) -> None:
+    """A retry budget, so a permanently locked repository is still reported."""
+    hub = FakeHub(sha='headsha')
+    raw_store = store.RawStore(hub)
+    state = raw_store.read_state('hle')
+    hub.commit_error = _conflict(409, '409 Client Error: Conflict')
+
+    with pytest.raises(store.StoreError, match='could not write'):
+        raw_store.commit(
+            store.state_operations(state),
+            message='hle',
+            parent_commit=state.parent_commit,
+        )
+
+    assert retry_waits == list(range(1, store.COMMIT_ATTEMPTS))
+
+
+def test_the_backoff_grows_and_separates_concurrent_jobs() -> None:
+    """Lockstep retries collide again; each window is entered at random."""
+    windows = [
+        {store.commit_retry_delay(attempt) for _ in range(50)}
+        for attempt in (1, 2, 3)
+    ]
+
+    assert all(len(window) > 1 for window in windows), 'no jitter'
+    assert max(windows[0]) <= min(windows[1])
+    assert max(windows[1]) <= min(windows[2])
+    assert (
+        store.commit_retry_delay(99) <= store.COMMIT_RETRY_MAX_SECONDS
+    ), 'the window has a ceiling'
 
 
 def test_a_reference_survives_a_run_of_unchanged_days(tmp_path) -> None:
@@ -1157,6 +1262,68 @@ def test_an_unanswerable_batch_is_reported_as_unresolved(tmp_path) -> None:
         'inspect https://huggingface.co/datasets/evaleval/EEE_datastore '
         'before re-running'
     ) in str(caught.value)
+
+
+def test_a_contended_datastore_commit_is_retried_not_torn(
+    tmp_path, retry_waits
+) -> None:
+    """The dangerous half of the same race: a lock conflict mid-publication.
+
+    Adapter jobs publish to one branch, so the Hub refuses the losers here
+    too. Reporting it as a partial submission strands the run between the
+    snapshot commit and the ledger commit, which is the one state a re-run
+    cannot reason about cheaply.
+    """
+    tree = _upload_tree(tmp_path, 7)
+    hub = FakeHub()
+    sub = submit.DatastoreSubmitter(hub, batch_size=3)
+
+    real_create_commit = hub.create_commit
+    refusals: list[int] = []
+
+    def hold_the_lock_on_the_second_batch(**kwargs):
+        if len(hub.commits) == 1 and len(refusals) < 2:
+            refusals.append(1)
+            raise _conflict(409, '409 Client Error: Conflict')
+        return real_create_commit(**kwargs)
+
+    hub.create_commit = hold_the_lock_on_the_second_batch
+
+    result = sub.publish(
+        operations=submit.upload_operations(tree),
+        description='body',
+        message='hle 2026-08-10',
+    )
+
+    assert len(result.committed_paths) == 7
+    assert len(set(result.committed_paths)) == 7, 'no batch published twice'
+    assert retry_waits == [1, 2]
+
+
+def test_a_conflict_the_datastore_cannot_arbitrate_is_not_retried(
+    tmp_path, retry_waits
+) -> None:
+    """A retry is safe only because the listing proved the batch absent.
+
+    With the listing unreadable, whether the records landed is exactly the
+    open question, and sending them again would publish a second copy under
+    fresh UUID paths.
+    """
+    tree = _upload_tree(tmp_path, 3)
+    hub = FakeHub()
+    sub = submit.DatastoreSubmitter(hub, batch_size=3)
+    hub.commit_error = _conflict(409, '409 Client Error: Conflict')
+    hub.list_files_error = ConnectionError('network is unreachable')
+
+    with pytest.raises(submit.PartialSubmissionError) as caught:
+        sub.publish(
+            operations=submit.upload_operations(tree),
+            description='body',
+            message='hle 2026-08-10',
+        )
+
+    assert retry_waits == []
+    assert len(caught.value.unresolved_paths) == 3
 
 
 # --- what happened to the last pull request -------------------------------

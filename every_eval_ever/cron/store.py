@@ -51,6 +51,9 @@ changes a repository's visibility.
 from __future__ import annotations
 
 import json
+import random
+import re
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -67,9 +70,70 @@ MANIFEST_NAME = 'manifest.jsonl'
 RUN_REPORT_NAME = 'run.json'
 #: Payloads identical to the previous run are referenced, not re-uploaded.
 UNCHANGED_MARKER = 'same_as'
-#: How many times a state commit re-reads the head and tries again when
-#: another adapter's job moved the branch first.
-COMMIT_ATTEMPTS = 5
+#: How many times a commit is attempted before the race is called a failure.
+#: A daily matrix runs several adapter jobs at once and every one of them
+#: commits to the same branch, so losing the race is ordinary rather than
+#: exceptional.
+COMMIT_ATTEMPTS = 8
+#: Backoff between commit attempts. The Hub holds a per-repository commit
+#: lock for the length of one commit, so the wait needed is seconds, and the
+#: jitter matters more than the ceiling: four jobs that back off in lockstep
+#: collide again on every attempt.
+COMMIT_RETRY_BASE_SECONDS = 1.0
+COMMIT_RETRY_MAX_SECONDS = 30.0
+#: Statuses the Hub refuses a commit with when it lost a race: 412 when the
+#: parent sent is no longer the head, 409 while another commit to the same
+#: repository is still in flight.
+_CONFLICT_STATUSES = frozenset({409, 412})
+#: The sentence the Hub returns with a 409 when another commit to the same
+#: repository is still in flight.
+_COMMIT_IN_PROGRESS = 'commit operation is in progress'
+#: Hub errors lead with the status, which is how a conflict is recognised
+#: when the exception carries no response to read it from.
+_STATUS_PREFIX = re.compile(r'\s*(409|412)\b')
+
+
+def is_commit_conflict(exc: BaseException) -> bool:
+    """Return whether the Hub refused this commit because of a race.
+
+    A race resolves two ways and each has its own status. The branch head
+    moved under us (412), answered by rebasing onto the new head; or another
+    commit to the same repository is still in flight (409), answered by
+    waiting, since the Hub serialises commits per repository and rejects the
+    loser before the head has moved at all. Both are retryable, and anything
+    else — a permission or transport error — is not.
+    """
+    status = getattr(getattr(exc, 'response', None), 'status_code', None)
+    if status in _CONFLICT_STATUSES:
+        return True
+    text = str(exc)
+    if _COMMIT_IN_PROGRESS in text.lower():
+        return True
+    return _STATUS_PREFIX.match(text) is not None
+
+
+def commit_retry_delay(attempt: int) -> float:
+    """Return the seconds to wait before retry ``attempt`` (1 is the first).
+
+    Exponential with full-width jitter over the top half of each window, so
+    concurrent jobs separate instead of retrying together.
+    """
+    window = min(
+        COMMIT_RETRY_BASE_SECONDS * 2 ** (attempt - 1),
+        COMMIT_RETRY_MAX_SECONDS,
+    )
+    return random.uniform(window / 2, window)
+
+
+def wait_before_retry(attempt: int) -> None:
+    """Wait out the backoff window before commit retry ``attempt``.
+
+    The one place either commit path sleeps, so a test replaces this rather
+    than the clock.
+    """
+    time.sleep(commit_retry_delay(attempt))
+
+
 #: :attr:`InflightBatch.destination` for records committed straight to the
 #: datastore's default branch.
 DIRECT_DESTINATION = 'datastore'
@@ -504,12 +568,19 @@ class RawStore:
         records with no fingerprints, so the next run would publish them
         again under fresh paths.
 
+        A race resolves one of two ways, and both are retried here. The head
+        moved, in which case the next attempt rebases onto it; or the Hub's
+        per-repository commit lock was held by a commit still in flight, in
+        which case the head has not moved yet and the next attempt waits and
+        keeps the same parent. An unmoved head is therefore not evidence
+        against a race.
+
         Retrying is safe rather than a lost update because a job only ever
         writes files it owns: ``state/<adapter>.*`` and this adapter's raw
         snapshot directory. The workflow's per-adapter concurrency group is
         what guarantees no second job is writing the same ones. A failure
-        that is not a moved head is re-raised untouched, so a permission or
-        transport error still fails the job.
+        that is not a conflict is re-raised untouched, so a permission or
+        transport error still fails the job immediately.
 
         Visibility is confirmed here rather than trusted from startup, because
         the adapter has been running in between and a repository's visibility
@@ -519,7 +590,7 @@ class RawStore:
             return None
         self._require_private()
         parent = parent_commit
-        for remaining in reversed(range(COMMIT_ATTEMPTS)):
+        for attempt in range(1, COMMIT_ATTEMPTS + 1):
             try:
                 return self.api.create_commit(
                     repo_id=self.repo_id,
@@ -530,20 +601,24 @@ class RawStore:
                     parent_commit=parent,
                 )
             except Exception as exc:  # noqa: BLE001 - re-raised with context
-                moved = self._moved_head(parent) if remaining else None
-                if moved is None:
+                last = attempt == COMMIT_ATTEMPTS
+                if last or not is_commit_conflict(exc):
                     raise StoreError(
                         f'could not write to {self.repo_id}: '
                         f'{type(exc).__name__}: {exc}'
                     ) from exc
-                parent = moved
+                moved = self._moved_head(parent)
+                if moved is not None:
+                    parent = moved
+                wait_before_retry(attempt)
         return None
 
     def _moved_head(self, parent: str | None) -> str | None:
         """Return the branch head if it moved under us, else ``None``.
 
-        A commit that was rejected while the head is exactly where we left it
-        was not a race, so there is nothing to retry against.
+        ``None`` also covers a head that could not be read and a commit sent
+        without a parent, so the caller keeps the parent it has rather than
+        treating an unanswered question as a moved branch.
         """
         if parent is None:
             return None
@@ -678,6 +753,8 @@ def state_operations(state: AdapterState) -> list[CommitOperationAdd]:
 
 __all__ = [
     'COMMIT_ATTEMPTS',
+    'COMMIT_RETRY_BASE_SECONDS',
+    'COMMIT_RETRY_MAX_SECONDS',
     'DEFAULT_RAW_REPO',
     'DIRECT_DESTINATION',
     'MANIFEST_NAME',
@@ -689,13 +766,16 @@ __all__ = [
     'InflightBatch',
     'RawStore',
     'StoreError',
+    'commit_retry_delay',
     'fingerprints_path',
     'inflight_operation',
     'inflight_path',
+    'is_commit_conflict',
     'pending_fingerprints_path',
     'plan_raw_upload',
     'raw_prefix',
     'run_report_operation',
     'state_operations',
     'state_path',
+    'wait_before_retry',
 ]
