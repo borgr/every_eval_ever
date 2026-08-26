@@ -59,6 +59,10 @@ include = ["every_eval_ever*"]
 [tool.setuptools.package-data]
 every_eval_ever = [
     "schemas/*.json",
+    # The validator resolves publisher spellings against this snapshot, so an
+    # installed package that omits it cannot run the developer-slug check
+    # (see #202 for the same class of bug with the schemas).
+    "helpers/publisher_snapshot.json",
     "adapters/**/*.md",
     "adapters/**/*.sh",
     "adapters/**/registry_snapshot.json",
