@@ -1,0 +1,732 @@
+{
+  "_meta": {
+    "source": "eval-card-registry seed/orgs.yaml",
+    "note": "Vendored snapshot of canonical organizations and their second names. Regenerate with refresh_publisher_snapshot.py. Do not edit by hand.",
+    "count": 78,
+    "registry_revision": "0052cd2c48e6918b22192195d911ea7423d20db9"
+  },
+  "publishers": [
+    {
+      "id": "anthropic",
+      "display_name": "Anthropic",
+      "hf_org": "anthropic",
+      "aliases": [
+        "Anthropic, PBC",
+        "Anthropic PBC"
+      ]
+    },
+    {
+      "id": "openai",
+      "display_name": "OpenAI",
+      "hf_org": "openai",
+      "aliases": [
+        "OpenAI, Inc.",
+        "Open AI"
+      ]
+    },
+    {
+      "id": "google",
+      "display_name": "Google",
+      "hf_org": "google",
+      "aliases": [
+        "Google LLC",
+        "Google AI",
+        "Google Research"
+      ]
+    },
+    {
+      "id": "google-deepmind",
+      "display_name": "Google DeepMind",
+      "hf_org": null,
+      "aliases": [
+        "DeepMind",
+        "Google DeepMind LLC"
+      ]
+    },
+    {
+      "id": "xai",
+      "display_name": "xAI",
+      "hf_org": "xai-org",
+      "aliases": [
+        "X AI",
+        "x.ai",
+        "X.AI",
+        "x-ai"
+      ]
+    },
+    {
+      "id": "cohere",
+      "display_name": "Cohere",
+      "hf_org": "cohereforai",
+      "aliases": [
+        "Cohere Inc.",
+        "CohereForAI",
+        "Cohere For AI",
+        "cohere-labs"
+      ]
+    },
+    {
+      "id": "baichuan",
+      "display_name": "Baichuan",
+      "hf_org": "baichuan-inc",
+      "aliases": [
+        "Baichuan",
+        "Baichuan Intelligent Technology",
+        "baichuan-inc",
+        "Baichuan-inc"
+      ]
+    },
+    {
+      "id": "meta",
+      "display_name": "Meta",
+      "hf_org": "meta-llama",
+      "aliases": [
+        "Meta AI",
+        "Meta Platforms",
+        "meta-llama",
+        "Facebook AI Research",
+        "FAIR"
+      ]
+    },
+    {
+      "id": "mistralai",
+      "display_name": "Mistral AI",
+      "hf_org": "mistralai",
+      "aliases": [
+        "Mistral",
+        "mistral-ai",
+        "Mistral.AI"
+      ]
+    },
+    {
+      "id": "deepseek",
+      "display_name": "DeepSeek",
+      "hf_org": "deepseek-ai",
+      "aliases": [
+        "deepseek-ai",
+        "DeepSeek AI",
+        "DeepSeek-AI"
+      ]
+    },
+    {
+      "id": "alibaba",
+      "display_name": "Alibaba",
+      "hf_org": "qwen",
+      "aliases": [
+        "Alibaba Cloud",
+        "Qwen",
+        "qwen",
+        "Qwen Team",
+        "Alibaba DAMO Academy",
+        "Alibaba-NLP"
+      ]
+    },
+    {
+      "id": "microsoft",
+      "display_name": "Microsoft",
+      "hf_org": "microsoft",
+      "aliases": [
+        "Microsoft Research",
+        "MSR",
+        "Microsoft AI"
+      ]
+    },
+    {
+      "id": "nvidia",
+      "display_name": "NVIDIA",
+      "hf_org": "nvidia",
+      "aliases": [
+        "Nvidia",
+        "nvidia-nemo",
+        "NVIDIA Corp."
+      ]
+    },
+    {
+      "id": "tiiuae",
+      "display_name": "Technology Innovation Institute",
+      "hf_org": "tiiuae",
+      "aliases": [
+        "TII",
+        "tii-uae",
+        "Technology Innovation Institute UAE"
+      ]
+    },
+    {
+      "id": "01-ai",
+      "display_name": "01.AI",
+      "hf_org": "01-ai",
+      "aliases": [
+        "01.AI",
+        "01 AI",
+        "Yi"
+      ]
+    },
+    {
+      "id": "ibm",
+      "display_name": "IBM",
+      "hf_org": null,
+      "aliases": [
+        "IBM Corp.",
+        "International Business Machines",
+        "IBM Research",
+        "IBM Granite",
+        "Granite",
+        "Granite Team"
+      ]
+    },
+    {
+      "id": "bytedance",
+      "display_name": "ByteDance",
+      "hf_org": "ByteDance-Seed",
+      "aliases": [
+        "ByteDance Seed",
+        "Bytedance",
+        "bytedance-seed",
+        "ByteDance-Seed",
+        "Seed"
+      ]
+    },
+    {
+      "id": "sarvam",
+      "display_name": "Sarvam AI",
+      "hf_org": "sarvamai",
+      "aliases": [
+        "Sarvam",
+        "Sarvam AI",
+        "sarvamai",
+        "sarvam-ai"
+      ]
+    },
+    {
+      "id": "stabilityai",
+      "display_name": "Stability AI",
+      "hf_org": "stabilityai",
+      "aliases": [
+        "Stability",
+        "stability-ai"
+      ]
+    },
+    {
+      "id": "moonshotai",
+      "display_name": "Moonshot AI",
+      "hf_org": "moonshotai",
+      "aliases": [
+        "Moonshot",
+        "Kimi"
+      ]
+    },
+    {
+      "id": "stepfun",
+      "display_name": "StepFun",
+      "hf_org": "stepfun-ai",
+      "aliases": [
+        "Step",
+        "Step-Star"
+      ]
+    },
+    {
+      "id": "minimax",
+      "display_name": "MiniMax",
+      "hf_org": "minimax",
+      "aliases": [
+        "MiniMax-AI",
+        "Minimax",
+        "minimaxai"
+      ]
+    },
+    {
+      "id": "zai",
+      "display_name": "Z.AI",
+      "hf_org": "zai-org",
+      "aliases": [
+        "Z AI",
+        "z-ai",
+        "z.ai",
+        "Zhipu",
+        "Zhipu AI",
+        "ZhipuAI",
+        "zhipu-ai",
+        "zhipuai",
+        "GLM Team",
+        "GLM",
+        "THUDM",
+        "THUDM-AI",
+        "zai-org"
+      ]
+    },
+    {
+      "id": "inception",
+      "display_name": "Inception Labs",
+      "hf_org": null,
+      "aliases": [
+        "Inception"
+      ]
+    },
+    {
+      "id": "nous-research",
+      "display_name": "Nous Research",
+      "hf_org": "nousresearch",
+      "aliases": [
+        "Nous",
+        "NousResearch"
+      ]
+    },
+    {
+      "id": "upstage",
+      "display_name": "Upstage",
+      "hf_org": "upstage",
+      "aliases": [
+        "Upstage AI"
+      ]
+    },
+    {
+      "id": "perplexity",
+      "display_name": "Perplexity AI",
+      "hf_org": null,
+      "aliases": [
+        "Perplexity",
+        "perplexity-ai"
+      ]
+    },
+    {
+      "id": "stanford-crfm",
+      "display_name": "Stanford CRFM",
+      "hf_org": null,
+      "aliases": [
+        "CRFM",
+        "Stanford Center for Research on Foundation Models",
+        "Stanford HELM"
+      ]
+    },
+    {
+      "id": "stanford",
+      "display_name": "Stanford University",
+      "hf_org": null,
+      "aliases": [
+        "Stanford"
+      ]
+    },
+    {
+      "id": "allenai",
+      "display_name": "Allen Institute for AI",
+      "hf_org": "allenai",
+      "aliases": [
+        "AI2",
+        "Ai2",
+        "Allen AI",
+        "Allen Institute"
+      ]
+    },
+    {
+      "id": "eleutherai",
+      "display_name": "EleutherAI",
+      "hf_org": "eleutherai",
+      "aliases": [
+        "Eleuther",
+        "EleutherAI Research"
+      ]
+    },
+    {
+      "id": "huggingface",
+      "display_name": "Hugging Face",
+      "hf_org": "huggingfaceh4",
+      "aliases": [
+        "HuggingFace",
+        "Hugging Face Inc.",
+        "HuggingFaceH4",
+        "HF",
+        "HuggingFaceTB",
+        "huggingfacetb"
+      ]
+    },
+    {
+      "id": "mercor",
+      "display_name": "Mercor",
+      "hf_org": null,
+      "aliases": [
+        "Mercor AI"
+      ]
+    },
+    {
+      "id": "kaggle",
+      "display_name": "Kaggle",
+      "hf_org": null,
+      "aliases": [
+        "kaggle"
+      ]
+    },
+    {
+      "id": "artificial-analysis",
+      "display_name": "Artificial Analysis",
+      "hf_org": null,
+      "aliases": [
+        "ArtificialAnalysis",
+        "artificialanalysis.ai",
+        "Artificial Analysis AI"
+      ]
+    },
+    {
+      "id": "llm-stats",
+      "display_name": "LLM Stats",
+      "hf_org": null,
+      "aliases": [
+        "LLMStats",
+        "llm-stats",
+        "llm-stats.com",
+        "LLM-Stats"
+      ]
+    },
+    {
+      "id": "vals-ai",
+      "display_name": "Vals.ai",
+      "hf_org": null,
+      "aliases": [
+        "Vals AI"
+      ]
+    },
+    {
+      "id": "livebench",
+      "display_name": "LiveBench",
+      "hf_org": null,
+      "aliases": []
+    },
+    {
+      "id": "uc-berkeley-gorilla",
+      "display_name": "UC Berkeley Gorilla",
+      "hf_org": null,
+      "aliases": []
+    },
+    {
+      "id": "arcprize",
+      "display_name": "ARC Prize",
+      "hf_org": null,
+      "aliases": [
+        "arc-prize"
+      ]
+    },
+    {
+      "id": "arcadia-impact",
+      "display_name": "Arcadia Impact",
+      "hf_org": null,
+      "aliases": []
+    },
+    {
+      "id": "swe-bench",
+      "display_name": "SWE-bench",
+      "hf_org": null,
+      "aliases": [
+        "SWEbench"
+      ]
+    },
+    {
+      "id": "scale-ai",
+      "display_name": "Scale",
+      "hf_org": null,
+      "aliases": [
+        "Scale AI"
+      ]
+    },
+    {
+      "id": "terminal-bench",
+      "display_name": "Terminal-Bench",
+      "hf_org": null,
+      "aliases": []
+    },
+    {
+      "id": "caparena",
+      "display_name": "CapArena",
+      "hf_org": null,
+      "aliases": [
+        "CapArena (Cheng et al., 2025)",
+        "CapArena-Bench"
+      ]
+    },
+    {
+      "id": "exgentic",
+      "display_name": "Exgentic",
+      "hf_org": null,
+      "aliases": []
+    },
+    {
+      "id": "cocoabench",
+      "display_name": "CocoaBench",
+      "hf_org": null,
+      "aliases": []
+    },
+    {
+      "id": "la-leaderboard",
+      "display_name": "La Leaderboard",
+      "hf_org": null,
+      "aliases": []
+    },
+    {
+      "id": "wmt-conference",
+      "display_name": "WMT Conference",
+      "hf_org": null,
+      "aliases": [
+        "Conference on Machine Translation"
+      ]
+    },
+    {
+      "id": "amazon-science",
+      "display_name": "AmazonScience",
+      "hf_org": null,
+      "aliases": [
+        "Amazon Science"
+      ]
+    },
+    {
+      "id": "TIGER-Lab",
+      "display_name": "TIGER-Lab",
+      "hf_org": "TIGER-Lab",
+      "aliases": []
+    },
+    {
+      "id": "internlm",
+      "display_name": "Shanghai AI Laboratory",
+      "hf_org": "internlm",
+      "aliases": [
+        "InternLM",
+        "Shanghai AI Lab",
+        "Shanghai AI Laboratory"
+      ]
+    },
+    {
+      "id": "LGAI-EXAONE",
+      "display_name": "LG AI Research",
+      "hf_org": "LGAI-EXAONE",
+      "aliases": [
+        "LG AI Research",
+        "LG AI",
+        "EXAONE"
+      ]
+    },
+    {
+      "id": "baidu",
+      "display_name": "Baidu",
+      "hf_org": "baidu",
+      "aliases": [
+        "Baidu Inc.",
+        "ERNIE"
+      ]
+    },
+    {
+      "id": "openbmb",
+      "display_name": "OpenBMB",
+      "hf_org": "openbmb",
+      "aliases": [
+        "OpenBMB"
+      ]
+    },
+    {
+      "id": "Skywork",
+      "display_name": "Skywork",
+      "hf_org": "Skywork",
+      "aliases": [
+        "Skywork AI"
+      ]
+    },
+    {
+      "id": "kyutai",
+      "display_name": "Kyutai",
+      "hf_org": "kyutai",
+      "aliases": [
+        "Kyutai Labs"
+      ]
+    },
+    {
+      "id": "apple",
+      "display_name": "Apple",
+      "hf_org": "apple",
+      "aliases": [
+        "Apple Inc.",
+        "Apple Machine Learning Research"
+      ]
+    },
+    {
+      "id": "Salesforce",
+      "display_name": "Salesforce",
+      "hf_org": "Salesforce",
+      "aliases": [
+        "Salesforce AI Research",
+        "Salesforce Research"
+      ]
+    },
+    {
+      "id": "Snowflake",
+      "display_name": "Snowflake",
+      "hf_org": "Snowflake",
+      "aliases": [
+        "Snowflake AI Research"
+      ]
+    },
+    {
+      "id": "LiquidAI",
+      "display_name": "Liquid AI",
+      "hf_org": "LiquidAI",
+      "aliases": [
+        "Liquid AI"
+      ]
+    },
+    {
+      "id": "lmsys",
+      "display_name": "lmsys",
+      "hf_org": "lmsys",
+      "aliases": [
+        "LMSYS"
+      ]
+    },
+    {
+      "id": "bigscience",
+      "display_name": "BigScience",
+      "hf_org": "bigscience",
+      "aliases": [
+        "BigScience Workshop"
+      ]
+    },
+    {
+      "id": "amazon",
+      "display_name": "Amazon",
+      "hf_org": null,
+      "aliases": [
+        "Amazon Web Services",
+        "AWS",
+        "Amazon Bedrock"
+      ]
+    },
+    {
+      "id": "writer",
+      "display_name": "Writer",
+      "hf_org": "writer",
+      "aliases": [
+        "Writer Inc.",
+        "Writer AI"
+      ]
+    },
+    {
+      "id": "databricks",
+      "display_name": "Databricks",
+      "hf_org": "databricks",
+      "aliases": [
+        "Databricks Inc.",
+        "Databricks Mosaic"
+      ]
+    },
+    {
+      "id": "ai21",
+      "display_name": "AI21 Labs",
+      "hf_org": "ai21labs",
+      "aliases": [
+        "AI21",
+        "AI21labs",
+        "ai21labs"
+      ]
+    },
+    {
+      "id": "tencent",
+      "display_name": "Tencent",
+      "hf_org": "tencent",
+      "aliases": [
+        "Tencent",
+        "Tencent Hunyuan",
+        "Hunyuan"
+      ]
+    },
+    {
+      "id": "black-forest-labs",
+      "display_name": "Black Forest Labs",
+      "hf_org": "black-forest-labs",
+      "aliases": [
+        "bfl",
+        "BFL",
+        "Black Forest Labs",
+        "black-forest-labs"
+      ]
+    },
+    {
+      "id": "PrimeIntellect",
+      "display_name": "Prime Intellect",
+      "hf_org": "PrimeIntellect",
+      "aliases": [
+        "prime-intellect",
+        "Prime Intellect",
+        "prime intellect"
+      ]
+    },
+    {
+      "id": "reka-ai",
+      "display_name": "Reka AI",
+      "hf_org": "RekaAI",
+      "aliases": [
+        "rekaai",
+        "RekaAI",
+        "Reka",
+        "Reka AI"
+      ]
+    },
+    {
+      "id": "TheDrummer",
+      "display_name": "TheDrummer",
+      "hf_org": "TheDrummer",
+      "aliases": [
+        "TheDrummer 2",
+        "thedrummer",
+        "the-drummer"
+      ]
+    },
+    {
+      "id": "Enno-Ai",
+      "display_name": "Enno-Ai",
+      "hf_org": "Enno-Ai",
+      "aliases": [
+        "EnnoAi"
+      ]
+    },
+    {
+      "id": "AlephAlpha",
+      "display_name": "Aleph Alpha",
+      "hf_org": "AlephAlpha",
+      "aliases": [
+        "aleph-alpha",
+        "Aleph Alpha"
+      ]
+    },
+    {
+      "id": "xiaomi",
+      "display_name": "Xiaomi",
+      "hf_org": "xiaomi",
+      "aliases": [
+        "XiaomiMiMo"
+      ]
+    },
+    {
+      "id": "kuaishou",
+      "display_name": "Kuaishou",
+      "hf_org": null,
+      "aliases": [
+        "Kling AI",
+        "klingai",
+        "KlingAI"
+      ]
+    },
+    {
+      "id": "leonardo-ai",
+      "display_name": "Leonardo.Ai",
+      "hf_org": null,
+      "aliases": [
+        "Leonardo AI"
+      ]
+    },
+    {
+      "id": "drchangliu",
+      "display_name": "VITAL Lab",
+      "hf_org": "drchangliu",
+      "aliases": [
+        "Dr. Chang Liu's Lab",
+        "Dr Chang Liu's Lab",
+        "Chang Liu's Lab",
+        "Wordle Arena Project"
+      ]
+    }
+  ]
+}
