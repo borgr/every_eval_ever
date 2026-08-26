@@ -72,7 +72,6 @@ VALID_AGGREGATE: dict = {
                 'hf_repo': 'org/test-ds',
             },
             'metric_config': {
-                'metric_id': 'accuracy',
                 'lower_is_better': False,
                 'score_type': 'binary',
             },
