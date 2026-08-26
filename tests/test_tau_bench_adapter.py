@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from every_eval_ever.eval_types import EvaluationLog
-from utils.tau_bench import adapter
+from every_eval_ever.adapters.tau_bench import adapter
 
 
 def sample_records() -> list[adapter.TauBenchSubmission]:

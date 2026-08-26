@@ -12,8 +12,8 @@ contains one ``EvaluationResult`` per populated domain metric, for example
 ``tau_bench.text.banking_knowledge.cost``.
 
 Usage:
-    uv run python -m utils.tau_bench.adapter --output-dir data/tau-bench
-    uv run python -m utils.tau_bench.adapter \\
+    uv run python -m every_eval_ever.adapters.tau_bench.adapter --output-dir data/tau-bench
+    uv run python -m every_eval_ever.adapters.tau_bench.adapter \\
         --input-dir /tmp/tau2-submissions --output-dir /tmp/eee-tau-bench
 """
 
