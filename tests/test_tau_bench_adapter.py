@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
-from every_eval_ever.eval_types import EvaluationLog
+import pytest
+
 from every_eval_ever.adapters.tau_bench import adapter
+from every_eval_ever.eval_types import EvaluationLog
+from every_eval_ever.helpers import FetchError
 
 
 def sample_records() -> list[adapter.TauBenchSubmission]:
@@ -139,7 +143,7 @@ def test_text_submission_maps_domain_metrics_and_cost():
         'tau_bench:gpt-5-5_sierra_2026-05-05:banking_knowledge:pass_1'
     ]
     assert pass_1.evaluation_name == ('tau_bench.text.banking_knowledge.pass_1')
-    assert pass_1.metric_config.metric_id == 'tau_bench.pass_at_k'
+    assert pass_1.metric_config.metric_id == 'tau_bench.pass_hat_k'
     assert pass_1.metric_config.metric_parameters == {'k': 1}
     assert pass_1.metric_config.metric_unit == 'percent'
     assert pass_1.metric_config.min_score == 0
@@ -224,3 +228,230 @@ def test_non_numeric_score_fails_with_context():
         assert 'gpt-5-5_sierra_2026-05-05/banking_knowledge/pass_1' in str(exc)
     else:
         raise AssertionError('expected non-numeric score to fail')
+
+
+def test_pass_metric_names_pass_hat_k_and_says_so():
+    """Pass^k is not pass@k, and the record has to distinguish them."""
+    bundles = adapter.make_logs(
+        sample_records(), retrieved_timestamp='1234567890.0'
+    )
+    pass_2 = next(
+        result
+        for bundle in bundles
+        for result in bundle.log.evaluation_results
+        if result.metric_config.metric_parameters == {'k': 2}
+    )
+
+    assert pass_2.metric_config.metric_id == 'tau_bench.pass_hat_k'
+    assert pass_2.metric_config.metric_name == 'Pass^2'
+    semantics = pass_2.metric_config.additional_details['metric_semantics']
+    assert 'all 2 trials succeed' in semantics
+    assert 'Not pass@k' in semantics
+
+
+def test_one_provider_spelled_two_ways_gets_one_developer():
+    """`Z.ai` and `Zhipu AI` are the same provider on this leaderboard."""
+    assert adapter.organization_slug('Z.ai') == 'zhipu-ai'
+    assert adapter.organization_slug('Zhipu AI') == 'zhipu-ai'
+    assert adapter.organization_slug('z.AI ') == 'zhipu-ai'
+    # A provider that is genuinely new still gets a slug of its own.
+    assert adapter.organization_slug('Some New Lab') == 'some-new-lab'
+
+
+def test_replay_inputs_cannot_smuggle_impossible_scores():
+    """--input-dir and --base-url accept what the leaderboard never serves."""
+    for value in (101.0, -0.5, True, float('inf'), 'nan'):
+        record = sample_records()[0]
+        record.submission['results']['banking_knowledge']['pass_1'] = value
+        with pytest.raises(ValueError) as caught:
+            adapter.make_logs([record], retrieved_timestamp='1234567890.0')
+        assert 'banking_knowledge/pass_1' in str(caught.value)
+
+    record = sample_records()[0]
+    record.submission['results']['banking_knowledge']['cost'] = -1.0
+    with pytest.raises(ValueError) as caught:
+        adapter.make_logs([record], retrieved_timestamp='1234567890.0')
+    assert 'banking_knowledge/cost' in str(caught.value)
+
+
+def test_a_malformed_methodology_block_does_not_crash_the_submission():
+    """Older and hand-built submissions carry strings where objects belong."""
+    record = sample_records()[0]
+    record.submission['methodology'] = 'AllTools retrieval, 4 trials.'
+    record.submission['voice_config'] = 'none'
+    record.submission['model_release'] = 'unreleased'
+    record.submission['trajectory_files'] = 'see attachment'
+    record.submission['references'] = 'https://example.com/paper'
+
+    bundles = adapter.make_logs([record], retrieved_timestamp='1234567890.0')
+
+    log = bundles[0].log
+    assert log.eval_library.version == 'unknown'
+    # `submission_date` is the fallback once methodology carries no date.
+    assert log.evaluation_timestamp == '2026-05-05'
+
+
+def test_remote_run_pins_the_ref_and_records_the_bytes(monkeypatch):
+    """A record must name the exact input that produced its scores."""
+    sha = 'a' * 40
+    fetched: list[str] = []
+
+    def fake_fetch_json(url, *args, **kwargs):
+        fetched.append(url)
+        if url.startswith('https://api.github.com/'):
+            return {'sha': sha}
+        if url.endswith('manifest.json'):
+            return {'submissions': ['gpt-5-5_sierra_2026-05-05']}
+        return sample_records()[0].submission
+
+    monkeypatch.setattr(adapter, 'fetch_json', fake_fetch_json)
+
+    records = adapter.load_submissions_from_url(
+        adapter.RAW_SUBMISSIONS_BASE_URL, sections=['submissions']
+    )
+
+    assert fetched[0] == (
+        'https://api.github.com/repos/sierra-research/tau2-bench/commits/main'
+    )
+    assert all('/main/' not in url for url in fetched[1:])
+    assert records[0].source_commit == sha
+    assert sha in records[0].source_url
+    assert records[0].content_sha256 == adapter._canonical_sha256(
+        records[0].submission
+    )
+
+    log = adapter.make_logs(records, retrieved_timestamp='1.0')[0].log
+    details = log.evaluation_results[0].source_data.additional_details
+    assert details['submission_commit'] == sha
+    assert details['submission_sha256'] == records[0].content_sha256
+
+
+def test_an_unresolvable_ref_stops_the_run_unless_it_is_allowed(monkeypatch):
+    def failing_fetch_json(url, *args, **kwargs):
+        if url.startswith('https://api.github.com/'):
+            raise FetchError('rate limited')
+        if url.endswith('manifest.json'):
+            return {'submissions': []}
+        raise AssertionError(f'unexpected fetch: {url}')
+
+    monkeypatch.setattr(adapter, 'fetch_json', failing_fetch_json)
+
+    with pytest.raises(FetchError):
+        adapter.load_submissions_from_url(
+            adapter.RAW_SUBMISSIONS_BASE_URL, sections=['submissions']
+        )
+
+    assert (
+        adapter.load_submissions_from_url(
+            adapter.RAW_SUBMISSIONS_BASE_URL,
+            sections=['submissions'],
+            allow_unpinned_source=True,
+        )
+        == []
+    )
+
+
+def test_local_replay_does_not_claim_an_upstream_url(tmp_path):
+    root = tmp_path / 'submissions'
+    root.mkdir()
+    record = sample_records()[0]
+    (root / 'manifest.json').write_text(
+        json.dumps({'submissions': [record.submission_id]}), encoding='utf-8'
+    )
+    submission_dir = root / record.submission_id
+    submission_dir.mkdir()
+    payload = json.dumps(record.submission)
+    (submission_dir / 'submission.json').write_text(payload, encoding='utf-8')
+
+    loaded = adapter.load_submissions_from_dir(root, sections=['submissions'])
+
+    assert loaded[0].source_url is None
+    assert loaded[0].local_path == str(submission_dir / 'submission.json')
+    assert loaded[0].content_sha256 == hashlib.sha256(
+        payload.encode('utf-8')
+    ).hexdigest()
+
+    log = adapter.make_logs(loaded, retrieved_timestamp='1.0')[0].log
+    source_data = log.evaluation_results[0].source_data
+    assert source_data.url == [adapter.LEADERBOARD_URL]
+    assert (
+        source_data.additional_details['local_input_path']
+        == loaded[0].local_path
+    )
+
+
+def test_limit_bounds_the_download_not_just_the_output(monkeypatch):
+    submission_ids = [f'model-{index}' for index in range(5)]
+    fetched: list[str] = []
+
+    def fake_fetch_json(url, *args, **kwargs):
+        fetched.append(url)
+        if url.startswith('https://api.github.com/'):
+            return {'sha': 'b' * 40}
+        if url.endswith('manifest.json'):
+            return {'submissions': submission_ids}
+        return sample_records()[0].submission
+
+    monkeypatch.setattr(adapter, 'fetch_json', fake_fetch_json)
+
+    records = adapter.load_submissions_from_url(
+        adapter.RAW_SUBMISSIONS_BASE_URL, sections=['submissions'], limit=2
+    )
+
+    assert len(records) == 2
+    submission_fetches = [
+        url for url in fetched if url.endswith('submission.json')
+    ]
+    assert len(submission_fetches) == 2
+
+
+def test_conversion_accounts_for_every_submission_it_does_not_publish():
+    scored, empty = sample_records()
+    empty.submission['results'] = {domain: None for domain in adapter.DOMAINS}
+    broken = sample_records()[0]
+    broken.submission.pop('model_name')
+
+    result = adapter.convert_logs(
+        [scored, empty, broken], retrieved_timestamp='1.0'
+    )
+
+    assert result.total_records == 3
+    assert len(result.records) == 1
+    assert [exclusion.source_ref for exclusion in result.exclusions] == [
+        empty.submission_id
+    ]
+    assert [failure.source_ref for failure in result.failures] == [
+        broken.submission_id
+    ]
+    assert 'model_name' in result.failures[0].reason
+    with pytest.raises(Exception):
+        result.raise_if_incomplete()
+
+
+def test_export_writes_one_datastore_path_per_submission(tmp_path):
+    output_dir = tmp_path / 'data' / 'tau-bench'
+    bundles = adapter.make_logs(
+        sample_records(), retrieved_timestamp='1234567890.0'
+    )
+
+    paths = adapter.export_logs(bundles, output_dir)
+
+    assert len(paths) == len(bundles)
+    for path in paths:
+        assert path.parent.parent.parent == output_dir
+        assert path.suffix == '.json'
+        EvaluationLog.model_validate(json.loads(path.read_text()))
+
+
+def test_a_failing_record_leaves_no_partial_publication(tmp_path):
+    output_dir = tmp_path / 'data' / 'tau-bench'
+    bundles = adapter.make_logs(
+        sample_records(), retrieved_timestamp='1234567890.0'
+    )
+    broken = bundles[-1]
+    object.__setattr__(broken, 'developer', '')
+
+    with pytest.raises(ValueError):
+        adapter.export_logs(bundles, output_dir)
+
+    assert not output_dir.exists()
