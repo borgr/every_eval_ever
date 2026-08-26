@@ -454,6 +454,7 @@ class TestWarningVisibility:
             file=stream,
             width=100,
             no_color=not color,
+            color_system='standard' if color else None,
             force_terminal=color,
             legacy_windows=False,
         )

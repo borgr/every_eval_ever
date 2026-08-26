@@ -1400,3 +1400,69 @@ def test_the_description_carries_coverage_and_provenance() -> None:
 def test_the_submitter_refuses_an_empty_repository_id() -> None:
     with pytest.raises(submit.SubmissionError, match='repository id'):
         submit.DatastoreSubmitter(FakeHub(), repo_id='')
+
+
+def test_is_commit_conflict_detects_precondition_failed_messages() -> None:
+    """Commit conflicts carry various status/message formats without a response object."""
+    exc1 = RuntimeError("Client error '412 Precondition Failed' for url...")
+    exc2 = RuntimeError("The branch was updated since you opened this page. Please refresh and try again.")
+    exc3 = RuntimeError("409 Client Error: Conflict for url...")
+
+    assert store.is_commit_conflict(exc1)
+    assert store.is_commit_conflict(exc2)
+    assert store.is_commit_conflict(exc3)
+
+
+def test_commit_retry_when_parent_is_none_resolves_head(retry_waits) -> None:
+    """When parent_commit is None and a 412 occurs, resolve head and retry immediately."""
+    hub = FakeHub(sha='newhead')
+    raw_store = store.RawStore(hub)
+    attempts = []
+    real_create_commit = hub.create_commit
+
+    def reject_once_without_parent(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise RuntimeError("Client error '412 Precondition Failed'")
+        return real_create_commit(**kwargs)
+
+    hub.create_commit = reject_once_without_parent
+
+    raw_store.commit(
+        [store.inflight_operation(store.InflightBatch(adapter='hle'))],
+        message='hle',
+        parent_commit=None,
+    )
+
+    assert attempts[0]['parent_commit'] is None
+    assert attempts[1]['parent_commit'] == 'newhead'
+    assert retry_waits == [], 'no backoff sleep when head moved'
+
+
+def test_commit_retry_when_head_moves_does_not_sleep(retry_waits) -> None:
+    """When the head moves on a 412 conflict, retry immediately without sleeping."""
+    hub = FakeHub(sha='headsha')
+    raw_store = store.RawStore(hub)
+    state = raw_store.read_state('hle')
+    attempts = []
+    real_create_commit = hub.create_commit
+
+    def reject_stale_parent(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            hub.sha = 'headsha-v2'
+            raise RuntimeError("412 Precondition Failed")
+        return real_create_commit(**kwargs)
+
+    hub.create_commit = reject_stale_parent
+
+    raw_store.commit(
+        store.state_operations(state),
+        message='hle',
+        parent_commit=state.parent_commit,
+    )
+
+    assert attempts[0]['parent_commit'] == 'headsha'
+    assert attempts[1]['parent_commit'] == 'headsha-v2'
+    assert retry_waits == [], 'immediate retry when head moved'
+

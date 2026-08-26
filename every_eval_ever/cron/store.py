@@ -106,10 +106,14 @@ def is_commit_conflict(exc: BaseException) -> bool:
     status = getattr(getattr(exc, 'response', None), 'status_code', None)
     if status in _CONFLICT_STATUSES:
         return True
-    text = str(exc)
-    if _COMMIT_IN_PROGRESS in text.lower():
+    text = str(exc).lower()
+    if (
+        _COMMIT_IN_PROGRESS in text
+        or 'precondition failed' in text
+        or 'branch was updated' in text
+    ):
         return True
-    return _STATUS_PREFIX.match(text) is not None
+    return bool(re.search(r'\b(409|412)\b', text))
 
 
 def commit_retry_delay(attempt: int) -> float:
@@ -610,18 +614,17 @@ class RawStore:
                 moved = self._moved_head(parent)
                 if moved is not None:
                     parent = moved
-                wait_before_retry(attempt)
+                else:
+                    wait_before_retry(attempt)
         return None
 
     def _moved_head(self, parent: str | None) -> str | None:
         """Return the branch head if it moved under us, else ``None``.
 
-        ``None`` also covers a head that could not be read and a commit sent
-        without a parent, so the caller keeps the parent it has rather than
-        treating an unanswered question as a moved branch.
+        ``None`` also covers a head that could not be read, so the caller keeps
+        the parent it has rather than treating an unanswered question as a
+        moved branch.
         """
-        if parent is None:
-            return None
         try:
             current = self.head_commit()
         except StoreError:
