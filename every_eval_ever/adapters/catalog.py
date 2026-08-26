@@ -412,6 +412,16 @@ ADAPTERS: tuple[AdapterSpec, ...] = (
         notes='Clones the upstream submission repository.',
     ),
     AdapterSpec(
+        key='tau_bench',
+        module='every_eval_ever.adapters.tau_bench.adapter',
+        collections=('tau-bench',),
+        notes=(
+            'Reads the tau2-bench leaderboard submissions from GitHub, '
+            'pinning the raw base URL to the commit it resolves at the start '
+            'of the run so every record cites immutable bytes.'
+        ),
+    ),
+    AdapterSpec(
         key='terminal_bench_2',
         module='every_eval_ever.adapters.terminal_bench_2.adapter',
         collections=('terminal-bench-2.0',),
