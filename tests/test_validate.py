@@ -2,24 +2,58 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
+import pytest
+from rich.console import Console
+
+from every_eval_ever.schema import get_schema_version
 from every_eval_ever.validate import (
+    ValidationReport,
     expand_paths,
+    main,
     render_report_github,
     render_report_json,
-    validate_aggregate,
-    validate_file,
-    validate_instance_file,
+    render_report_rich,
+    render_summary_rich,
 )
+from every_eval_ever.validate import (
+    validate_aggregate as _validate_aggregate,
+)
+from every_eval_ever.validate import (
+    validate_file as _validate_file,
+)
+from every_eval_ever.validate import (
+    validate_instance_file as _validate_instance_file,
+)
+
+CURRENT_SCHEMA_VERSION = get_schema_version()
 
 # ---------------------------------------------------------------------------
 # Helpers — minimal valid data fixtures
 # ---------------------------------------------------------------------------
 
+
+def validate_aggregate(file_path: Path, **kwargs):
+    """Keep legacy schema tests independent from the new semantic rules."""
+    kwargs.setdefault('run_semantic_checks', False)
+    return _validate_aggregate(file_path, **kwargs)
+
+
+def validate_instance_file(file_path: Path, *args, **kwargs):
+    kwargs.setdefault('run_semantic_checks', False)
+    return _validate_instance_file(file_path, *args, **kwargs)
+
+
+def validate_file(file_path: Path, *args, **kwargs):
+    kwargs.setdefault('run_semantic_checks', False)
+    return _validate_file(file_path, *args, **kwargs)
+
+
 VALID_AGGREGATE: dict = {
-    'schema_version': '0.2.2',
+    'schema_version': CURRENT_SCHEMA_VERSION,
     'evaluation_id': 'test/model/123',
     'retrieved_timestamp': '1234567890',
     'source_metadata': {
@@ -47,7 +81,7 @@ VALID_AGGREGATE: dict = {
 }
 
 VALID_SINGLE_TURN: dict = {
-    'schema_version': 'instance_level_eval_0.2.2',
+    'schema_version': CURRENT_SCHEMA_VERSION,
     'evaluation_id': 'test/model/123',
     'model_id': 'org/test-model',
     'evaluation_name': 'test_eval',
@@ -68,7 +102,7 @@ VALID_SINGLE_TURN: dict = {
 }
 
 VALID_MULTI_TURN: dict = {
-    'schema_version': 'instance_level_eval_0.2.2',
+    'schema_version': CURRENT_SCHEMA_VERSION,
     'evaluation_id': 'test/model/123',
     'model_id': 'org/test-model',
     'evaluation_name': 'test_eval',
@@ -313,17 +347,65 @@ class TestFileDispatch:
         assert report.valid is False
         assert report.errors[0]['type'] == 'unsupported_extension'
 
-    def test_directory_expansion(self, tmp_path: Path):
+    def test_fixed_depth_glob_expands_files_without_nested_matches(
+        self, tmp_path: Path
+    ):
         sub = tmp_path / 'sub'
         sub.mkdir()
-        _write_json(sub, 'a.json', VALID_AGGREGATE)
-        _write_jsonl(sub, 'b.jsonl', [VALID_SINGLE_TURN])
+        direct_json = _write_json(sub, 'a.json', VALID_AGGREGATE)
+        direct_jsonl = _write_jsonl(sub, 'b.jsonl', [VALID_SINGLE_TURN])
         (sub / 'c.txt').write_text('ignored')
-        paths = expand_paths([str(sub)])
-        extensions = {p.suffix for p in paths}
-        assert '.json' in extensions
-        assert '.jsonl' in extensions
-        assert '.txt' not in extensions
+        nested = sub / 'nested'
+        nested.mkdir()
+        nested_json = _write_json(nested, 'hidden.json', VALID_AGGREGATE)
+
+        paths = expand_paths([f'{sub}/*.json*'])
+
+        assert direct_json in paths
+        assert direct_jsonl in paths
+        assert nested_json not in paths
+        assert all(path.parent == sub for path in paths)
+
+    def test_directory_arguments_are_rejected(self, tmp_path: Path):
+        with pytest.raises(ValueError, match='directory arguments'):
+            expand_paths([str(tmp_path)])
+
+    def test_cli_accepts_absolute_local_datastore_path(self, tmp_path: Path):
+        path = (
+            tmp_path
+            / 'local-output'
+            / 'data'
+            / 'benchmark'
+            / 'org'
+            / 'test-model'
+            / 'f82b2807-fb31-4e42-a4a4-497d7d7a7e61.json'
+        )
+        path.parent.mkdir(parents=True)
+        payload = {
+            **VALID_AGGREGATE,
+            'model_info': {
+                'name': 'test-model',
+                'id': 'org/test-model',
+                'developer': 'org',
+                'additional_details': {
+                    'deployment_type': 'unknown',
+                    'model_availability': 'unknown',
+                },
+            },
+        }
+        path.write_text(json.dumps(payload), encoding='utf-8')
+
+        assert main([str(path), '--format', 'json']) == 0
+
+    def test_explicit_recursive_glob_is_honored(self, tmp_path: Path):
+        direct = _write_json(tmp_path, 'direct.json', VALID_AGGREGATE)
+        nested_dir = tmp_path / 'nested'
+        nested_dir.mkdir()
+        nested = _write_json(nested_dir, 'nested.json', VALID_AGGREGATE)
+
+        paths = expand_paths([f'{tmp_path}/**/*.json'])
+
+        assert paths == [direct, nested]
 
 
 class TestMaxErrors:
@@ -364,15 +446,137 @@ class TestOutputFormats:
         assert output == ''
 
 
+class TestWarningVisibility:
+    @staticmethod
+    def render(report: ValidationReport, *, color: bool = False) -> str:
+        stream = io.StringIO()
+        console = Console(
+            file=stream,
+            width=100,
+            no_color=not color,
+            force_terminal=color,
+            legacy_windows=False,
+        )
+        render_report_rich(report, console)
+        render_summary_rich([report], console)
+        return stream.getvalue()
+
+    @staticmethod
+    def passing_report(
+        warnings: list[dict[str, str]],
+    ) -> ValidationReport:
+        return ValidationReport(
+            file_path=Path('data/bench/dev/model/x.json'),
+            valid=True,
+            file_type='aggregate',
+            warnings=warnings,
+        )
+
+    def test_warning_only_file_is_visible_as_warn(self):
+        output = self.render(
+            self.passing_report(
+                [
+                    {
+                        'loc': 'evaluation_results[0].metric_config',
+                        'msg': 'something worth a second look',
+                        'type': 'semantic_warning',
+                    }
+                ]
+            )
+        )
+
+        assert 'WARN' in output
+        assert 'PASS' not in output
+        assert 'something worth a second look' in output
+        assert 'evaluation_results[0].metric_config' in output
+
+    def test_warning_summary_matches_local_validator_states(self):
+        output = self.render(
+            self.passing_report(
+                [{'loc': '', 'msg': 'first', 'type': 'semantic_warning'}]
+            )
+        )
+
+        assert '0 passed, 1 warning-only, 0 failed' in output
+        assert '1 warnings' in output
+        assert 'not merge-ready' in output
+
+    def test_clean_pass_stays_clean(self):
+        output = self.render(self.passing_report([]))
+
+        assert 'PASS' in output
+        assert 'WARN' not in output
+        assert '1 passed, 0 warning-only, 0 failed' in output
+
+    def test_failure_with_warning_stays_red(self):
+        report = ValidationReport(
+            file_path=Path('data/bench/dev/model/x.json'),
+            valid=False,
+            file_type='aggregate',
+            errors=[
+                {'loc': 'model_info', 'msg': 'boom', 'type': 'value_error'}
+            ],
+            warnings=[{'loc': '', 'msg': 'first', 'type': 'semantic_warning'}],
+        )
+
+        output = self.render(report, color=True)
+
+        assert 'FAIL' in output
+        assert '0 passed, 0 warning-only, 1 failed' in output
+        assert '1 warnings' in output
+        assert '\x1b[1;31m' in output
+        assert '\x1b[1;33m' not in output
+
+
 class TestExitCode:
-    def test_exit_code_0_on_pass(self, tmp_path: Path):
-        fp = _write_json(tmp_path, 'pass.json', VALID_AGGREGATE)
-        report = validate_file(fp)
-        assert report.valid is True
+    def test_exit_code_0_on_clean_pass(self, tmp_path: Path):
+        path = (
+            tmp_path
+            / 'data'
+            / 'benchmark'
+            / 'org'
+            / 'test-model'
+            / 'f82b2807-fb31-4e42-a4a4-497d7d7a7e61.json'
+        )
+        path.parent.mkdir(parents=True)
+        payload = {
+            **VALID_AGGREGATE,
+            'model_info': {
+                'name': 'test-model',
+                'id': 'org/test-model',
+                'developer': 'org',
+                'additional_details': {
+                    'deployment_type': 'unknown',
+                    'model_availability': 'unknown',
+                },
+            },
+        }
+        path.write_text(json.dumps(payload), encoding='utf-8')
+
+        assert main([str(path), '--format', 'json']) == 0
+
+    def test_exit_code_2_on_warning_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        fp = _write_json(tmp_path, 'warning.json', VALID_AGGREGATE)
+        report = ValidationReport(
+            file_path=fp,
+            valid=True,
+            file_type='aggregate',
+            warnings=[
+                {'loc': 'model_info', 'msg': 'fix me', 'type': 'warning'}
+            ],
+        )
+        monkeypatch.setattr(
+            'every_eval_ever.validator.validate.validate_file',
+            lambda *args, **kwargs: report,
+        )
+
+        assert main([str(fp), '--format', 'json']) == 2
 
     def test_exit_code_1_on_failure(self, tmp_path: Path):
         data = {**VALID_AGGREGATE}
         del data['evaluation_id']
         fp = _write_json(tmp_path, 'fail.json', data)
-        report = validate_file(fp)
-        assert report.valid is False
+
+        assert main([str(fp), '--format', 'json']) == 1

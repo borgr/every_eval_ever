@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import re
-import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 from urllib.parse import urlparse
@@ -90,6 +89,13 @@ from every_eval_ever.eval_types import (
     SourceType,
     StandardError,
     Uncertainty,
+)
+from every_eval_ever.helpers.io import (
+    SourceConversionResult,
+    SourceRecordFailure,
+    datastore_output_dir,
+    datastore_repo_file_path,
+    require_uuid4,
 )
 
 logger = logging.getLogger(__name__)
@@ -445,6 +451,14 @@ class InspectAIAdapter(BaseEvaluationAdapter):
     def transform_from_directory(
         self, dir_path: Union[str, Path], metadata_args: Dict[str, Any] = None
     ) -> List[EvaluationLog]:
+        result = self.transform_from_directory_result(dir_path, metadata_args)
+        result.raise_if_incomplete()
+        return [log for log, _ in result.records]
+
+    def transform_from_directory_result(
+        self, dir_path: Union[str, Path], metadata_args: Dict[str, Any] = None
+    ) -> SourceConversionResult[tuple[EvaluationLog, str | None]]:
+        """Convert every Inspect log while retaining per-file failures."""
         metadata_args = metadata_args or {}
 
         if isinstance(dir_path, str):
@@ -455,30 +469,60 @@ class InspectAIAdapter(BaseEvaluationAdapter):
                 f'Directory path {dir_path} does not exist!'
             )
 
-        log_paths: List[Path] = list_eval_logs(dir_path.absolute().as_posix())
+        log_paths: List[Path] = sorted(
+            list_eval_logs(dir_path.absolute().as_posix()),
+            key=lambda path: path.name,
+        )
         file_uuids = metadata_args.get('file_uuids')
-        try:
-            transformed_logs: List[EvaluationLog] = []
-            for idx, log_path in enumerate(log_paths):
-                # In directory mode, each converted log must get its own UUID.
-                per_log_metadata_args = dict(metadata_args)
-                file_uuid = None
-                if isinstance(file_uuids, list) and idx < len(file_uuids):
-                    file_uuid = file_uuids[idx]
-                per_log_metadata_args['file_uuid'] = file_uuid or str(
-                    uuid.uuid4()
-                )
+        writes_samples = bool(metadata_args.get('parent_eval_output_dir'))
+        if not log_paths:
+            raise AdapterError(
+                f'No Inspect evaluation logs found in directory {dir_path}'
+            )
+        if writes_samples and (
+            not isinstance(file_uuids, list)
+            or len(file_uuids) != len(log_paths)
+        ):
+            raise AdapterError(
+                'metadata_args["file_uuids"] must contain exactly one UUID '
+                f'for each Inspect log ({len(log_paths)} required)'
+            )
+        transformed_logs: list[tuple[EvaluationLog, str | None]] = []
+        failures: list[SourceRecordFailure] = []
+        for idx, log_path in enumerate(log_paths):
+            per_log_metadata_args = dict(metadata_args)
+            file_uuid = None
+            try:
+                if writes_samples:
+                    file_uuid = require_uuid4(
+                        file_uuids[idx],
+                        f'file_uuids[{idx}]',
+                    )
+                    per_log_metadata_args['file_uuid'] = file_uuid
                 transformed_logs.append(
-                    self.transform_from_file(
-                        urlparse(log_path.name).path,
-                        per_log_metadata_args,
+                    (
+                        self.transform_from_file(
+                            urlparse(log_path.name).path,
+                            per_log_metadata_args,
+                        ),
+                        file_uuid,
                     )
                 )
-            return transformed_logs
-        except Exception as e:
-            raise AdapterError(
-                f'Failed to load file from directory {dir_path}: {str(e)} for InspectAIAdapter'
-            )
+            except Exception as exc:
+                failures.append(
+                    SourceRecordFailure(
+                        source_ref=str(log_path),
+                        reason=str(exc),
+                        source_record={'path': str(log_path)},
+                    )
+                )
+
+        return SourceConversionResult(
+            source_name=f'Inspect logs under {dir_path}',
+            total_records=len(log_paths),
+            records=transformed_logs,
+            failures=failures,
+        )
 
     def transform_from_file(
         self,
@@ -615,24 +659,18 @@ class InspectAIAdapter(BaseEvaluationAdapter):
 
         evaluation_id = f'{source_data.dataset_name}/{model_path.replace("/", "_")}/{evaluation_unix_timestamp}'
 
-        parent_eval_output_dir = metadata_args.get(
-            'parent_eval_output_dir', 'data'
-        )
+        parent_eval_output_dir = metadata_args.get('parent_eval_output_dir')
         if raw_eval_log.samples and parent_eval_output_dir:
-            file_uuid = metadata_args.get('file_uuid')
-            if not file_uuid:
-                file_uuid = str(uuid.uuid4())
-                metadata_args['file_uuid'] = file_uuid
-                logging.warning(
-                    f"Missing metadata_args['file_uuid']; generated one for instance-level log: {file_uuid}. "
-                    'Save unified aggregate log with the same uuid.'
-                )
-
-            if '/' in model_info.id:
-                model_dev, model_name = model_info.id.split('/', 1)
-            else:
-                model_dev, model_name = 'unknown', model_info.id
-            evaluation_dir = f'{parent_eval_output_dir}/{source_data.dataset_name}/{model_dev}/{model_name}'
+            file_uuid = require_uuid4(
+                metadata_args.get('file_uuid'),
+                "metadata_args['file_uuid']",
+            )
+            evaluation_dir = datastore_output_dir(
+                parent_eval_output_dir,
+                source_data.dataset_name,
+                model_info.id,
+                model_info.developer,
+            ).as_posix()
             # The aggregate `evaluation_id` is the foreign key consumers
             # use to join instance-level records back to the aggregate,
             # so pass it through verbatim. The file basename is a
@@ -657,7 +695,12 @@ class InspectAIAdapter(BaseEvaluationAdapter):
 
             detailed_evaluation_results = DetailedEvaluationResults(
                 format=Format.jsonl,
-                file_path=instance_level_log_path,
+                file_path=datastore_repo_file_path(
+                    source_data.dataset_name,
+                    model_info.id,
+                    model_info.developer,
+                    Path(instance_level_log_path).name,
+                ),
                 hash_algorithm=HashAlgorithm.sha256.value,
                 checksum=sha256_file(instance_level_log_path),
                 total_rows=instance_level_rows_number,

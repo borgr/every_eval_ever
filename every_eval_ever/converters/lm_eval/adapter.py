@@ -30,6 +30,10 @@ from every_eval_ever.eval_types import (
     StandardError,
     Uncertainty,
 )
+from every_eval_ever.helpers.io import (
+    SourceConversionResult,
+    SourceRecordFailure,
+)
 
 from .utils import (
     KNOWN_METRIC_BOUNDS,
@@ -242,24 +246,36 @@ class LMEvalAdapter(BaseEvaluationAdapter):
 
             stderr_key = f'{metric_name}_stderr,{filter_name}'
             stderr_val = task_results.get(stderr_key)
+            # lm-eval emits the string 'N/A' for stderr when it is not bootstrapped
+            # (e.g. aggregated or custom metrics). Treat any non-numeric value as
+            # absent so the StandardError (which requires a float) is simply omitted.
+            if not isinstance(stderr_val, (int, float)):
+                stderr_val = None
 
             is_higher_better = higher_is_better.get(metric_name, True)
 
             bounds = KNOWN_METRIC_BOUNDS.get(metric_name)
-            min_score = bounds[0] if bounds else None
-            max_score = bounds[1] if bounds else None
 
             description = metric_name
             if filter_name != 'none':
                 description = f'{metric_name} (filter: {filter_name})'
 
-            metric_config = MetricConfig(
-                evaluation_description=description,
-                lower_is_better=not is_higher_better,
-                score_type=ScoreType.continuous,
-                min_score=min_score,
-                max_score=max_score,
-            )
+            if bounds is None:
+                # Preserve metrics whose mathematical range is not yet known
+                # without falsely declaring them continuous and unbounded.
+                metric_config = MetricConfig(
+                    evaluation_description=description,
+                    lower_is_better=not is_higher_better,
+                    additional_details={'bounds_status': 'unknown'},
+                )
+            else:
+                metric_config = MetricConfig(
+                    evaluation_description=description,
+                    lower_is_better=not is_higher_better,
+                    score_type=ScoreType.continuous,
+                    min_score=bounds[0],
+                    max_score=bounds[1],
+                )
 
             uncertainty = None
             num_samples = (
@@ -327,6 +343,12 @@ class LMEvalAdapter(BaseEvaluationAdapter):
             or metadata_args.get('eval_library_version', 'unknown'),
         )
 
+        unknown_bounds_count = sum(
+            result.metric_config.additional_details is not None
+            and result.metric_config.additional_details.get('bounds_status')
+            == 'unknown'
+            for result in evaluation_results
+        )
         source_metadata = SourceMetadata(
             source_name='lm-evaluation-harness',
             source_type=SourceType.evaluation_run,
@@ -340,6 +362,11 @@ class LMEvalAdapter(BaseEvaluationAdapter):
                 'source_organization_logo_url'
             ),
             evaluator_relationship=evaluator_relationship,
+            additional_details=(
+                {'metrics_with_unknown_bounds': str(unknown_bounds_count)}
+                if unknown_bounds_count
+                else None
+            ),
         )
 
         # Store metadata so callers can find sample files after transform
@@ -370,12 +397,13 @@ class LMEvalAdapter(BaseEvaluationAdapter):
         raw_data = self._load_file(file_path)
         tasks = self._get_tasks(raw_data)
 
-        # Pass the parent directory so instance-level adapter can find samples files
-        if 'parent_eval_output_dir' not in metadata_args:
-            metadata_args = {
-                **metadata_args,
-                'parent_eval_output_dir': str(file_path.parent),
-            }
+        # Samples belong to this results file, not to the directory originally
+        # passed to the CLI. This matters when one invocation contains several
+        # model directories with identically named tasks.
+        metadata_args = {
+            **metadata_args,
+            'parent_eval_output_dir': str(file_path.parent),
+        }
 
         results = []
         for task_name in tasks:
@@ -388,16 +416,42 @@ class LMEvalAdapter(BaseEvaluationAdapter):
     def transform_from_directory(
         self, dir_path: Union[str, Path], metadata_args: Dict[str, Any]
     ) -> List[EvaluationLog]:
-        """Transform all lm-eval results files in a directory.
+        result = self.transform_from_directory_result(dir_path, metadata_args)
+        result.raise_if_incomplete()
+        return result.records
+
+    def transform_from_directory_result(
+        self, dir_path: Union[str, Path], metadata_args: Dict[str, Any]
+    ) -> SourceConversionResult[EvaluationLog]:
+        """Transform all lm-eval files while retaining per-file failures.
 
         Searches for results_*.json files recursively.
         """
         dir_path = Path(dir_path)
         results_files = sorted(dir_path.glob('**/results_*.json'))
+        if not results_files:
+            raise ValueError(
+                f'No lm-eval results_*.json files found under {dir_path}'
+            )
 
-        all_logs = []
+        all_logs: list[EvaluationLog] = []
+        failures: list[SourceRecordFailure] = []
         for results_file in results_files:
-            logs = self.transform_from_file(results_file, metadata_args)
-            all_logs.extend(logs)
+            try:
+                logs = self.transform_from_file(results_file, metadata_args)
+                all_logs.extend(logs)
+            except Exception as exc:
+                failures.append(
+                    SourceRecordFailure(
+                        source_ref=str(results_file),
+                        reason=str(exc),
+                        source_record={'path': str(results_file)},
+                    )
+                )
 
-        return all_logs
+        return SourceConversionResult(
+            source_name=f'lm-eval evaluations under {dir_path}',
+            total_records=len(all_logs) + len(failures),
+            records=all_logs,
+            failures=failures,
+        )
