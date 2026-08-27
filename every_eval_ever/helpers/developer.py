@@ -27,47 +27,47 @@ DEVELOPER_PATTERNS = {
     'text-bison': 'google',
     'text-unicorn': 'google',
     # Meta models
-    'llama': 'meta',
-    'opt': 'meta',
+    'llama': 'meta-llama',
+    'opt': 'facebook',  # OPT ships under facebook/, not meta-llama/
     # Mistral models
     'mistral': 'mistralai',
     'mixtral': 'mistralai',
     'devstral': 'mistralai',
     # Alibaba models
-    'qwen': 'alibaba',
+    'qwen': 'Qwen',
     # Microsoft models
     'phi': 'microsoft',
     'tnlg': 'microsoft',
     # AI21 models
-    'j1': 'ai21',
-    'j2': 'ai21',
-    'jamba': 'ai21',
-    'jurassic': 'ai21',
+    'j1': 'ai21labs',
+    'j2': 'ai21labs',
+    'jamba': 'ai21labs',
+    'jurassic': 'ai21labs',
     # Cohere models
-    'command': 'cohere',
-    'cohere': 'cohere',
-    'aya': 'cohere',
+    'command': 'CohereForAI',
+    'cohere': 'CohereForAI',
+    'aya': 'CohereForAI',
     'granite': 'ibm',
     # Other providers
     'falcon': 'tiiuae',
     'bloom': 'bigscience',
     't0pp': 'bigscience',
-    'pythia': 'eleutherai',
-    'gpt-j': 'eleutherai',
-    'gpt-neox': 'eleutherai',
-    'luminous': 'aleph-alpha',
+    'pythia': 'EleutherAI',
+    'gpt-j': 'EleutherAI',
+    'gpt-neox': 'EleutherAI',
+    'luminous': 'Aleph-Alpha',
     'mpt': 'mosaicml',
-    'redpajama': 'together',
+    'redpajama': 'togethercomputer',
     'vicuna': 'lmsys',
-    'alpaca': 'stanford',
-    'palmyra': 'writer',
-    'instructpalmyra': 'writer',
+    'alpaca': 'tatsu-lab',
+    'palmyra': 'Writer',
+    'instructpalmyra': 'Writer',
     'yalm': 'yandex',
-    'glm': 'zhipu-ai',
-    'deepseek': 'deepseek',
+    'glm': 'zai-org',
+    'deepseek': 'deepseek-ai',
     'yi': '01-ai',
     'solar': 'upstage',
-    'arctic': 'snowflake',
+    'arctic': 'Snowflake',
     'dbrx': 'databricks',
     'olmo': 'allenai',
     'nova': 'amazon',
@@ -87,13 +87,16 @@ def get_developer(model_name: str) -> str:
     Args:
         model_name: The model name (e.g., "meta-llama/Llama-3-8B" or "gpt-4")
 
-    The two steps do not agree with each other, and the datastore shows it: a
-    slashed name yields its prefix while a bare name yields the company the
-    pattern table folds it into, so ``Qwen/Qwen3-32B`` gives ``Qwen`` and
-    ``qwen3-32b`` gives ``alibaba`` for one model. The datastore's developer
-    folder follows the id prefix (see ``datastore_path_components``), so prefer
-    resolving a bare name through the eval-card-registry and taking the resolved
-    canonical id's prefix over calling this with a bare name.
+    Both steps answer with the **publishing namespace**, never the parent
+    company, because that is what the datastore's developer folder is (see
+    ``datastore_path_components``). So the two agree for one model however a
+    source spells it: ``Qwen/Qwen3-32B`` and ``qwen3-32b`` both give ``Qwen``.
+    ``test_developer.py`` pins that agreement pair by pair — a new pattern whose
+    value is a company rather than a namespace fails there.
+
+    A bare name resolved through the eval-card-registry is still better where an
+    adapter can afford the lookup, because this table only knows the families
+    listed in it.
 
     Returns:
         Developer name (lowercase), or "unknown" if not recognized
