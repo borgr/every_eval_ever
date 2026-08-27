@@ -41,10 +41,12 @@ helm = [
     "nltk!=3.10.1",
 ]
 paperswithcode = ["pgdumplib>=4.0.0"]
+wild = ["pyarrow>=14.0"]  # every_eval_ever/adapters/wild reads WILD-raw parquet via pyarrow
 all = [
     "every-eval-ever[inspect]",
     "every-eval-ever[helm]",
     "every-eval-ever[paperswithcode]",
+    "every-eval-ever[wild]",
 ]
 
 [project.scripts]
