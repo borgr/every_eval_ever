@@ -31,6 +31,24 @@ def test_normalized_entries_convert_and_validate(tmp_path: Path):
         assert report.valid, report.errors
 
 
+def test_the_metric_carries_a_join_key_that_is_not_plain_accuracy():
+    """A trial-averaged resolution rate must not join to registry `accuracy`.
+
+    The metric had no `metric_id` at all, so nothing tied these scores together
+    across refreshes. The registry carries no Terminal-Bench metric, so the id is
+    namespaced: it claims a stable join key within this source and no global
+    identity, the same shape `mmlu_pro` uses.
+    """
+    bundles = adapter.make_logs([_entry()], retrieved_timestamp='1234567890.0')
+
+    metric = bundles[0][0].evaluation_results[0].metric_config
+    assert metric.metric_id == 'terminal-bench-2.0.accuracy'
+    # The percent scale and its bounds are the leaderboard's own and unchanged;
+    # only the missing id is being filled in here.
+    assert metric.metric_unit == 'percent'
+    assert (metric.min_score, metric.max_score) == (0, 100)
+
+
 def test_custom_leaderboard_url_is_recorded_as_source():
     leaderboard_url = 'https://example.com/terminal-bench-2'
 

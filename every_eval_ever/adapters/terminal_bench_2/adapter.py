@@ -328,6 +328,12 @@ def convert_entry(
         evaluation_timestamp=date,
         metric_config=MetricConfig(
             evaluation_description='Task resolution accuracy across 87 terminal tasks with 5 trials each',
+            # Namespaced, not the registry's `accuracy`: this is the share of 87
+            # tasks resolved, averaged over 5 trials each, on the leaderboard's
+            # own percent scale. The registry carries no Terminal-Bench metric,
+            # and joining a trial-averaged resolution rate to plain `accuracy`
+            # would merge two different quantities.
+            metric_id='terminal-bench-2.0.accuracy',
             metric_name='Accuracy',
             metric_kind='accuracy',
             metric_unit='percent',
