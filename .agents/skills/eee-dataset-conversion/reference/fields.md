@@ -152,18 +152,26 @@ comes from **`evaluation_results[0].source_data.dataset_name`** unless you pass
   - Keeping `accuracy` on two benchmarks apart is **`evaluation_name`'s job**, not the
     metric id's. Don't smuggle the benchmark into `metric_id` to get separation you
     already have.
-- **The canonical *scale* is a property of the metric, and it comes from the registry
-  entry — not from whatever scale the source printed.** The registry stores bounds per
-  metric: every accuracy-family entry is `[0,1]`, while benchmark-specific judge scores
-  (`mmau-pro-open-ended-judge-score`, `mteb-score`) are `[0,100]`. So take
-  `min_score`/`max_score`/`lower_is_better`/`score_type` from the resolved entry, and
-  **convert the source value onto that scale** (a leaderboard's `62.65` becomes
-  `0.6265` for `accuracy`, `metric_unit: proportion`). Convert the uncertainty with
-  it — a standard error is a spread in the score's units — and keep the source's raw
-  figure in `score_details.details` so the conversion stays auditable. Never invent a
-  bound to fit the number you scraped; if the metric isn't in the registry, register it
-  from a cited definition (the `paperswithcode` adapter's `METRIC_MAINTENANCE.md` is
-  the worked example) rather than guessing.
+- **Declare the scale you computed on; convert only when you can prove the mapping.**
+  Bounds are per metric, not per repo — the registry itself carries 213 metrics on
+  `[0,1]` and 44 on `[0,100]` — so `min_score`/`max_score` say which scale *this* score
+  is on, and a consumer normalizes from them. Take them from the resolved registry entry
+  when the metric resolves; take them from the metric's definition in the harness that
+  computed it when it does not (sacrebleu's `bleu` is 0–100, nltk's `sentence_bleu` is
+  0–1 — the bare name cannot carry a range). A metric whose range you cannot establish
+  gets **no bounds**, no `score_type`, and an `additional_details.bounds_status:
+  unknown`: "not provided" is true where `[0,1]` on an unbounded metric is a lie.
+  Never invent a bound to fit the number you scraped.
+- **If you do convert, prove it and record it.** Rescaling a published figure onto
+  another scale asserts a mapping the source never stated, and a wrong guess is a wrong
+  number no reader can detect. Convert only where the source states its scale or the
+  metric's definition fixes it; then record the factor (`canonical_rescale_factor` and
+  why, as `adapters/paperswithcode` does), keep the source's own figure in
+  `score_details.details`, and **scale the uncertainty with the score** — a spread is in
+  the score's units, and left alone it reads as wider than the metric's whole range
+  (#276). A metric missing from the registry is worth registering from a cited
+  definition (`paperswithcode`'s `METRIC_MAINTENANCE.md` is the worked example), which is
+  a better fix than rescaling toward a guess.
 - `metric_config.llm_scoring` — required shape for judge/rubric-scored metrics:
   `judges` (≥1, and each `JudgeConfig` needs a **full `model_info`** for the judge model)
   plus `input_prompt`, the actual judging prompt template (not a paraphrase or a

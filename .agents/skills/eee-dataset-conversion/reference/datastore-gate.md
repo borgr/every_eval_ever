@@ -56,7 +56,13 @@ Re-derive this list from `REGISTERED_CHECKS`, `_DEPLOYMENT_TYPES`,
   bounds the *source's* numbers live in, and convert deliberately if you rescale.
 - `score_type: continuous` requires both bounds; a supplied-but-unparseable bound is
   also an error. `±inf` is accepted (serialized as the JSON strings
-  `"Infinity"`/`"-Infinity"`); `null` is "not provided", never "unbounded".
+  `"Infinity"`/`"-Infinity"`); `null` is "not provided", never "unbounded". Omitting
+  `score_type` is how a metric whose range you cannot establish stays gate-clean — see
+  `fields.md` §metric_config.
+- **The join key is `metric_id` *plus* the bounds.** Scores are declared on the scale
+  their source computed on, so two records sharing a `metric_id` are comparable only
+  when their `[min_score, max_score]` agree. A consumer normalizes from the declared
+  bounds; a producer does not rescale toward a guess.
 - Uncertainty must be finite where present: `standard_deviation`,
   `standard_error.value`, `confidence_interval.{lower,upper,confidence_level}`.
 
