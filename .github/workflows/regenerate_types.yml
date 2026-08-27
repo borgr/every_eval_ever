@@ -30,6 +30,7 @@ jobs:
             --class-name EvaluationLog \
             --output-model-type pydantic_v2.BaseModel \
             --input-file-type jsonschema \
+            --disable-timestamp \
             --formatters ruff-format ruff-check
           uv run --project .github/ci-types datamodel-codegen \
             --input every_eval_ever/schemas/instance_level_eval.schema.json \
@@ -37,6 +38,7 @@ jobs:
             --class-name InstanceLevelEvaluationLog \
             --output-model-type pydantic_v2.BaseModel \
             --input-file-type jsonschema \
+            --disable-timestamp \
             --formatters ruff-format ruff-check
           uv run --project .github/ci-types python -m every_eval_ever.post_codegen
           uv run --project .github/ci-types ruff check --fix \
