@@ -645,9 +645,21 @@ def make_logs(payload: dict[str, Any],
             ))
             continue
         if result is None:
+            missing = [
+                label for label, present in (
+                    (f"model_id {score['model_id']!r}", model is not None),
+                    (f"benchmark_id {score['benchmark_id']!r}", benchmark is not None),
+                ) if not present
+            ]
+            reason = (
+                f'{" and ".join(missing)} not in this export, so the score has '
+                'no model or benchmark metadata to convert'
+                if missing else
+                'the source row carries no score value'
+            )
             failures.append(SourceRecordFailure(
                 source_ref=_score_ref(score),
-                reason='no score, or the model/benchmark id is not in this export',
+                reason=reason,
                 source_record=score,
             ))
             continue

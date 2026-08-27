@@ -343,6 +343,30 @@ def test_a_score_that_will_not_parse_fails_only_its_own_row(tmp_path):
         assert validate_file(path).valid
 
 
+def test_missing_metadata_and_no_score_are_reported_as_distinct_reasons():
+    """A benchmark absent from the export, a model absent, and a row with no
+    score value are three different problems and must not share one reason."""
+    payload = sample_payload()
+    payload['scores'] += [
+        {'model_id': 'gpt-oss-120b', 'benchmark_id': 'not_a_benchmark',
+         'score': 12.0, 'reference_url': 'https://x.invalid',
+         'source_type': 'leaderboard', 'audit_status': 'verified'},
+        {'model_id': 'not_a_model', 'benchmark_id': 'aime_2025', 'score': 12.0,
+         'reference_url': 'https://y.invalid', 'source_type': 'leaderboard',
+         'audit_status': 'verified'},
+        {'model_id': 'gpt-oss-120b', 'benchmark_id': 'aime_2025', 'score': None,
+         'reference_url': 'https://z.invalid', 'source_type': 'leaderboard',
+         'audit_status': 'verified'},
+    ]
+    by_ref = {f.source_ref: f.reason for f in adapter.make_logs(payload).failures}
+
+    assert "benchmark_id 'not_a_benchmark' not in this export" in (
+        by_ref['gpt-oss-120b/not_a_benchmark'])
+    assert "model_id 'not_a_model' not in this export" in (
+        by_ref['not_a_model/aime_2025'])
+    assert by_ref['gpt-oss-120b/aime_2025'] == 'the source row carries no score value'
+
+
 def test_a_schema_error_is_recorded_against_its_source_row():
     """A field the schema rejects is bad source data, not an aborted run."""
     payload = sample_payload()
