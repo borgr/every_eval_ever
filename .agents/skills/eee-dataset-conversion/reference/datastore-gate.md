@@ -23,16 +23,10 @@ Re-derive this list from `REGISTERED_CHECKS`, `_DEPLOYMENT_TYPES`,
 
 ## §path — `check_path_structure`
 - Exactly five parts: `data/<collection>/<developer>/<model>/<filename>`.
-- **`<developer>` is `model_info.id`'s prefix, not `model_info.developer` and not the
-  registry's `org_id`.** A slashed id decides both folders (`Qwen/Qwen3-32B` files under
-  `Qwen/Qwen3-32B/`) and `model_info.developer` is read only for a flat id;
-  `datastore_path_components` is where this is implemented and
-  `check_model_identity_path` is where it is enforced. So a record whose id prefix and
-  `developer` disagree is usually correct rather than broken — `Qwen/Qwen3-32B` with
-  developer `alibaba` is the registry's own two-tier model, and "fixing" the prefix to
-  match the company is the one thing `registry.md` tells you not to do. What is *not*
-  fine is one model reaching two prefixes, which is what happens when a source writes a
-  bare name and the derivation falls back to a company fold; see `fields.md` §model_info.
+- **`<developer>` is `model_info.id`'s prefix**, not `model_info.developer` (read only
+  when the id is flat) and not the registry's `org_id`. So prefix ≠ `developer` is normal
+  — `Qwen/Qwen3-32B` under org `alibaba` — and the defect is one model reaching two
+  prefixes. Enforced by `check_model_identity_path` via `datastore_path_components`.
 - Filename must match `{UUID4}.json` or `{UUID4}_samples.jsonl` — a canonical v4
   uuid. An md5, a slug, or a hand-written name is rejected.
 - `<collection>`, `<developer>`, `<model>` must be portable filesystem names: no
