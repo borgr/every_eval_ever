@@ -172,6 +172,28 @@ def _to_float(text: str) -> float | None:
     return val if math.isfinite(val) else None
 
 
+def _canonical_uncertainty(
+    uncertainty_text: str | None,
+    scale_detail: dict[str, Any] | None,
+) -> float | None:
+    """Put a reported spread on the same scale as the rescaled score.
+
+    Returns None when nothing was reported, when the spread is not a bare number
+    (PwC prints things like ``0.3 (n=5)``), or when no rescale was applied — in
+    the last case the verbatim figure is already canonical and repeating it would
+    only invite the two to drift.
+    """
+    if not uncertainty_text:
+        return None
+    factor = (scale_detail or {}).get('canonical_rescale_factor')
+    if not isinstance(factor, (int, float)) or factor == 1.0:
+        return None
+    value = _to_float(uncertainty_text.removesuffix('%').strip())
+    if value is None or value < 0:
+        return None
+    return value * factor
+
+
 def parse_metric_value(raw: Any) -> tuple[float | None, str | None]:
     """Return (score, uncertainty_text).
 
@@ -881,6 +903,13 @@ def score_details(
                 **(scale_detail or {}),
                 'raw_value': raw_value,
                 'reported_uncertainty': uncertainty_text,
+                # A spread is in the score's units, so a rescaled score leaves
+                # the verbatim figure on a different scale — 0.31 beside a score
+                # of 0.6265. The verbatim text stays what the source printed;
+                # this is the same number on the scale `score` is on.
+                'reported_uncertainty_canonical': _canonical_uncertainty(
+                    uncertainty_text, scale_detail
+                ),
                 'pwc_evaluation_id': ev.get('id'),
                 'best_rank': ev.get('best_rank'),
                 'best_metric': ev.get('best_metric'),

@@ -906,6 +906,56 @@ def test_reported_uncertainty_kept_as_text_not_typed_se():
     assert 'reported_uncertainty' not in sd2.details
 
 
+def test_a_rescaled_score_carries_its_spread_on_the_same_scale():
+    """A spread is in the score's units, so a rescale has to reach it too.
+
+    Without this, a percent-scale row published `score=0.337` beside
+    `reported_uncertainty=0.82`, a spread wider than the metric's whole range.
+    The verbatim figure stays what the source printed; the canonical one is what
+    a consumer can compare against `score`.
+    """
+    sd = adapter.score_details(
+        {'id': '1'},
+        '33.7 ± 0.82',
+        0.337,
+        '0.82',
+        {},
+        None,
+        {'canonical_rescale_factor': 0.01, 'rescale_basis': 'group_uniform'},
+    )
+
+    assert sd.details['reported_uncertainty'] == '0.82'
+    # Compared as a number, not a string: the multiply is left exact, the same
+    # way the rescaled score is, so the repr can carry a float artifact.
+    assert float(sd.details['reported_uncertainty_canonical']) == pytest.approx(
+        0.0082
+    )
+
+
+def test_an_unrescaled_score_does_not_repeat_its_spread():
+    """Repeating an unchanged figure under a second key only invites drift."""
+    sd = adapter.score_details({'id': '1'}, '0.337 ± 0.0082', 0.337, '0.0082', {}, None)
+
+    assert sd.details['reported_uncertainty'] == '0.0082'
+    assert 'reported_uncertainty_canonical' not in sd.details
+
+
+def test_a_spread_that_is_not_a_bare_number_is_left_alone():
+    """PwC prints things like '0.3 (n=5)'; guessing at those would be worse."""
+    sd = adapter.score_details(
+        {'id': '1'},
+        '33.7 ± 0.3 (n=5)',
+        0.337,
+        '0.3 (n=5)',
+        {},
+        None,
+        {'canonical_rescale_factor': 0.01},
+    )
+
+    assert sd.details['reported_uncertainty'] == '0.3 (n=5)'
+    assert 'reported_uncertainty_canonical' not in sd.details
+
+
 def test_source_metadata_provenance_reflects_source():
     # local --dump: no bucket provenance claim, records the dump file name
     local = adapter.build_source_metadata(
