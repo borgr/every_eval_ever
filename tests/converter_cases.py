@@ -82,7 +82,7 @@ CASES: tuple[ConverterCase, ...] = (
         # One scorer reporting three metrics, which is what makes this fixture worth
         # using: a converter that collapses them to one result fails here.
         results=3,
-        model_id='mistral/mistral-large-latest',
+        model_id='mistralai/mistral-large-latest',
         required_source_paths=(
             'eval.model',
             'eval.task',

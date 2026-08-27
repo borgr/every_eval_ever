@@ -18,6 +18,7 @@ from every_eval_ever.eval_types import (
     MetricConfig,
     ModelInfo,
 )
+from every_eval_ever.helpers.eval_card_registry import second_name_of
 
 
 class ModelPathHandler:
@@ -305,6 +306,32 @@ MODEL_HANDLER_MAP: Dict[str, Type[ModelPathHandler]] = {
 PROVIDER_PREFIXES: List[str] = list(MODEL_HANDLER_MAP.keys())
 
 
+def _canonicalize_publisher(model_info: ModelInfo) -> ModelInfo:
+    """Rewrite an inspect provider prefix to the publisher the registry files under.
+
+    inspect names the inference provider in the model path, so a mistral-hosted
+    model arrives as developer ``mistral`` and id ``mistral/...`` while the
+    eval-card-registry files that publisher under ``mistralai``. Left as-is the
+    record lands in its own directory, splitting the publisher from every record
+    already filed under the canonical name. The datastore routes on the id prefix
+    when the id has one and on developer otherwise, so both are canonicalized.
+    """
+    developer = model_info.developer
+    if isinstance(developer, str):
+        canonical = second_name_of(developer)
+        if canonical is not None:
+            model_info.developer = canonical
+
+    model_id = model_info.id
+    if isinstance(model_id, str) and '/' in model_id:
+        prefix, rest = model_id.split('/', 1)
+        canonical = second_name_of(prefix)
+        if canonical is not None:
+            model_info.id = f'{canonical}/{rest}'
+
+    return model_info
+
+
 def extract_model_info_from_model_path(model_path: str) -> ModelInfo:
     """
     Infers the ModelInfo by dispatching the model_path to the appropriate handler.
@@ -322,7 +349,7 @@ def extract_model_info_from_model_path(model_path: str) -> ModelInfo:
             f'Cannot determine model developer from model path {model_path!r}'
         )
 
-    return handler_class(model_path).handle()
+    return _canonicalize_publisher(handler_class(model_path).handle())
 
 
 SYNTHETIC_METRIC_CONFIG_FIELDS = {
