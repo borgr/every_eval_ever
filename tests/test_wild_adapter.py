@@ -285,9 +285,11 @@ def test_model_ids_without_a_namespace_still_name_a_publisher(tmp_path):
     _flat_id_parquet(pqt, ["gpt-4o", "claude-3-haiku", "llama-3.1-8b", "nova-pro"])
     out = _out(tmp_path)
     adapter.run(_args(pqt, out))
+    # The publisher is the namespace the model is published under, not its
+    # parent company, so a bare llama name files where `meta-llama/...` files.
     assert {p.relative_to(out).parts[:2] for p in out.rglob("*.json")} == {
         ("openai", "gpt-4o"), ("anthropic", "claude-3-haiku"),
-        ("meta", "llama-3.1-8b"), ("amazon", "nova-pro")}
+        ("meta-llama", "llama-3.1-8b"), ("amazon", "nova-pro")}
     for path in out.rglob("*.json"):
         assert validate_file(path).valid
 
