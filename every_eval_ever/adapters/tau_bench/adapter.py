@@ -99,6 +99,109 @@ PASS_METRICS = ('pass_1', 'pass_2', 'pass_3', 'pass_4')
 PASS_SCORE_BOUNDS: tuple[float, float | None] = (0.0, 100.0)
 COST_SCORE_BOUNDS: tuple[float, float | None] = (0.0, None)
 
+
+@dataclass(frozen=True)
+class InteractionMetricSpec:
+    """One per-domain voice interaction metric and how it is scored.
+
+    ``bounds`` is the reported scale as ``(minimum, maximum)`` with ``None``
+    for unbounded above, and is what ``parse_score`` range-checks. Direction
+    follows the tau-bench voice panel: latency is seconds and lower is better,
+    the response/yield/selectivity rates are proportions and higher is better,
+    and the agent interruption rate is a proportion where lower is better.
+    """
+
+    key: str
+    metric_name: str
+    metric_kind: str
+    metric_unit: str
+    lower_is_better: bool
+    bounds: tuple[float, float | None]
+    description: str
+
+
+#: Voice submissions carry a per-domain interaction panel next to the Pass^k
+#: results; without these the voice-specific measurements are dropped on the
+#: floor. Rates are proportions in ``[0, 1]``; latency is seconds, unbounded
+#: above.
+INTERACTION_METRICS: tuple[InteractionMetricSpec, ...] = (
+    InteractionMetricSpec(
+        'response_latency_mean',
+        'Response latency (mean)',
+        'latency',
+        'seconds',
+        True,
+        (0.0, None),
+        'mean time before the agent responds when it should',
+    ),
+    InteractionMetricSpec(
+        'yield_latency_mean',
+        'Yield latency (mean)',
+        'latency',
+        'seconds',
+        True,
+        (0.0, None),
+        'mean time before the agent yields the floor when it should',
+    ),
+    InteractionMetricSpec(
+        'response_rate',
+        'Response rate',
+        'rate',
+        'proportion',
+        False,
+        (0.0, 1.0),
+        'share of turns the agent responded on when it should',
+    ),
+    InteractionMetricSpec(
+        'yield_rate',
+        'Yield rate',
+        'rate',
+        'proportion',
+        False,
+        (0.0, 1.0),
+        'share of turns the agent yielded the floor on when it should',
+    ),
+    InteractionMetricSpec(
+        'agent_interruption_rate',
+        'Agent interruption rate',
+        'rate',
+        'proportion',
+        True,
+        (0.0, 1.0),
+        'share of turns the agent interrupted the user',
+    ),
+    InteractionMetricSpec(
+        'selectivity_backchannel',
+        'Backchannel selectivity',
+        'rate',
+        'proportion',
+        False,
+        (0.0, 1.0),
+        'share of user backchannels the agent correctly did not treat as a '
+        'turn to respond to',
+    ),
+    InteractionMetricSpec(
+        'selectivity_vocal_tic',
+        'Vocal-tic selectivity',
+        'rate',
+        'proportion',
+        False,
+        (0.0, 1.0),
+        'share of user vocal tics the agent correctly did not treat as a '
+        'turn to respond to',
+    ),
+    InteractionMetricSpec(
+        'selectivity_non_directed',
+        'Non-directed-speech selectivity',
+        'rate',
+        'proportion',
+        False,
+        (0.0, 1.0),
+        'share of non-directed user speech the agent correctly did not treat '
+        'as a turn to respond to',
+    ),
+)
+
 ORGANIZATION_SLUGS = {
     'Alibaba Cloud': 'alibaba',
     'Anthropic': 'anthropic',
@@ -531,7 +634,140 @@ def make_results(
                     domain_results=domain_results,
                 )
             )
+    results.extend(make_interaction_results(record, model_id))
     return results
+
+
+def make_interaction_results(
+    record: TauBenchSubmission,
+    model_id: str,
+) -> list[EvaluationResult]:
+    """Emit the per-domain voice interaction panel, one result per metric.
+
+    Voice submissions report an ``interaction_metrics`` block alongside their
+    Pass^k results. It is absent for text submissions, so a missing block is
+    nothing to publish rather than an error. The ``overall`` aggregate is kept
+    under a synthetic ``overall`` domain so it is not dropped either.
+    """
+    interaction = _mapping(record.submission.get('interaction_metrics'))
+    if not interaction:
+        return []
+    version = interaction.get('version')
+    config = interaction.get('config')
+    domain_panels = _mapping(interaction.get('domains'))
+
+    panels: list[tuple[str, Any]] = [
+        (domain, domain_panels[domain])
+        for domain in DOMAINS
+        if domain in domain_panels
+    ]
+    overall = interaction.get('overall')
+    if overall is not None:
+        panels.append(('overall', overall))
+
+    results = []
+    for domain, panel in panels:
+        if not isinstance(panel, dict):
+            raise ValueError(
+                f'{record.submission_id} interaction_metrics/{domain} must '
+                'be an object'
+            )
+        for spec in INTERACTION_METRICS:
+            score = parse_score(
+                panel.get(spec.key),
+                context=f'{record.submission_id}/{domain}/{spec.key}',
+                bounds=spec.bounds,
+            )
+            if score is None:
+                continue
+            results.append(
+                make_interaction_result(
+                    record,
+                    model_id=model_id,
+                    domain=domain,
+                    spec=spec,
+                    score=score,
+                    panel=panel,
+                    version=version,
+                    config=config,
+                )
+            )
+    return results
+
+
+def make_interaction_result(
+    record: TauBenchSubmission,
+    *,
+    model_id: str,
+    domain: str,
+    spec: InteractionMetricSpec,
+    score: float,
+    panel: dict[str, Any],
+    version: Any,
+    config: Any,
+) -> EvaluationResult:
+    submission = record.submission
+    modality = str(submission.get('modality') or 'text')
+    return EvaluationResult(
+        evaluation_result_id=(
+            f'tau_bench:{record.submission_id}:{domain}:{spec.key}'
+        ),
+        evaluation_name=f'tau_bench.{modality}.{domain}.{spec.key}',
+        source_data=make_source_data(record, domain, panel),
+        evaluation_timestamp=evaluation_date(submission),
+        metric_config=make_interaction_metric_config(
+            spec, domain=domain, version=version, config=config
+        ),
+        score_details=ScoreDetails(
+            score=score,
+            details=_clean_details(
+                {
+                    'submission_id': record.submission_id,
+                    'model_id': model_id,
+                    'domain': domain,
+                    'metric': spec.key,
+                    'raw_score': panel.get(spec.key),
+                    'counts': panel.get('counts'),
+                }
+            ),
+        ),
+        generation_config=make_generation_config(submission, domain),
+    )
+
+
+def make_interaction_metric_config(
+    spec: InteractionMetricSpec,
+    *,
+    domain: str,
+    version: Any,
+    config: Any,
+) -> MetricConfig:
+    minimum, maximum = spec.bounds
+    return MetricConfig(
+        evaluation_description=(
+            f'tau-bench {domain} voice interaction metric: {spec.description}.'
+        ),
+        metric_id=f'tau_bench.interaction.{spec.key}',
+        metric_name=spec.metric_name,
+        metric_kind=spec.metric_kind,
+        metric_unit=spec.metric_unit,
+        lower_is_better=spec.lower_is_better,
+        score_type=ScoreType.continuous,
+        min_score=minimum,
+        max_score=float('inf') if maximum is None else maximum,
+        additional_details=_clean_details(
+            {
+                'domain': domain,
+                'direction': (
+                    'lower_is_better'
+                    if spec.lower_is_better
+                    else 'higher_is_better'
+                ),
+                'interaction_metrics_version': version,
+                'interaction_metrics_config': config,
+            }
+        ),
+    )
 
 
 def make_result(

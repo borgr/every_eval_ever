@@ -97,6 +97,35 @@ def sample_records() -> list[adapter.TauBenchSubmission]:
                     'user_tts_provider': 'elevenlabs/eleven_v3',
                     'pipeline': {'asr': 'deepgram', 'tts': 'elevenlabs'},
                 },
+                'interaction_metrics': {
+                    'version': '1.0',
+                    'config': {
+                        'tick_duration_sec': 1.0,
+                        'no_yield_window_sec': 2.0,
+                    },
+                    'domains': {
+                        'retail': {
+                            'response_latency_mean': 1.23,
+                            'yield_latency_mean': 0.45,
+                            'response_rate': 0.98,
+                            'yield_rate': 0.91,
+                            'agent_interruption_rate': 0.04,
+                            'selectivity_backchannel': 0.87,
+                            'selectivity_vocal_tic': 0.79,
+                            'selectivity_non_directed': 0.82,
+                            'counts': {
+                                'n_simulations': 50,
+                                'response_total': 300,
+                            },
+                        },
+                    },
+                    'overall': {
+                        'response_latency_mean': 1.23,
+                        'response_rate': 0.98,
+                        'agent_interruption_rate': 0.04,
+                        'counts': {'n_simulations': 50},
+                    },
+                },
             },
         ),
     ]
@@ -189,6 +218,75 @@ def test_voice_submission_preserves_voice_metadata():
     assert json.loads(
         result.generation_config.additional_details['voice_pipeline']
     ) == {'asr': 'deepgram', 'tts': 'elevenlabs'}
+
+
+def test_voice_interaction_metrics_are_emitted_with_units_and_direction():
+    """Voice submissions carry a per-domain interaction panel that must not be
+    dropped, and each metric needs its own unit, scale, and direction."""
+    bundles = adapter.make_logs(
+        sample_records(), retrieved_timestamp='1234567890.0'
+    )
+    voice = next(
+        bundle.log
+        for bundle in bundles
+        if bundle.log.model_info.id == 'openai/gpt-realtime-1.0'
+    )
+    prefix = 'tau_bench:gpt-realtime-1-0_openai_2026-04-13'
+    by_id = {
+        result.evaluation_result_id: result
+        for result in voice.evaluation_results
+    }
+
+    latency = by_id[f'{prefix}:retail:response_latency_mean']
+    assert (
+        latency.evaluation_name
+        == 'tau_bench.voice.retail.response_latency_mean'
+    )
+    assert (
+        latency.metric_config.metric_id
+        == 'tau_bench.interaction.response_latency_mean'
+    )
+    assert latency.metric_config.metric_unit == 'seconds'
+    assert latency.metric_config.lower_is_better is True
+    assert latency.metric_config.max_score == float('inf')
+    assert latency.score_details.score == 1.23
+    assert (
+        json.loads(latency.score_details.details['counts'])['n_simulations']
+        == 50
+    )
+    assert (
+        latency.metric_config.additional_details[
+            'interaction_metrics_version'
+        ]
+        == '1.0'
+    )
+    assert (
+        'interaction_metrics_config'
+        in latency.metric_config.additional_details
+    )
+
+    response_rate = by_id[f'{prefix}:retail:response_rate']
+    assert response_rate.metric_config.metric_unit == 'proportion'
+    assert response_rate.metric_config.lower_is_better is False
+    assert response_rate.metric_config.max_score == 1.0
+    assert response_rate.score_details.score == 0.98
+
+    interruption = by_id[f'{prefix}:retail:agent_interruption_rate']
+    assert interruption.metric_config.lower_is_better is True
+
+    # The overall aggregate panel is kept under a synthetic `overall` domain.
+    assert f'{prefix}:overall:response_rate' in by_id
+
+
+def test_out_of_range_interaction_rate_is_rejected():
+    """A proportion the source could never report is invalid data."""
+    record = sample_records()[1]
+    record.submission['interaction_metrics']['domains']['retail'][
+        'response_rate'
+    ] = 1.5
+    with pytest.raises(ValueError) as caught:
+        adapter.make_logs([record], retrieved_timestamp='1234567890.0')
+    assert 'retail/response_rate' in str(caught.value)
 
 
 def test_load_submissions_from_local_manifest(tmp_path):
@@ -408,6 +506,8 @@ def test_limit_bounds_the_download_not_just_the_output(monkeypatch):
 def test_conversion_accounts_for_every_submission_it_does_not_publish():
     scored, empty = sample_records()
     empty.submission['results'] = {domain: None for domain in adapter.DOMAINS}
+    # A row with nothing to publish also has no interaction panel.
+    empty.submission.pop('interaction_metrics', None)
     broken = sample_records()[0]
     broken.submission.pop('model_name')
 
