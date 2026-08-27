@@ -111,6 +111,15 @@ METRIC_BOUNDS = {
     'raw': (-INF, INF),
 }
 
+# metric_type -> lower_is_better, for the families whose direction the metric
+# itself fixes. Consulted only when a benchmark states no `higher_is_better`, so
+# a declared flag always wins. An error rate goes down; a score goes up.
+METRIC_DIRECTION = {
+    'wer': True, 'dollars': True,
+    'pct': False, 'bleu': False, 'elo': False,
+    'rating': False, 'index': False, 'raw': False,
+}
+
 # Recognized eval FRAMEWORKS that may appear in the free-text harness field.
 RECOGNIZED_HARNESS = {
     'lm-evaluation-harness': 'lm-evaluation-harness', 'lm-eval': 'lm-evaluation-harness',
@@ -411,6 +420,25 @@ def metric_bounds(benchmark: dict) -> tuple[float, float, str]:
     return -INF, INF, 'unbounded_default'
 
 
+def metric_direction(benchmark: dict) -> tuple[bool, str]:
+    """(lower_is_better, source) for a benchmark's metric.
+
+    A benchmark's own ``higher_is_better`` wins; otherwise the metric family
+    fixes the direction (an error rate goes down, a score goes up). The schema
+    requires a bool, so where neither settles it higher-is-better is assumed and
+    the source is tagged ``unknown`` -- a guessed direction is never recorded as
+    a stated one. ``source`` is ``declared``, ``metric_family`` or ``unknown``.
+    """
+    cs = benchmark.get('canonical_setting') or {}
+    higher = cs.get('higher_is_better')
+    if isinstance(higher, bool):
+        return (higher is False), 'declared'
+    metric_type = cs.get('metric_type')
+    if metric_type in METRIC_DIRECTION:
+        return METRIC_DIRECTION[metric_type], 'metric_family'
+    return False, 'unknown'
+
+
 def _within_bounds(score: float, bounds: MetricConfig) -> bool:
     """Whether a score sits inside the bounds the record itself declares.
 
@@ -465,6 +493,7 @@ def make_evaluation_result(score: dict, benchmark: dict) -> EvaluationResult | N
     metric_type = cs.get('metric_type')
     bslug = _slug(benchmark['id'])
     lo, hi, bound_strategy = metric_bounds(benchmark)
+    lower_is_better, direction_source = metric_direction(benchmark)
 
     ref_url = score.get('reference_url')
     dataset_url = benchmark.get('source_url')
@@ -501,12 +530,13 @@ def make_evaluation_result(score: dict, benchmark: dict) -> EvaluationResult | N
             metric_name=benchmark.get('metric') or (metric_type or 'score'),
             metric_kind=metric_type or 'score',
             metric_unit=METRIC_UNIT.get(metric_type, 'points'),
-            lower_is_better=(cs.get('higher_is_better') is False),
+            lower_is_better=lower_is_better,
             score_type=ScoreType.continuous,
             min_score=lo,
             max_score=hi,
             additional_details=_str_map({
                 'bound_strategy': bound_strategy,
+                'direction_source': direction_source,
                 'benchpress_metric_type': metric_type,
                 'benchpress_harness': harness,
                 'eval_framework': harness_canon,
