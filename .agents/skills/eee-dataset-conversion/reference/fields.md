@@ -103,11 +103,13 @@ comes from **`evaluation_results[0].source_data.dataset_name`** unless you pass
   JOIN key (`model_info.id`); raw identity = RECORD identity (`evaluation_id`).
 - `name` = raw/display; `developer` = the org; `inference_platform` (API host) vs
   `inference_engine` (vLLM) — `unknown` acceptable.
-- **Derive `developer` with the shared helpers, not a private map.** `helpers.get_developer`
-  / `get_model_id` hold the repo's mapping; a per-adapter `MODEL_DEVELOPER_MAP` is how the
-  datastore ended up with the same models under two orgs (`qwen` vs `alibaba`,
-  `moonshot-ai` vs `moonshotai`) — which also splits their directories. If a model is
-  missing from the helper, extend the helper.
+- **Never derive `developer` from a bare name — resolve the model and take its prefix.**
+  The directory is the id's prefix (`datastore-gate.md` §path), and folding a bare name to
+  a company gives the same model two directories: `Qwen/Qwen3-32B` → `Qwen` but
+  `qwen3-32b` → `alibaba`, which is how the datastore got `qwen` beside `alibaba` and
+  `zhipu-ai` beside `zai-org` (#272). Resolve through the registry and use the canonical
+  id's prefix, as `adapters/open_medical_llm` does; a private `MODEL_DEVELOPER_MAP` is the
+  same bug by hand.
 - Beware prefix matching when mapping names: a `startswith` rule maps
   `gpt-4.1-mini` onto `gpt-4.1`. Match exactly, longest-first.
 - **Variant axes belong in `evaluation_id`, not in `model_info.id`.** When a source lists

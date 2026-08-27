@@ -23,6 +23,10 @@ Re-derive this list from `REGISTERED_CHECKS`, `_DEPLOYMENT_TYPES`,
 
 ## §path — `check_path_structure`
 - Exactly five parts: `data/<collection>/<developer>/<model>/<filename>`.
+- **`<developer>` is `model_info.id`'s prefix**, not `model_info.developer` (read only
+  when the id is flat) and not the registry's `org_id`. So prefix ≠ `developer` is normal
+  — `Qwen/Qwen3-32B` under org `alibaba` — and the defect is one model reaching two
+  prefixes. Enforced by `check_model_identity_path` via `datastore_path_components`.
 - Filename must match `{UUID4}.json` or `{UUID4}_samples.jsonl` — a canonical v4
   uuid. An md5, a slug, or a hand-written name is rejected.
 - `<collection>`, `<developer>`, `<model>` must be portable filesystem names: no

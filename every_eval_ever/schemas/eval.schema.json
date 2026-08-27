@@ -49,7 +49,7 @@
                         "documentation",
                         "evaluation_run"
                     ],
-                    "description": "Whether the data comes from a direct evaluation run or from documentation"
+                    "description": "What the artifact being converted is, not who produced it: 'evaluation_run' for raw per-item outputs (even when a third party ran them), 'documentation' for only-aggregate reported numbers such as a leaderboard scrape. Who ran the evaluation is evaluator_relationship."
                 },
                 "source_organization_name": {
                     "type": "string",
@@ -645,7 +645,7 @@
                 },
                 "developer": {
                     "type": "string",
-                    "description": "Name of organization that provides the model (e.g. 'OpenAI')"
+                    "description": "Name of organization that provides the model (e.g. 'OpenAI'), as the source states it. The datastore directory is taken from id's prefix, not from this field, so the two may legitimately differ (id 'Qwen/Qwen3-32B', developer 'alibaba'); this field is read for the path only when id is flat."
                 },
                 "inference_platform": {
                     "type": "string",

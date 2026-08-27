@@ -268,6 +268,14 @@ def datastore_path_components(
 ) -> tuple[str, str, str]:
     """Resolve the exact collection/developer/model datastore components.
 
+    The developer folder comes from *model_id*'s prefix, and *developer* is read
+    only when the id is flat. That is deliberate: the eval-card-registry's model
+    id is the real HuggingFace repo id, while its ``org_id`` folds namespaces
+    into one company (``Qwen/Qwen3-32B`` belongs to org ``alibaba``), and the
+    datastore addresses a record the way a reader who has the model id can
+    reconstruct. So a record whose prefix and ``model_info.developer`` differ is
+    normal, and a publisher reachable under two prefixes is the actual defect.
+
     Slash-separated collection and model identifiers are flattened with
     underscores. Empty, unknown, or otherwise unsafe identity components are
     rejected instead of being replaced with placeholders.
