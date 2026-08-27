@@ -1393,3 +1393,14 @@ def test_the_description_carries_coverage_and_provenance() -> None:
 def test_the_submitter_refuses_an_empty_repository_id() -> None:
     with pytest.raises(submit.SubmissionError, match='repository id'):
         submit.DatastoreSubmitter(FakeHub(), repo_id='')
+
+
+def test_is_commit_conflict_detects_precondition_failed_messages() -> None:
+    """Commit conflicts carry various status/message formats without a response object."""
+    exc1 = RuntimeError("Client error '412 Precondition Failed' for url...")
+    exc2 = RuntimeError("The branch was updated since you opened this page. Please refresh and try again.")
+    exc3 = RuntimeError("409 Client Error: Conflict for url...")
+
+    assert store.is_commit_conflict(exc1)
+    assert store.is_commit_conflict(exc2)
+    assert store.is_commit_conflict(exc3)

@@ -65,8 +65,8 @@ comes from **`evaluation_results[0].source_data.dataset_name`** unless you pass
   For a multi-benchmark leaderboard, namespace the collection by the source
   (`data/vals-ai/`, `data/hal-<benchmark>/`): fanning out into bare `data/gaia/`,
   `data/usaco/` puts your leaderboard's numbers in the same directory as everyone
-  else's records for that benchmark and loses the provenance. (This was the
-  maintainers' resolution on the HAL adapter.) The benchmark identity always lives in
+  else's records for that benchmark and loses the provenance. The benchmark identity
+  always lives in
   `evaluation_name` + `source_data` regardless.
 - With the default one-log-per-model grain, the first result silently decides the
   directory — so pass `collection_override` rather than relying on result ordering.
@@ -78,9 +78,7 @@ comes from **`evaluation_results[0].source_data.dataset_name`** unless you pass
 - `source_type` — the artifact you hold, NOT who ran it: raw per-item run outputs
   → `evaluation_run` (even if a third party ran them); only-aggregate reported numbers
   → `documentation` (a leaderboard scrape stays `documentation` even though a pipeline
-  produced the numbers). `evaluator_relationship` separately records WHO ran it. (The
-  README/schema phrase it "run locally"; that under-specifies third-party raw runs —
-  the artifact-you-hold test is what governs.)
+  produced the numbers). `evaluator_relationship` separately records WHO ran it.
 - `source_name` — the platform/leaderboard, NOT the benchmark or author.
 - `source_organization_name` — the aggregator/publisher org, NOT a username
   or the model developer.
@@ -105,11 +103,13 @@ comes from **`evaluation_results[0].source_data.dataset_name`** unless you pass
   JOIN key (`model_info.id`); raw identity = RECORD identity (`evaluation_id`).
 - `name` = raw/display; `developer` = the org; `inference_platform` (API host) vs
   `inference_engine` (vLLM) — `unknown` acceptable.
-- **Derive `developer` with the shared helpers, not a private map.** `helpers.get_developer`
-  / `get_model_id` hold the repo's mapping; a per-adapter `MODEL_DEVELOPER_MAP` is how the
-  datastore ended up with the same models under two orgs (`qwen` vs `alibaba`,
-  `moonshot-ai` vs `moonshotai`) — which also splits their directories. If a model is
-  missing from the helper, extend the helper.
+- **Never derive `developer` from a bare name — resolve the model and take its prefix.**
+  The directory is the id's prefix (`datastore-gate.md` §path), and folding a bare name to
+  a company gives the same model two directories: `Qwen/Qwen3-32B` → `Qwen` but
+  `qwen3-32b` → `alibaba`, which is how the datastore got `qwen` beside `alibaba` and
+  `zhipu-ai` beside `zai-org` (#272). Resolve through the registry and use the canonical
+  id's prefix, as `adapters/open_medical_llm` does; a private `MODEL_DEVELOPER_MAP` is the
+  same bug by hand.
 - Beware prefix matching when mapping names: a `startswith` rule maps
   `gpt-4.1-mini` onto `gpt-4.1`. Match exactly, longest-first.
 - **Variant axes belong in `evaluation_id`, not in `model_info.id`.** When a source lists
@@ -148,11 +148,10 @@ comes from **`evaluation_results[0].source_data.dataset_name`** unless you pass
     carries e.g. `mteb-score`, `mmau-pro-open-ended-judge-score`).
   - **Never a bare semantically-empty id** — `score`/`rank`/`cost` mean something
     different on every leaderboard; namespace those or resolve them to a specific
-    registry metric. This is the most repeated review comment on adapter PRs.
+    registry metric.
   - Keeping `accuracy` on two benchmarks apart is **`evaluation_name`'s job**, not the
     metric id's. Don't smuggle the benchmark into `metric_id` to get separation you
     already have.
-  (Not schema-required — which is exactly why it gets omitted.)
 - **The canonical *scale* is a property of the metric, and it comes from the registry
   entry — not from whatever scale the source printed.** The registry stores bounds per
   metric: every accuracy-family entry is `[0,1]`, while benchmark-specific judge scores

@@ -1,18 +1,12 @@
 # Gotchas that cost real time (with fixes)
 
-*Scope: deeper failure modes and mechanisms. For what each field means, see
-`fields.md` / `instance-level.md`; this file is the "why it bit us" layer.*
+*Scope: failure modes and mechanisms. What each field means → `fields.md` /
+`instance-level.md`.*
 
-- **`inf` bounds — settled: emit `±inf`, don't hand-roll it.** A genuinely unbounded
-  `continuous` metric (PSNR, perplexity, WER) sets `min_score`/`max_score` to
-  `float('-inf')`/`float('inf')`. The library serializes those as the JSON strings
-  `"Infinity"`/`"-Infinity"` (a `field_serializer` on the bounds, every_eval_ever#212 —
-  valid RFC-8259 JSON that reads back to a float), so just save through
-  `save_evaluation_log`/`model_dump_json` and it round-trips + validates. Do **not**
-  hand-roll `json.dumps(..., allow_nan=True)`: that writes a bare `Infinity` token,
-  which the strict read path (#212) now rejects. `null` ≠ unbounded — `null` is
-  "not provided" and still fails `continuous`. Give a finite bound only when a real
-  nominal scale exists (`[0,1]`/`[0,100]`); don't invent one for an open-ended metric.
+- **`±inf` bounds only round-trip through the library's writer.** Save an unbounded
+  `continuous` metric through `save_evaluation_log`/`model_dump_json`; hand-rolling
+  `json.dumps(..., allow_nan=True)` writes a bare `Infinity` token that the strict read
+  path rejects. The rule for when `±inf` is right at all: `datastore-gate.md` §score.
 - **Model deployment axes — the library hides your omission.** It auto-fills both to
   `"unknown"`, so a green *library* validate says nothing about whether you set them;
   the CLI errors. Enums and the vocabulary-skew warning: `datastore-gate.md` §deployment.
@@ -78,9 +72,7 @@
   repo should be a deliberate, separate act. Give the adapter `--save-raw-json` /
   `--input-json` so a fetched payload can be replayed offline — that's also what makes the
   fixture-based test possible without mocking HTTP.
-- **ruff is configured but not enforced by CI** — `pyproject.toml` selects E/F/I (E501
-  and E402 ignored); no workflow runs it, so nothing will tell you but a reviewer. Run
-  `uv run ruff check` yourself; fix import order, and use `# noqa: E402` after an
-  `importorskip` block.
+- **Import order after an `importorskip` block** — CI's `ruff` row selects E/F/I, so put
+  `# noqa: E402` on an import that has to follow the skip guard.
 - **Stale helpers** — `helpers.make_evaluation_log`/`make_evaluation_result` miss the
   now-required `eval_library`/per-result `source_data`; build the models by hand.

@@ -66,9 +66,8 @@ sub-objects, never at top level either) — route instance extras into `metadata
 
 ### Hashing (`sample_hash`)
 Optional cross-model/adapter join key — use exactly this recipe so hashes match
-across adapters (matches `every_eval_ever/adapters/openeval`; historically the
-converters computed it inconsistently). Full `reference` list; `[]` when empty. Only
-meaningful once
+across adapters (`every_eval_ever/adapters/openeval` is the reference
+implementation). Full `reference` list; `[]` when empty. Only meaningful once
 `input.raw` is answer-free:
 ```python
 sample_hash = hashlib.sha256(

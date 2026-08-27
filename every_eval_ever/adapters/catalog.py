@@ -228,6 +228,15 @@ ADAPTERS: tuple[AdapterSpec, ...] = (
         required_env=('ARTIFICIAL_ANALYSIS_API_KEY',),
     ),
     AdapterSpec(
+        key='benchpress',
+        module='every_eval_ever.adapters.benchpress.adapter',
+        collections=('benchpress',),
+        notes=(
+            'Reads microsoft/benchpress-score-matrix over plain HTTPS at one '
+            'resolved commit; --revision reproduces an earlier snapshot.'
+        ),
+    ),
+    AdapterSpec(
         key='exgentic',
         module='every_eval_ever.adapters.exgentic.adapter',
         collections=('exgentic',),
@@ -432,6 +441,18 @@ ADAPTERS: tuple[AdapterSpec, ...] = (
         weekday=5,
         timeout_minutes=30,
         notes='Pinned to SOURCE_COMMIT; only changes when the pin is bumped.',
+    ),
+    AdapterSpec(
+        key='wild',
+        module='every_eval_ever.adapters.wild.adapter',
+        collections=('wild',),
+        timeout_minutes=30,
+        with_packages=('pyarrow',),
+        notes=(
+            'Reads the 15 kensho/WILD-raw parquet shards, pinned to the '
+            'resolved commit; a rerun on an unchanged commit republishes '
+            'nothing.'
+        ),
     ),
     # Registered but not schedulable. Each needs a local input file because it
     # has no live fetch path; automation would have nothing to hand it.

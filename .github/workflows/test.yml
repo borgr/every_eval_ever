@@ -6,6 +6,18 @@ on:
 permissions:
   contents: read
 jobs:
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: astral-sh/setup-uv@v7.6.0
+      # No project sync: ruff is pinned in the dev group and needs nothing else,
+      # so this row stays green when a dependency resolution is what is broken.
+      - name: Lint
+        run: uv run --only-group dev ruff check every_eval_ever tests scripts
+
   tests:
     name: ${{ matrix.deps }} / ${{ matrix.resolution }}
     runs-on: ubuntu-latest
