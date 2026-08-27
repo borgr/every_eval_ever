@@ -91,9 +91,9 @@ _CONFLICT_STATUSES = frozenset({409, 412})
 #: The sentence the Hub returns with a 409 when another commit to the same
 #: repository is still in flight.
 _COMMIT_IN_PROGRESS = 'commit operation is in progress'
-#: Hub errors lead with the status, which is how a conflict is recognised
-#: when the exception carries no response to read it from.
-_STATUS_PREFIX = re.compile(r'\s*(409|412)\b')
+#: Hub errors name the status in their message, which is how a conflict is
+#: recognised when the exception carries no response to read it from.
+_STATUS_CODE = re.compile(r'\b(409|412)\b')
 
 
 def is_commit_conflict(exc: BaseException) -> bool:
@@ -109,10 +109,14 @@ def is_commit_conflict(exc: BaseException) -> bool:
     status = getattr(getattr(exc, 'response', None), 'status_code', None)
     if status in _CONFLICT_STATUSES:
         return True
-    text = str(exc)
-    if _COMMIT_IN_PROGRESS in text.lower():
+    text = str(exc).lower()
+    if (
+        _COMMIT_IN_PROGRESS in text
+        or 'precondition failed' in text
+        or 'branch was updated' in text
+    ):
         return True
-    return _STATUS_PREFIX.match(text) is not None
+    return _STATUS_CODE.search(text) is not None
 
 
 def commit_retry_delay(attempt: int) -> float:
