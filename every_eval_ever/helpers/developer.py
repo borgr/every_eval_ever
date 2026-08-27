@@ -87,6 +87,14 @@ def get_developer(model_name: str) -> str:
     Args:
         model_name: The model name (e.g., "meta-llama/Llama-3-8B" or "gpt-4")
 
+    The two steps do not agree with each other, and the datastore shows it: a
+    slashed name yields its prefix while a bare name yields the company the
+    pattern table folds it into, so ``Qwen/Qwen3-32B`` gives ``Qwen`` and
+    ``qwen3-32b`` gives ``alibaba`` for one model. The datastore's developer
+    folder follows the id prefix (see ``datastore_path_components``), so prefer
+    resolving a bare name through the eval-card-registry and taking the resolved
+    canonical id's prefix over calling this with a bare name.
+
     Returns:
         Developer name (lowercase), or "unknown" if not recognized
 

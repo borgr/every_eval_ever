@@ -645,7 +645,7 @@
                 },
                 "developer": {
                     "type": "string",
-                    "description": "Name of organization that provides the model (e.g. 'OpenAI')"
+                    "description": "Name of organization that provides the model (e.g. 'OpenAI'), as the source states it. The datastore directory is taken from id's prefix, not from this field, so the two may legitimately differ (id 'Qwen/Qwen3-32B', developer 'alibaba'); this field is read for the path only when id is flat."
                 },
                 "inference_platform": {
                     "type": "string",

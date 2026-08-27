@@ -26,8 +26,9 @@ that surprise people:
   unreconciled API-catalog draft — prefer the HF-anchored canonical and flag the draft.
 - **`org_id` is the normalized company, so it differs from the id prefix by design**
   (`Qwen/Qwen3-32B` sits under org `alibaba`; `canonical_orgs.hf_org` maps back). Don't
-  "fix" the prefix to match the org. Note the EEE datastore path takes the developer
-  folder from the id prefix, not from `model_info.developer`.
+  "fix" the prefix to match the org. The EEE datastore path takes the developer folder
+  from the id prefix, not from `model_info.developer` and not from `org_id` — the rule
+  and its consequences are in `datastore-gate.md` §path.
 
 What an adapter author needs here:
 - **Search the registry first; alias your raw slug to the *existing* canonical;

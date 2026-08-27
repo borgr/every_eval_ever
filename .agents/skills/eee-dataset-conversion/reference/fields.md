@@ -110,6 +110,13 @@ comes from **`evaluation_results[0].source_data.dataset_name`** unless you pass
   datastore ended up with the same models under two orgs (`qwen` vs `alibaba`,
   `moonshot-ai` vs `moonshotai`) — which also splits their directories. If a model is
   missing from the helper, extend the helper.
+- **The directory follows the id prefix, so resolve the model and take its prefix — never
+  fold a bare name to a company.** `get_developer` returns the prefix for a slashed id
+  and pattern-matches a bare one, so today `Qwen/Qwen3-32B` gives `Qwen` while
+  `qwen3-32b` gives `alibaba`: the same model, two directories, from two sources writing
+  the same thing differently. When your source gives a bare name, resolve it through the
+  registry (`entity_type: model`) and take the resolved canonical id's prefix, the way
+  `adapters/open_medical_llm` does. `datastore-gate.md` §path has the rule this follows.
 - Beware prefix matching when mapping names: a `startswith` rule maps
   `gpt-4.1-mini` onto `gpt-4.1`. Match exactly, longest-first.
 - **Variant axes belong in `evaluation_id`, not in `model_info.id`.** When a source lists
