@@ -78,9 +78,7 @@
   repo should be a deliberate, separate act. Give the adapter `--save-raw-json` /
   `--input-json` so a fetched payload can be replayed offline — that's also what makes the
   fixture-based test possible without mocking HTTP.
-- **ruff is configured but not enforced by CI** — `pyproject.toml` selects E/F/I (E501
-  and E402 ignored); no workflow runs it, so nothing will tell you but a reviewer. Run
-  `uv run ruff check` yourself; fix import order, and use `# noqa: E402` after an
-  `importorskip` block.
+- **Import order after an `importorskip` block** — CI's `ruff` row selects E/F/I, so put
+  `# noqa: E402` on an import that has to follow the skip guard.
 - **Stale helpers** — `helpers.make_evaluation_log`/`make_evaluation_result` miss the
   now-required `eval_library`/per-result `source_data`; build the models by hand.
