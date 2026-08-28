@@ -279,7 +279,7 @@ def test_num_samples_follows_the_split_a_score_was_computed_on():
     adapter = HELMAdapter()
     converted_eval = _load_eval(
         adapter,
-        'tests/data/helm/mmlu:subject=philosophy,'
+        'tests/data/helm/mmlu-subject=philosophy,'
         'method=multiple_choice_joint,model=openai_gpt2',
         {
             'source_organization_name': 'TestOrg',
@@ -376,7 +376,7 @@ def test_sample_count_survives_a_run_without_per_instance_stats():
 
     adapter = HELMAdapter()
     source = Path(
-        'tests/data/helm/mmlu:subject=philosophy,'
+        'tests/data/helm/mmlu-subject=philosophy,'
         'method=multiple_choice_joint,model=openai_gpt2'
     )
 
