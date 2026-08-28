@@ -244,6 +244,48 @@ def test_unbounded_metric_uses_infinity():
     assert rating.max_score == float("inf")
 
 
+def test_direction_falls_back_to_family_then_unknown_and_is_tagged():
+    """A declared higher_is_better wins; where absent the metric family fixes
+    the direction (WER goes down), and a genuinely unknown direction is tagged
+    so a guess is never recorded as a stated one."""
+    payload = sample_payload()
+    payload["benchmarks"] += [
+        {"id": "asr_wer", "name": "ASR WER", "category": "Speech",
+         "metric": "WER", "source_url": None,
+         "canonical_setting": {"metric_type": "wer"}},   # no higher_is_better
+        {"id": "mystery", "name": "Mystery", "category": "Misc",
+         "metric": "f1", "source_url": None,
+         "canonical_setting": {"metric_type": "f1"}},     # family + flag unknown
+    ]
+    payload["scores"] += [
+        {"model_id": "gpt-oss-120b", "benchmark_id": "asr_wer", "score": 0.15,
+         "reference_url": "https://x.example/wer", "source_type": "leaderboard",
+         "audit_status": "verified"},
+        {"model_id": "gpt-oss-120b", "benchmark_id": "mystery", "score": 0.9,
+         "reference_url": "https://x.example/f1", "source_type": "leaderboard",
+         "audit_status": "verified"},
+    ]
+    third = next(
+        b.log for b in adapter.make_logs(payload).records
+        if b.developer == "openai"
+        and b.log.source_metadata.evaluator_relationship.value == "third_party")
+    by_id = {r.evaluation_result_id: r.metric_config
+             for r in third.evaluation_results}
+
+    wer = by_id["asr-wer"]
+    assert wer.lower_is_better is True
+    assert wer.additional_details["direction_source"] == "metric_family"
+
+    mystery = by_id["mystery"]
+    assert mystery.lower_is_better is False
+    assert mystery.additional_details["direction_source"] == "unknown"
+
+    # The benchmark that states higher_is_better keeps it, tagged `declared`.
+    rating = by_id["codeforces-rating"]
+    assert rating.lower_is_better is False
+    assert rating.additional_details["direction_source"] == "declared"
+
+
 def test_version_provenance_recorded():
     details = _logs_by_relationship()["other"].log.source_metadata.additional_details
     assert details["benchpress_source_git_commit"] == "5be3b4eddf0188721ff25f00713b589b2cbed8e0"
@@ -299,6 +341,30 @@ def test_a_score_that_will_not_parse_fails_only_its_own_row(tmp_path):
     assert result.total_records == 9
     for path in adapter.export_logs(result.records, tmp_path / 'data' / 'benchpress'):
         assert validate_file(path).valid
+
+
+def test_missing_metadata_and_no_score_are_reported_as_distinct_reasons():
+    """A benchmark absent from the export, a model absent, and a row with no
+    score value are three different problems and must not share one reason."""
+    payload = sample_payload()
+    payload['scores'] += [
+        {'model_id': 'gpt-oss-120b', 'benchmark_id': 'not_a_benchmark',
+         'score': 12.0, 'reference_url': 'https://x.invalid',
+         'source_type': 'leaderboard', 'audit_status': 'verified'},
+        {'model_id': 'not_a_model', 'benchmark_id': 'aime_2025', 'score': 12.0,
+         'reference_url': 'https://y.invalid', 'source_type': 'leaderboard',
+         'audit_status': 'verified'},
+        {'model_id': 'gpt-oss-120b', 'benchmark_id': 'aime_2025', 'score': None,
+         'reference_url': 'https://z.invalid', 'source_type': 'leaderboard',
+         'audit_status': 'verified'},
+    ]
+    by_ref = {f.source_ref: f.reason for f in adapter.make_logs(payload).failures}
+
+    assert "benchmark_id 'not_a_benchmark' not in this export" in (
+        by_ref['gpt-oss-120b/not_a_benchmark'])
+    assert "model_id 'not_a_model' not in this export" in (
+        by_ref['not_a_model/aime_2025'])
+    assert by_ref['gpt-oss-120b/aime_2025'] == 'the source row carries no score value'
 
 
 def test_a_schema_error_is_recorded_against_its_source_row():
