@@ -2,9 +2,12 @@
 """Convert reviewed Papers with Code DrugBank result cells to EEE.
 
 The adapter consumes a local PwC PostgreSQL dump and a YAML manifest that binds
-each selected score cell to reviewed model, metric, split, protocol, and
-provenance metadata. It checks the declared split against drug-entity overlap
-and does not infer semantics from labels or score distributions.
+each selected score cell to reviewed model, source-scale, split, protocol, and
+provenance metadata. Canonical metric fields in that manifest are assertions:
+the CLI verifies them against the same vendored eval-card-registry snapshot used
+by ``adapters/paperswithcode`` before conversion. Protocol semantics and source
+scale remain explicit manifest decisions rather than inferences from labels or
+score distributions.
 
 Overlap with ``adapters/paperswithcode``: that adapter converts the same dump
 across every dataset on its scheduled run, so a DrugBank cell converted here is
@@ -46,6 +49,10 @@ from pydantic import (
     model_validator,
 )
 
+from every_eval_ever.adapters.paperswithcode.adapter import (
+    MetricResolver,
+    build_metric_config as build_pwc_metric_config,
+)
 from every_eval_ever.eval_types import (
     EvalLibrary,
     EvaluationLog,
@@ -473,6 +480,82 @@ def load_overlay(path: str | Path) -> tuple[ProtocolOverlay, str]:
     ).hexdigest()
 
 
+def _validate_registry_revision(
+    overlay: ProtocolOverlay, resolver: MetricResolver
+) -> None:
+    registry_revision = resolver.registry_revision
+    if not registry_revision:
+        raise ValueError('vendored PwC registry snapshot has no revision')
+    if overlay.registry_revision != registry_revision:
+        raise ValueError(
+            'qualification manifest registry_revision does not match the '
+            'vendored PwC registry snapshot: '
+            f'declared {overlay.registry_revision}, vendored {registry_revision}'
+        )
+
+
+def _canonical_metric_config(
+    metric: OverlayMetric, resolver: MetricResolver
+) -> MetricConfig:
+    observed = (metric.min_score, metric.max_score)
+    resolved = resolver.resolve(metric.source_name, observed, 'drugbank')
+    if not resolved.resolved:
+        reason, candidates = resolver.unresolved_reason.get(
+            metric.source_name, ('unknown', ())
+        )
+        candidate_text = (
+            f'; candidates={list(candidates)!r}' if candidates else ''
+        )
+        raise ValueError(
+            f'PwC metric {metric.source_name!r} is not resolvable in the '
+            f'vendored registry snapshot ({reason}{candidate_text})'
+        )
+    if resolved.detail.get('direction_source') == 'unknown':
+        raise ValueError(
+            f'PwC metric {metric.source_name!r} has no determinate canonical '
+            'direction in the vendored registry snapshot'
+        )
+    config = build_pwc_metric_config(
+        metric.source_name, resolved, observed, None
+    )
+    if config.score_type != ScoreType.continuous:
+        raise ValueError(
+            f'PwC metric {metric.source_name!r} has unsupported canonical '
+            f'score_type {config.score_type.value!r}; DrugBank requires '
+            "'continuous'"
+        )
+    return config
+
+
+def validate_registry_contract(
+    overlay: ProtocolOverlay, resolver: MetricResolver | None = None
+) -> MetricResolver:
+    """Verify every manifest metric assertion against the shared PwC snapshot."""
+    resolver = resolver or MetricResolver()
+    _validate_registry_revision(overlay, resolver)
+    for entry in overlay.entries:
+        for metric in entry.metrics:
+            canonical = _canonical_metric_config(metric, resolver)
+            for field_name in (
+                'metric_id',
+                'metric_name',
+                'metric_kind',
+                'metric_unit',
+                'lower_is_better',
+                'min_score',
+                'max_score',
+            ):
+                declared = getattr(metric, field_name)
+                expected = getattr(canonical, field_name)
+                if declared != expected:
+                    raise ValueError(
+                        f'PwC metric {metric.source_name!r} registry contract '
+                        f'mismatch for {field_name}: manifest declares '
+                        f'{declared!r}, vendored registry requires {expected!r}'
+                    )
+    return resolver
+
+
 def load_dump(dump_path: str | Path):
     import pgdumplib
 
@@ -697,7 +780,11 @@ def _build_result(
     dataset: dict[str, Any],
     metric: OverlayMetric,
     raw_value: Any,
+    *,
+    resolver: MetricResolver | None = None,
 ) -> EvaluationResult:
+    resolver = resolver or MetricResolver()
+    canonical_metric = _canonical_metric_config(metric, resolver)
     source_value, uncertainty, percent = parse_metric_value(raw_value)
     if percent and metric.source_scale != 'percent':
         raise ValueError(
@@ -710,11 +797,11 @@ def _build_result(
     canonical_uncertainty = (
         None if uncertainty is None else uncertainty * metric.scale_factor
     )
-    if not metric.min_score <= score <= metric.max_score:
+    if not canonical_metric.min_score <= score <= canonical_metric.max_score:
         raise ValueError(
             f'PwC evaluation {entry.pwc_evaluation_id} metric {metric.source_name!r} '
             f'converts to {score}, outside reviewed canonical range '
-            f'[{metric.min_score}, {metric.max_score}]'
+            f'[{canonical_metric.min_score}, {canonical_metric.max_score}]'
         )
 
     q = entry.qualification
@@ -770,18 +857,19 @@ def _build_result(
         else None,
         metric_config=MetricConfig(
             evaluation_description=(
-                f'{metric.metric_name} for DrugBank protocol {q.protocol_id} '
-                f'({q.split_id}).'
+                f'{canonical_metric.metric_name} for DrugBank protocol '
+                f'{q.protocol_id} ({q.split_id}).'
             ),
-            metric_id=metric.metric_id,
-            metric_name=metric.metric_name,
-            metric_kind=metric.metric_kind,
-            metric_unit=metric.metric_unit,
-            lower_is_better=metric.lower_is_better,
-            score_type=ScoreType.continuous,
-            min_score=metric.min_score,
-            max_score=metric.max_score,
+            metric_id=canonical_metric.metric_id,
+            metric_name=canonical_metric.metric_name,
+            metric_kind=canonical_metric.metric_kind,
+            metric_unit=canonical_metric.metric_unit,
+            lower_is_better=canonical_metric.lower_is_better,
+            score_type=canonical_metric.score_type,
+            min_score=canonical_metric.min_score,
+            max_score=canonical_metric.max_score,
             additional_details={
+                **(canonical_metric.additional_details or {}),
                 'source_metric_name': metric.source_name,
                 'reviewed_source_scale': metric.source_scale,
             },
@@ -799,7 +887,10 @@ def build_logs(
     overlay_sha256: str,
     *,
     dump_file: str | None = None,
+    resolver: MetricResolver | None = None,
 ) -> list[EvaluationLog]:
+    resolver = resolver or MetricResolver()
+    _validate_registry_revision(overlay, resolver)
     rows: dict[str, dict[str, Any]] = {}
     for row in evaluations:
         evaluation_id = str(row.get('id'))
@@ -865,6 +956,7 @@ def build_logs(
                 dataset,
                 metric,
                 metrics[metric.source_name],
+                resolver=resolver,
             )
             if result.evaluation_result_id is None:
                 raise ValueError('DrugBank result is missing its stable id')
@@ -980,6 +1072,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def run(args: argparse.Namespace) -> int:
     overlay, overlay_sha256 = load_overlay(args.overlay)
+    resolver = validate_registry_contract(overlay)
     actual_dump_sha256 = file_sha256(args.dump)
     if actual_dump_sha256 != overlay.dump_sha256:
         raise ValueError(
@@ -988,7 +1081,12 @@ def run(args: argparse.Namespace) -> int:
         )
     evaluations, datasets = load_source_context(load_dump(args.dump), overlay)
     logs = build_logs(
-        evaluations, datasets, overlay, overlay_sha256, dump_file=args.dump.name
+        evaluations,
+        datasets,
+        overlay,
+        overlay_sha256,
+        dump_file=args.dump.name,
+        resolver=resolver,
     )
     validate_output_dir(args.output_dir)
     paths = export(logs, args.output_dir)
