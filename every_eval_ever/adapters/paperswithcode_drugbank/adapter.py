@@ -50,8 +50,8 @@ from pydantic import (
 )
 
 from every_eval_ever.adapters.paperswithcode.adapter import (
-    MetricResolver,
     build_metric_config as build_pwc_metric_config,
+    MetricResolver,
 )
 from every_eval_ever.eval_types import (
     EvalLibrary,
@@ -889,8 +889,7 @@ def build_logs(
     dump_file: str | None = None,
     resolver: MetricResolver | None = None,
 ) -> list[EvaluationLog]:
-    resolver = resolver or MetricResolver()
-    _validate_registry_revision(overlay, resolver)
+    resolver = validate_registry_contract(overlay, resolver)
     rows: dict[str, dict[str, Any]] = {}
     for row in evaluations:
         evaluation_id = str(row.get('id'))
