@@ -548,7 +548,7 @@ def test_result_id_binds_protocol_semantics_for_the_same_source_cell() -> None:
 
 
 def test_aggregate_id_binds_protocol_and_metric_selection() -> None:
-    metrics = {'AUROC': '99.49', 'AUPR': '88.00'}
+    metrics = {'AUROC': '99.49', 'Accuracy': '88.00'}
     row = _source_row(metrics)
     dataset = _datasets()
 
@@ -570,7 +570,12 @@ def test_aggregate_id_binds_protocol_and_metric_selection() -> None:
     expanded_payload = deepcopy(base_payload)
     expanded_metric = deepcopy(expanded_payload['entries'][0]['metrics'][0])
     expanded_metric.update(
-        {'source_name': 'AUPR', 'metric_id': 'aupr', 'metric_name': 'AUPR'}
+        {
+            'source_name': 'Accuracy',
+            'metric_id': 'accuracy',
+            'metric_name': 'Accuracy',
+            'metric_kind': 'accuracy',
+        }
     )
     expanded_payload['entries'][0]['metrics'].append(expanded_metric)
     expanded_overlay = adapter.ProtocolOverlay.model_validate(expanded_payload)
@@ -579,7 +584,7 @@ def test_aggregate_id_binds_protocol_and_metric_selection() -> None:
     )[0]
 
     changed_metric_payload = deepcopy(base_payload)
-    changed_metric_payload['entries'][0]['metrics'][0]['metric_id'] = 'accuracy'
+    changed_metric_payload['entries'][0]['metrics'] = [expanded_metric]
     changed_metric = adapter.ProtocolOverlay.model_validate(
         changed_metric_payload
     )
