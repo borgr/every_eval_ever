@@ -49,9 +49,9 @@ from pydantic import (
     model_validator,
 )
 
+from every_eval_ever.adapters.paperswithcode.adapter import MetricResolver
 from every_eval_ever.adapters.paperswithcode.adapter import (
     build_metric_config as build_pwc_metric_config,
-    MetricResolver,
 )
 from every_eval_ever.eval_types import (
     EvalLibrary,
