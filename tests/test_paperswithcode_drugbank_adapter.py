@@ -12,11 +12,13 @@ from pathlib import Path
 import pytest
 import yaml
 
+from every_eval_ever.adapters.paperswithcode import adapter as pwc_adapter
 from every_eval_ever.adapters.paperswithcode_drugbank import adapter
 
 DUMP_SHA = 'a' * 64
 OVERLAY_SHA = 'b' * 64
-REGISTRY_REVISION = 'c' * 40
+REGISTRY_REVISION = pwc_adapter.MetricResolver().registry_revision
+assert REGISTRY_REVISION is not None
 RETRIEVED_TS = '1784160000.0'
 
 
@@ -82,7 +84,7 @@ def _overlay_payload(
                         'source_name': 'AUROC',
                         'metric_id': 'auroc',
                         'metric_name': 'AUROC',
-                        'metric_kind': 'roc_auc',
+                        'metric_kind': 'auroc',
                         'metric_unit': 'proportion',
                         'lower_is_better': False,
                         'min_score': 0.0,
