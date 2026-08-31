@@ -9,13 +9,10 @@ by ``adapters/paperswithcode`` before conversion. Protocol semantics and source
 scale remain explicit manifest decisions rather than inferences from labels or
 score distributions.
 
-Overlap with ``adapters/paperswithcode``: that adapter converts the same dump
-across every dataset on its scheduled run, so a DrugBank cell converted here is
-also present in ``data/paperswithcode/`` without the reviewed split and
-protocol semantics. Both records carry the cell's
-``additional_details.pwc_evaluation_id``, which is the PwC ``evaluations`` row
-id, so the two are joinable and a consumer reading both collections can tell
-they are one measurement rather than two.
+The general ``adapters/paperswithcode`` adapter can emit the same source cells
+without these reviewed protocol semantics. ``pwc_evaluation_id`` identifies the
+shared PwC evaluation row; an exact source-cell match across the two collections
+uses ``(pwc_evaluation_id, metric_config.metric_name)``.
 
 Run with the adapter extra installed::
 
@@ -52,6 +49,7 @@ from pydantic import (
 from every_eval_ever.adapters.paperswithcode.adapter import MetricResolver
 from every_eval_ever.adapters.paperswithcode.adapter import (
     build_metric_config as build_pwc_metric_config,
+    parse_metric_value as parse_pwc_metric_value,
 )
 from every_eval_ever.eval_types import (
     EvalLibrary,
@@ -495,10 +493,12 @@ def _validate_registry_revision(
 
 
 def _canonical_metric_config(
-    metric: OverlayMetric, resolver: MetricResolver
+    metric: OverlayMetric,
+    resolver: MetricResolver,
+    observed_range: tuple[float, float] | None = None,
 ) -> MetricConfig:
-    observed = (metric.min_score, metric.max_score)
-    resolved = resolver.resolve(metric.source_name, observed, 'drugbank')
+    metric_range = observed_range or (metric.min_score, metric.max_score)
+    resolved = resolver.resolve(metric.source_name, metric_range, 'drugbank')
     if not resolved.resolved:
         reason, candidates = resolver.unresolved_reason.get(
             metric.source_name, ('unknown', ())
@@ -516,7 +516,7 @@ def _canonical_metric_config(
             'direction in the vendored registry snapshot'
         )
     config = build_pwc_metric_config(
-        metric.source_name, resolved, observed, None
+        metric.source_name, resolved, metric_range, None
     )
     if config.score_type != ScoreType.continuous:
         raise ValueError(
@@ -652,13 +652,27 @@ def _metrics_object(row: dict[str, Any]) -> dict[str, Any]:
     return metrics
 
 
-def parse_metric_value(raw: Any) -> tuple[float, float | None, bool]:
-    """Split one reported cell into (value, reported dispersion, percent marker).
+def _observed_metric_ranges(
+    evaluations: Iterable[dict[str, Any]],
+) -> dict[str, tuple[float, float]]:
+    ranges: dict[str, list[float]] = {}
+    for row in evaluations:
+        try:
+            metrics = _metrics_object(row)
+        except ValueError:
+            continue
+        for name, raw_value in metrics.items():
+            value, _ = parse_pwc_metric_value(raw_value)
+            if value is None:
+                continue
+            bounds = ranges.setdefault(name, [value, value])
+            bounds[0] = min(bounds[0], value)
+            bounds[1] = max(bounds[1], value)
+    return {name: (bounds[0], bounds[1]) for name, bounds in ranges.items()}
 
-    The dispersion comes back as a number on the *source* scale, so the caller
-    has to apply the same scale factor it applies to the value. Returning it as
-    a string is what let an unscaled figure sit beside a rescaled score.
-    """
+
+def parse_metric_value(raw: Any) -> tuple[float, float | None, bool]:
+    """Split one reported cell into value, source-scale dispersion, and percent flag."""
     if raw is None or isinstance(raw, bool):
         raise ValueError('metric value must be a finite number')
     if isinstance(raw, (int, float)):
@@ -782,25 +796,28 @@ def _build_result(
     raw_value: Any,
     *,
     resolver: MetricResolver | None = None,
+    observed_range: tuple[float, float] | None = None,
 ) -> EvaluationResult:
     resolver = resolver or MetricResolver()
-    canonical_metric = _canonical_metric_config(metric, resolver)
     source_value, uncertainty, percent = parse_metric_value(raw_value)
+    canonical_metric = _canonical_metric_config(
+        metric,
+        resolver,
+        observed_range or (source_value, source_value),
+    )
     if percent and metric.source_scale != 'percent':
         raise ValueError(
             f'PwC evaluation {entry.pwc_evaluation_id} metric {metric.source_name!r} '
             'has a percent marker but the reviewed source_scale is not percent'
         )
     score = source_value * metric.scale_factor
-    # A dispersion is a spread in the score's units, so it takes the same factor.
-    # Left unscaled it read as wider than the metric's whole range.
     canonical_uncertainty = (
         None if uncertainty is None else uncertainty * metric.scale_factor
     )
     if not canonical_metric.min_score <= score <= canonical_metric.max_score:
         raise ValueError(
             f'PwC evaluation {entry.pwc_evaluation_id} metric {metric.source_name!r} '
-            f'converts to {score}, outside reviewed canonical range '
+            f'converts to {score}, outside canonical registry range '
             f'[{canonical_metric.min_score}, {canonical_metric.max_score}]'
         )
 
@@ -832,9 +849,6 @@ def _build_result(
             'protocol_evidence_locator': entry.evidence.source_locator,
             'protocol_review_note': entry.evidence.review_note,
             'raw_value': raw_value,
-            # Two keys, matching adapters/paperswithcode: the figure the source
-            # printed, and the same number on the scale `score` is on. A spread
-            # is in the score's units, so a rescale has to reach it too.
             'reported_uncertainty': uncertainty,
             'reported_uncertainty_canonical': (
                 canonical_uncertainty
@@ -898,6 +912,7 @@ def build_logs(
                 f'duplicate PwC evaluation id in source: {evaluation_id}'
             )
         rows[evaluation_id] = row
+    metric_ranges = _observed_metric_ranges(rows.values())
 
     groups: dict[str, _ModelGroup] = {}
     for entry in overlay.entries:
@@ -956,6 +971,7 @@ def build_logs(
                 metric,
                 metrics[metric.source_name],
                 resolver=resolver,
+                observed_range=metric_ranges.get(metric.source_name),
             )
             if result.evaluation_result_id is None:
                 raise ValueError('DrugBank result is missing its stable id')
@@ -1024,9 +1040,6 @@ def validate_output_dir(output_dir: Path) -> None:
 def export(logs: Iterable[EvaluationLog], output_dir: Path) -> list[Path]:
     outputs: list[EvaluationLogOutput] = []
     for log in logs:
-        # datastore_path_components owns this split: it takes the developer from
-        # the id's prefix, flattens deeper namespaces and rejects an unusable
-        # component, where splitting by hand raised on a flat id.
         _, developer, model_name = datastore_path_components(
             COLLECTION_NAME, log.model_info.id, log.model_info.developer
         )
