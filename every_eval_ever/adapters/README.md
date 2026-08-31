@@ -80,7 +80,7 @@ re-hosting bytes that are already durably stored.
 | `global_mmlu_lite` | Kaggle API | Fetches Global MMLU Lite leaderboard results from Kaggle. |
 | `hfopenllm_v2` | HuggingFace Spaces API | Fetches the Open LLM Leaderboard v2 (4576+ models). The leaderboard is no longer maintained upstream, so this converts a frozen archive and is not scheduled. |
 | `helm` | HELM leaderboard | Converts HELM leaderboard data. Supports `--leaderboard_name` for Capabilities/Lite/Classic/Instruct/MMLU. |
-| `llm_stats` | LLM Stats API | Converts LLM Stats model, benchmark, and score API data into `data/llm-stats/`. |
+| `llm_stats` | LLM Stats API | Converts LLM Stats model, benchmark, and score API results into `data/llm-stats/`. |
 | `mercor_eval` | Mercor Evaluation Exports API | Fetches authenticated Mercor benchmark leaderboards and writes aggregate EEE records. |
 | `mt_bench` | LMSYS / FastChat | Converts MT-Bench GPT-4 single-answer judgments into `data/mt-bench/`. Emits overall, turn-1, and turn-2 means per model. |
 | `open_medical_llm` | HuggingFace (`openlifescienceai/results`) | Converts the Open Medical-LLM Leaderboard's lm-evaluation-harness results into `data/open-medical-llm/`. One record per model, one result per medical benchmark (9). See [`open_medical_llm/README.md`](open_medical_llm/README.md). |
@@ -90,7 +90,7 @@ re-hosting bytes that are already durably stored.
 | `terminal_bench_2` | tbench.ai | Fetches Terminal-Bench 2.0 agentic coding benchmark results. |
 | `hle` | Scale SEAL leaderboard | Converts the Scale SEAL Humanity's Last Exam leaderboard into `data/hle/`. Emits per-model accuracy (with 95% CI) and calibration error. |
 | `mmlu_pro` | TIGER-Lab leaderboard CSV | Converts the MMLU-Pro leaderboard (`TIGER-Lab/mmlu_pro_leaderboard_submission`) into `data/mmlu-pro/`. Emits per-model overall + 14 per-subject accuracies. |
-| `paperswithcode_drugbank` | Local Papers with Code PostgreSQL dump + reviewed YAML manifest | Manually converts only DrugBank score cells with reviewed model, metric-scale, split, and protocol semantics. Writes `data/paperswithcode-drugbank/`. The same cells also appear in `data/paperswithcode/` from the general adapter over the same dump, unreviewed; both records carry the PwC `pwc_evaluation_id` so the pair is joinable. |
+| `paperswithcode_drugbank` | Local Papers with Code PostgreSQL dump + reviewed YAML manifest | Manually converts DrugBank score cells with reviewed model, source-scale, split, and protocol semantics. The same source cell in `data/paperswithcode/` is matched by `(pwc_evaluation_id, metric_config.metric_name)`. |
 | `lexam` | LEXam project website | Converts the LEXam legal-reasoning leaderboard (open-question judge scores + 4-choice MCQ accuracy) into `data/lexam/`. |
 | `vectara_hallucination_leaderboard` | HuggingFace (`vectara/results`) | Converts the Vectara Hallucination Leaderboard result files, pinned to a source commit, into `data/vectara-hallucination-leaderboard/`. Emits 4 aggregate metrics plus per-category and per-text-complexity breakdowns (40 scores per model). |
 | `benchpress` | HuggingFace (`microsoft/benchpress-score-matrix`) | Converts the BenchPress score matrix into `data/benchpress/`. An aggregator: every cell keeps its own citation, and logs split by `evaluator_relationship`. See [`benchpress/README.md`](benchpress/README.md). |
@@ -102,21 +102,28 @@ re-hosting bytes that are already durably stored.
 
 To run this manual adapter, provide a local custom-format PostgreSQL dump and a
 reviewed, non-empty YAML qualification manifest (schema version 2). It is not
-scheduled because
-neither input has a live fetch path, and the repository does not include a
-production manifest. The manifest must supply reviewed canonical model,
-metric, and benchmark IDs plus the registry commit against which they were
-reviewed. The adapter does not resolve or invent identities, and conversion is
-atomic: an anchor, hash, or schema mismatch aborts before any output is written.
+scheduled because neither input has a live fetch path, and the repository does
+not include a production manifest. The manifest supplies reviewed model and
+benchmark identities, exact source-cell selectors, source-scale decisions,
+protocol semantics, provenance, and the registry revision used for review.
+Canonical metric fields are checked against the same vendored
+`eval-card-registry` snapshot as the general Papers with Code adapter, and
+observed metric ranges are derived from the source values being converted.
+Conversion is atomic: an anchor, hash, registry, or schema mismatch aborts before
+any output is written.
+
 For split comparisons, each manifest entry must declare `transductive`,
 `inductive-s1`, or `inductive-s2`, with matching manifest-declared overlap
-labels. A
-canonical benchmark ID cannot be reused for conflicting protocols anywhere in
-the manifest, so the adapter cannot emit conflicting split scores under one
-benchmark key. The adapter preserves the scores and protocol evidence supplied
-by the reviewed manifest; it does not independently verify cited source content
-or train/test membership from the aggregate dump, and it does not compute a
-performance delta between splits.
+labels. A canonical benchmark ID cannot be reused for conflicting protocols
+anywhere in the manifest, so the adapter cannot emit conflicting split scores
+under one benchmark key. Scores come from the pinned dump; the manifest supplies
+the source-cell selection and protocol evidence. The adapter does not
+independently verify cited source content or train/test membership from the
+aggregate dump, and it does not compute a performance delta between splits.
+
+The general Papers with Code adapter can emit the same PwC evaluation rows.
+`pwc_evaluation_id` identifies the shared row, while an exact metric-cell match
+uses `(pwc_evaluation_id, metric_config.metric_name)`.
 
 ```bash
 uv run --extra paperswithcode python -m \
