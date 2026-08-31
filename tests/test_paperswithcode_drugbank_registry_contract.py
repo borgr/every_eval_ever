@@ -187,10 +187,9 @@ def test_auroc_output_matches_generic_pwc_canonical_contract() -> None:
     )
     [result] = log.evaluation_results
 
-    resolved = RESOLVER.resolve('AUROC', (0.0, 1.0), 'drugbank')
-    generic = pwc_adapter.build_metric_config(
-        'AUROC', resolved, (0.0, 1.0), None
-    )
+    observed = (99.49, 99.49)
+    resolved = RESOLVER.resolve('AUROC', observed, 'drugbank')
+    generic = pwc_adapter.build_metric_config('AUROC', resolved, observed, None)
 
     assert result.metric_config.metric_id == generic.metric_id
     assert result.metric_config.metric_name == generic.metric_name
@@ -203,9 +202,29 @@ def test_auroc_output_matches_generic_pwc_canonical_contract() -> None:
     assert result.metric_config.additional_details['bound_registry_revision'] == (
         REGISTRY_REVISION
     )
+    assert result.metric_config.additional_details['observed_min'] == '99.49'
+    assert result.metric_config.additional_details['observed_max'] == '99.49'
     assert result.score_details.score == pytest.approx(0.9949)
     assert result.score_details.details['reviewed_source_scale'] == 'percent'
     assert result.score_details.details['applied_scale_factor'] == '0.01'
+
+
+def test_observed_range_is_derived_from_source_rows() -> None:
+    overlay = _overlay(source_scale='percent')
+    selected = _row(percent=True)
+    other = dict(selected)
+    other['id'] = 'eval-2'
+    other['metrics'] = json.dumps({'AUROC': '75.0'})
+
+    [log] = adapter.build_logs(
+        [selected, other], _datasets(), overlay, OVERLAY_SHA
+    )
+    [result] = log.evaluation_results
+
+    assert result.metric_config.additional_details['observed_min'] == '75.0'
+    assert result.metric_config.additional_details['observed_max'] == '99.49'
+    assert result.metric_config.min_score == 0.0
+    assert result.metric_config.max_score == 1.0
 
 
 def test_cli_contract_gate_runs_before_dump_access(
