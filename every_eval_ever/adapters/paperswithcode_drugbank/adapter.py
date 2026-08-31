@@ -49,6 +49,8 @@ from pydantic import (
 from every_eval_ever.adapters.paperswithcode.adapter import MetricResolver
 from every_eval_ever.adapters.paperswithcode.adapter import (
     build_metric_config as build_pwc_metric_config,
+)
+from every_eval_ever.adapters.paperswithcode.adapter import (
     parse_metric_value as parse_pwc_metric_value,
 )
 from every_eval_ever.eval_types import (
@@ -817,7 +819,7 @@ def _build_result(
     if not canonical_metric.min_score <= score <= canonical_metric.max_score:
         raise ValueError(
             f'PwC evaluation {entry.pwc_evaluation_id} metric {metric.source_name!r} '
-            f'converts to {score}, outside canonical registry range '
+            f'converts to {score}, outside reviewed canonical range from the registry '
             f'[{canonical_metric.min_score}, {canonical_metric.max_score}]'
         )
 
