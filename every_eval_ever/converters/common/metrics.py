@@ -85,6 +85,12 @@ METRIC_ID_REGISTRY_REVISION = '8b83e9c'
 # Only names the registry actually carries appear here; the rest are namespaced.
 CANONICAL_METRIC_IDS: dict[str, str] = {
     'acc': 'accuracy',
+    # Length-normalized accuracy is a different computation from `acc` on the same
+    # items, and the registry keeps them apart. It is carried as
+    # `normalized-accuracy` there, with `acc_norm` already among its aliases; the
+    # hosted resolver reports no match only because the live Space lags the seed,
+    # which is why this looked unregistered.
+    'acc_norm': 'normalized-accuracy',
     'accuracy': 'accuracy',
     'bleu': 'bleu',
     'bleu_1': 'bleu-1',
