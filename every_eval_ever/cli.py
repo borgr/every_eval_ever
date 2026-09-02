@@ -19,6 +19,7 @@ from every_eval_ever.helpers.io import (
     datastore_output_dir,
     default_failure_report_path,
     save_failure_report,
+    summarise_drop_reasons,
 )
 
 EVALUATOR_RELATIONSHIP_CHOICES = [
@@ -74,6 +75,8 @@ def _save_partial_conversion_report(
         default_failure_report_path(Path(output_dir) / name),
     )
     print(f'Provenance report: {report_path}')
+    for reason, rows in summarise_drop_reasons(result):
+        print(f'  {rows} row(s) rejected: {reason}')
 
 
 def _cmd_convert_lm_eval(args: argparse.Namespace) -> int:

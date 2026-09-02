@@ -581,8 +581,15 @@ def commit_description(
     run_url: str | None = None,
     raw_reference: str | None = None,
     notes: Sequence[str] = (),
+    drop_reasons: Sequence[tuple[str, int]] = (),
 ) -> str:
-    """Compose the description every datastore commit of one run carries."""
+    """Compose the description every datastore commit of one run carries.
+
+    ``drop_reasons`` is why the run lost the rows the coverage line counts.
+    A source can drop most of its rows for one fixable reason, and without
+    the reason in the description the only way to learn that is to re-run
+    the adapter.
+    """
     lines = [
         f'Automated ingestion for the `{adapter}` adapter.',
         '',
@@ -604,6 +611,12 @@ def commit_description(
         '[`every_eval_ever`](https://github.com/evaleval/every_eval_ever) '
         'under `every_eval_ever/adapters/`; this commit carries data only.',
     ]
+    if drop_reasons:
+        total = sum(rows for _, rows in drop_reasons)
+        lines += ['', '### Why rows were dropped']
+        for reason, rows in drop_reasons:
+            share = f'{rows / total:.1%}' if total else '0%'
+            lines.append(f'- {rows} row(s), {share} of the drops: {reason}')
     if notes:
         lines += ['', '### Notes', *[f'- {note}' for note in notes]]
     return '\n'.join(lines)

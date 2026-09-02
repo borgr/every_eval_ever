@@ -240,6 +240,43 @@ Model ids use the HF `developer/model` form when `hf_model_url` is present.
 Effort/mode tiers in PwC model names (`GPT-5.5 Pro (xhigh)`) are kept verbatim;
 collapsing them and aliasing the ids belongs in the registry, not here.
 
+Without an `hf_model_url` the developer comes from the model name, and PwC names
+carry four traps that a plain family lookup gets wrong.
+
+A slash in a name is not an org prefix. PwC writes a patch size `ViT-L/16`, a
+variant `SR-DiT-B/1` and a setting `Claude Opus 5 (w/ tools)`, so
+`helpers.get_developer` takes the prefix only for a name shaped like a repo id
+(`HF_REPO_ID_RE`: no spaces or brackets, and never bare digits after the
+namespace). Everything else falls through to the family tables, which is how
+`Claude Opus 5 (w/ tools)` reaches `anthropic` instead of a developer folder
+named `claude-opus-5-w`.
+
+`helpers.get_developer` matches a family at the head of a name or after a
+hyphen, so `Flan-T5` answers `google`. On PwC's names that infix match also
+claims other groups' work — `BIGBIRD-RoBERTa` is not Meta's and
+`KnowRL-Nemotron-1.5B` is not NVIDIA's. Families where only the head match is
+safe live in `HEAD_ONLY_PATTERNS`; a family whose head match would still claim a
+third party's system (`LLaDA`, which ships under two orgs, or `MiniCPM-SALA`) is
+deliberately absent, because a wrong developer is worse than a dropped row.
+
+A family name that runs on into another word is not that family.
+`BOUNDED_PATTERNS` lists the ones that are also word fragments, so `AdaFace`
+and `AdapterTune` stop answering `openai`, `OptiMer` stops answering
+`facebook`, and `QwenLong` (which ships under `Tongyi-Zhiwen`) stops answering
+`Qwen` — while `ada-002`, `opt-1.3b` and `Qwen3` still do. A family whose own
+releases continue in letters (`T5Gemma`, `OLMoE`, `olmOCR`, `KimiVL`,
+`HunyuanOCR`) is deliberately left out of that set.
+
+A name that describes parts assembled rather than one released model
+(`PaliGemma2 + AuditDM`, `DeBERTa 1.5B + SiFT`, `LLaDA (8B) with RCD`) is
+refused outright by `names_composed_system`, even when the base family is
+known — the score belongs to the assembly, not to the base model's publisher.
+`w/` with a following space joins two systems (`Agent S w/ GPT-4o`); `w/o` is an
+ablation of one model and does not.
+Composition is looked for outside brackets only, because PwC puts shot count,
+precision and training mix in the parentheses and the `+` there joins datasets
+rather than model parts (`MEMFOF (TartanAir + Things, zero-shot)`).
+
 ## Notes
 
 - These are one-off scripts, not integrated into the main CLI.
@@ -288,6 +325,12 @@ refresh from a partial one.
 Intentional non-evaluation rows, such as a published random baseline, are
 recorded as exclusions in the same report but do not make the command fail.
 The report is not an `EvaluationLog` and must not be passed to the validator.
+
+Rejection reasons name the offending value, so a large source produces thousands
+of distinct strings for a handful of causes. `helpers.io.reason_class` collapses
+the quoted part, and the counts per class are printed after the report path and
+repeated in the datastore commit description. Without them a source that drops
+most of its rows reads the same as one that drops none.
 
 ### Vals.ai
 

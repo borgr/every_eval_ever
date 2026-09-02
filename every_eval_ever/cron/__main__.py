@@ -428,6 +428,7 @@ def _publish(
         run_url=run_url,
         raw_reference=raw_reference,
         notes=notes,
+        drop_reasons=outcome.drop_reasons(),
     )
     return submitter.publish(
         operations=operations,

@@ -4,6 +4,7 @@ import json
 import math
 import re
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Generic, Iterable, TypeVar, Union
@@ -448,6 +449,31 @@ def default_failure_report_path(
         report_root = output_path.parent / 'adapter_reports'
         report_stem = sanitize_filename(output_path.name)
     return report_root / f'{report_stem}_failures.json'
+
+
+def reason_class(reason: str) -> str:
+    """Collapse one rejection reason to the class it belongs to.
+
+    Adapters name the offending value inside quotes -- ``developer for PwC
+    model 'Autoformer' ... must be known``. Replacing the quoted part makes
+    every row rejected the same way answer with the same string, so the
+    thousands of reasons a large source produces group into the handful of
+    causes a reader can act on.
+    """
+    collapsed = re.sub(r"'[^']*'", "'...'", reason)
+    return re.sub(r'"[^"]*"', '"..."', collapsed)
+
+
+def summarise_drop_reasons(
+    result: SourceConversionResult[Any],
+) -> list[tuple[str, int]]:
+    """Rejection classes in ``result`` with their row counts, largest first."""
+    counts: Counter[str] = Counter()
+    for entry in (*result.failures, *result.exclusions):
+        reason = getattr(entry, 'reason', None)
+        if reason:
+            counts[reason_class(str(reason))] += 1
+    return counts.most_common()
 
 
 def save_failure_report(

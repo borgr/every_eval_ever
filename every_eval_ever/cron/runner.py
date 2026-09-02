@@ -27,6 +27,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path, PurePosixPath
@@ -36,6 +37,7 @@ from every_eval_ever.adapters.catalog import ADAPTERS as _ALL_ADAPTERS
 from every_eval_ever.adapters.catalog import AdapterSpec
 from every_eval_ever.converters import SCHEMA_VERSION
 from every_eval_ever.cron.provenance import stamp_cron_provenance
+from every_eval_ever.helpers.io import reason_class
 from every_eval_ever.helpers.raw_capture import CAPTURE_DIR_ENV
 from every_eval_ever.helpers.raw_capture import MANIFEST_NAME as RAW_MANIFEST
 from every_eval_ever.validator.check_duplicate_entries import normalized_hash
@@ -232,6 +234,20 @@ class RunOutcome:
             )
         parts.append(f'{len(self.uploaded)} uploaded')
         return ' -> '.join([parts[0], ', '.join(parts[1:])])
+
+    def drop_reasons(self) -> list[tuple[str, int]]:
+        """Why rows were dropped, most rows first.
+
+        The coverage line says how many rows a run lost. Without this a
+        reviewer can only find out why by re-running the adapter, so a source
+        that drops most of its rows reads the same as one that drops none.
+        """
+        if not self.coverage:
+            return []
+        return [
+            (str(entry['reason']), int(entry['rows']))
+            for entry in self.coverage.get('drop_reasons', [])
+        ]
 
     def to_manifest(self) -> dict[str, Any]:
         """A JSON record of the run, stored next to that run's raw data."""
@@ -735,6 +751,14 @@ def capture_problems(raw_dir: Path) -> list[str]:
     return problems
 
 
+#: How many grouped drop reasons ``read_coverage`` lists one by one. A reason
+#: whose variable part is not quoted groups per row, so the list is capped and
+#: whatever it cut is reported as one counted remainder rather than dropped --
+#: a truncated list whose shares no longer sum to the drops reads as if the
+#: run lost fewer rows than it did.
+MAX_DROP_REASON_GROUPS = 20
+
+
 def read_coverage(staging_dir: Path) -> dict[str, Any] | None:
     """Summarise the adapter's own provenance reports, if it wrote any."""
     reports_dir = Path(staging_dir) / 'adapter_reports'
@@ -747,6 +771,7 @@ def read_coverage(staging_dir: Path) -> dict[str, Any] | None:
         'excluded_record_count': 0,
     }
     reasons: list[str] = []
+    grouped: Counter[str] = Counter()
     found = False
     for path in sorted(reports_dir.rglob('*_failures.json')):
         report = json.loads(path.read_text(encoding='utf-8'))
@@ -755,6 +780,11 @@ def read_coverage(staging_dir: Path) -> dict[str, Any] | None:
             value = report.get(key)
             if isinstance(value, int):
                 totals[key] += value
+        for group in ('failed_records', 'excluded_records'):
+            for entry in report.get(group, []):
+                reason = entry.get('reason')
+                if reason:
+                    grouped[reason_class(reason)] += 1
         for failure in report.get('failed_records', [])[:5]:
             reason = failure.get('reason')
             if reason and reason not in reasons:
@@ -762,6 +792,21 @@ def read_coverage(staging_dir: Path) -> dict[str, Any] | None:
     if not found:
         return None
     totals['example_reasons'] = reasons
+    ranked = grouped.most_common()
+    listed = [
+        {'reason': reason, 'rows': rows}
+        for reason, rows in ranked[:MAX_DROP_REASON_GROUPS]
+    ]
+    remainder = ranked[MAX_DROP_REASON_GROUPS:]
+    if remainder:
+        listed.append(
+            {
+                'reason': f'{len(remainder)} further reason class(es)',
+                'rows': sum(rows for _, rows in remainder),
+            }
+        )
+    totals['drop_reasons'] = listed
+    totals['drop_reason_groups'] = len(ranked)
     return totals
 
 

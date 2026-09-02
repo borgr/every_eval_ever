@@ -871,6 +871,69 @@ def test_a_partial_conversion_publishes_what_converted(pipeline) -> None:
     assert '1 uploaded' in line
 
 
+def test_a_partial_run_reports_why_each_row_was_dropped(pipeline) -> None:
+    report = dict(
+        PARTIAL_REPORT,
+        failed_records=[
+            {
+                'source_ref': 'row 2',
+                'reason': "developer for model 'DLinear' must be known",
+            },
+            {
+                'source_ref': 'row 3',
+                'reason': "developer for model 'SegRNN' must be known",
+            },
+        ],
+    )
+    outcome = pipeline(
+        {f'demo-org/demo-model/{UUID_A}.json': record_without_samples()},
+        exit_code=1,
+        failure_report=report,
+    )
+
+    assert outcome.drop_reasons() == [
+        ("developer for model '...' must be known", 2)
+    ]
+    assert outcome.coverage['drop_reason_groups'] == 1
+
+
+def test_more_reason_classes_than_fit_are_counted_not_cut(pipeline) -> None:
+    """A cut list whose rows no longer sum to the drops understates the loss.
+
+    A reason that names its value outside quotes groups per row, so a source
+    can produce thousands of classes. Whatever the cap cuts comes back as one
+    counted remainder.
+    """
+    over = runner.MAX_DROP_REASON_GROUPS + 4
+    report = dict(
+        PARTIAL_REPORT,
+        failed_record_count=over,
+        failed_records=[
+            {'source_ref': f'row {i}', 'reason': f'unparsable score {i}'}
+            for i in range(over)
+        ],
+    )
+    outcome = pipeline(
+        {f'demo-org/demo-model/{UUID_A}.json': record_without_samples()},
+        exit_code=1,
+        failure_report=report,
+    )
+
+    reasons = outcome.drop_reasons()
+    assert len(reasons) == runner.MAX_DROP_REASON_GROUPS + 1
+    assert reasons[-1] == ('4 further reason class(es)', 4)
+    assert sum(rows for _, rows in reasons) == over
+    assert outcome.coverage['drop_reason_groups'] == over
+
+
+def test_a_run_that_dropped_nothing_reports_no_reasons(pipeline) -> None:
+    outcome = pipeline(
+        {f'demo-org/demo-model/{UUID_A}.json': record_without_samples()}
+    )
+
+    assert outcome.drop_reasons() == []
+
+
 def test_an_adapter_that_forbids_partial_runs_publishes_nothing(
     tmp_path, pipeline
 ) -> None:

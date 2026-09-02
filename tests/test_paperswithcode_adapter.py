@@ -261,6 +261,77 @@ def test_collection_url_is_not_read_as_a_model_identity():
     assert not mid.startswith('collections/')
 
 
+def test_a_composed_system_is_refused_even_when_its_base_is_known():
+    """The score belongs to the assembly, not to the base model's publisher.
+
+    Each of these resolved before, filing a third party's method result under
+    Google, Anthropic or DeepSeek.
+    """
+    for display in (
+        'PaliGemma2 + AuditDM',
+        'Claude Opus 5 + Recuris',
+        'DeepSeek-R1-Distill-Qwen-14B + iGRPO',
+        'FLAN-T5 Base + On-policy GKD (Reverse KL)',
+        'ALBERT ensemble',
+        'LLaDA (8B) with RCD',
+    ):
+        with pytest.raises(ValueError, match='composed system'):
+            adapter.model_identity(display, None)
+
+
+def test_a_parenthesised_training_mix_is_not_read_as_composition():
+    """PwC puts shot count, precision and training data in the brackets.
+
+    The ``+`` inside them joins datasets or settings, so reading it as two
+    model components would drop rows that do name one released model.
+
+    The developer is slugified here, so a namespace with capitals arrives
+    lowercased and `canonical_spelling` restores HF's casing from any spelling
+    of the same model that did carry a repo url.
+    """
+    for display, developer in (
+        ('Nemotron-H-8B-Base (5-shot)', 'nvidia'),
+        ('LongCat-Next (A3B, 68.5B)', 'meituan-longcat'),
+        ('Ovis-Image (2B+7B)', 'aidc-ai'),
+        ('GPT-5.5 Pro (xhigh)', 'openai'),
+    ):
+        assert adapter.model_identity(display, None)[1] == developer
+
+
+def test_w_slash_joins_two_systems_but_w_slash_o_is_one_model():
+    """`Agent S w/ GPT-4o` is two groups' work; `CDistNet w/o TPS` is one.
+
+    A setting in brackets (`Claude Opus 5 (w/ tools)`) is a mode of one model,
+    which the README keeps verbatim, so it stays publishable.
+    """
+    with pytest.raises(ValueError, match='composed system'):
+        adapter.model_identity('Agent S w/ GPT-4o', None)
+    with pytest.raises(ValueError, match='composed system'):
+        adapter.model_identity('Qwen3-8B w/ R-CLA (p=0.6)', None)
+    assert adapter.model_identity('Claude Opus 5 (w/ tools)', None)[1] == (
+        'anthropic'
+    )
+    assert adapter.model_identity('GPT-5.2 (w/ Python)', None)[1] == 'openai'
+
+
+def test_a_patch_size_in_the_name_is_not_a_publisher():
+    """`ViT-L/16` names a patch size, and `µ2Net (ViT-L/16)` a third party's
+    model, so neither has a publisher to file the score under."""
+    for display in ('ViT-L/16', 'µ2Net (ViT-L/16)', 'CapPa L/14'):
+        with pytest.raises(ValueError, match='must be known'):
+            adapter.model_identity(display, None)
+
+
+def test_a_composed_name_with_an_hf_repo_still_uses_that_repo():
+    """The url names one repo, so the row is about whatever that repo holds."""
+    mid, dev, _, _ = adapter.model_identity(
+        'DINOv2 with Registers (ViT-L/14)',
+        'https://huggingface.co/facebook/dinov2-with-registers-large',
+    )
+    assert mid == 'facebook/dinov2-with-registers-large'
+    assert dev == 'facebook'
+
+
 def test_unestablished_developer_is_reported_not_dropped(tmp_path):
     conversion = _convert()
     assert conversion.total_records == len(_evaluations())

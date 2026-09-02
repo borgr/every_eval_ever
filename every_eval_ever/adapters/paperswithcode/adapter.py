@@ -99,6 +99,18 @@ HF_MODEL_RE = re.compile(
 HF_DATASET_RE = re.compile(
     r'https?://huggingface\.co/datasets/([^/\s]+/[^/?#\s]+)'
 )
+#: What joins two parts of a system in a PwC model name. ``w/`` spelled with a
+#: following space is one of them (``Agent S w/ GPT-4o``); ``w/o`` is an
+#: ablation of a single model and never matches.
+_COMPOSITION_RE = re.compile(
+    r'\s\+\s|\+\s*\w|\bwith\b|\bvia\b|\bensemble\b|\bw/\s',
+    re.IGNORECASE,
+)
+#: A parenthesised aside, which PwC uses for shot count, size, precision and
+#: training mix -- ``(TartanAir + Things, zero-shot)``, ``(INT4 w/o MW ECO +
+#: RTN)``. The ``+`` there joins datasets or settings, not model components,
+#: so composition is looked for outside the brackets only.
+_ASIDE_RE = re.compile(r'[\(\[][^)\]]*[\)\]]')
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +244,17 @@ def dedupe(items: Iterable[Any]) -> list[Any]:
 # ---------------------------------------------------------------------------
 
 
+def names_composed_system(display: str) -> bool:
+    """Whether a name describes parts assembled rather than one released model.
+
+    ``PaliGemma2 + AuditDM``, ``DeBERTa 1.5B + SiFT`` and ``LLaDA (8B) with
+    RCD`` are three groups' work on another group's model, and the score is
+    the assembly's. Resolving the developer from the family at the head of the
+    name would file each of those under Google, Microsoft and InclusionAI.
+    """
+    return bool(_COMPOSITION_RE.search(_ASIDE_RE.sub(' ', display)))
+
+
 def model_identity(
     model_name: Any, hf_model_url: Any
 ) -> tuple[str, str, str, str]:
@@ -247,6 +270,10 @@ def model_identity(
     Effort/mode tiers baked into PwC model names (e.g. 'GPT-5.5 Pro (xhigh)')
     are preserved in the slug rather than stripped -- collapsing them is the
     eval-card-registry's job.
+
+    A name that describes a composed system rather than one released model is
+    refused even when a family it contains is known, because the score is the
+    assembly's and the family's publisher did not produce it.
     """
     display = str(model_name or '').strip()
     if not display:
@@ -256,6 +283,11 @@ def model_identity(
         if m:
             dev, mdl = m.group(1), m.group(2)
             return f'{dev}/{mdl}', dev, mdl, display
+    if names_composed_system(display):
+        raise ValueError(
+            f'PwC model {display!r} names a composed system, not one released '
+            'model, so no publisher owns this score'
+        )
     dev = slugify(
         require_identity(
             get_developer(display),

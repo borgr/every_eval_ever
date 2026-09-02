@@ -1408,3 +1408,34 @@ def test_is_commit_conflict_detects_precondition_failed_messages() -> None:
     assert store.is_commit_conflict(exc1)
     assert store.is_commit_conflict(exc2)
     assert store.is_commit_conflict(exc3)
+
+
+def test_the_commit_description_names_why_rows_were_dropped() -> None:
+    description = submit.commit_description(
+        'paperswithcode',
+        coverage_line='20928 source row(s) -> 2310 record(s), 11271 dropped',
+        run_date='2026-09-02',
+        status='partial',
+        drop_reasons=[
+            ("developer for PwC model '...' must be known", 11267),
+            ("dataset_id '...' is not in the dump", 4),
+        ],
+    )
+
+    assert '### Why rows were dropped' in description
+    assert (
+        "- 11267 row(s), 100.0% of the drops: developer for PwC model "
+        "'...' must be known" in description
+    )
+    assert "- 4 row(s), 0.0% of the drops: dataset_id '...' " in description
+
+
+def test_a_commit_description_without_drops_has_no_reason_section() -> None:
+    description = submit.commit_description(
+        'hle',
+        coverage_line='2 record(s) produced -> 2 uploaded',
+        run_date='2026-08-10',
+        status='completed',
+    )
+
+    assert 'Why rows were dropped' not in description

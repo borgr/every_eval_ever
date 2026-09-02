@@ -14,6 +14,7 @@ from every_eval_ever.helpers.io import (
     require_uuid4,
     sanitize_filename,
     save_failure_report,
+    summarise_drop_reasons,
 )
 
 
@@ -179,3 +180,54 @@ def test_failure_report_preserves_nonfinite_source_values_as_strict_json(
 
     assert path.read_text(encoding='utf-8').count('NaN') == 1
     assert path.read_text(encoding='utf-8').find('"score": {') >= 0
+
+
+def test_reasons_that_differ_only_in_the_named_value_are_one_class():
+    result = SourceConversionResult(
+        source_name='paperswithcode',
+        total_records=3,
+        records=[],
+        failures=[],
+    )
+    for name in ('Autoformer', 'DLinear', 'SegRNN'):
+        result.failures.append(
+            SourceRecordFailure(
+                source_ref=f'row {name}',
+                reason=(
+                    f"developer for PwC model '{name}' (no HF url; not in "
+                    'helpers.get_developer) must be known'
+                ),
+            )
+        )
+
+    assert summarise_drop_reasons(result) == [
+        (
+            "developer for PwC model '...' (no HF url; not in "
+            'helpers.get_developer) must be known',
+            3,
+        )
+    ]
+
+
+def test_drop_reasons_count_exclusions_beside_failures_largest_first():
+    result = SourceConversionResult(
+        source_name='paperswithcode',
+        total_records=4,
+        records=[],
+        failures=[],
+    )
+    result.failures.append(
+        SourceRecordFailure(source_ref='row 1', reason='score out of range')
+    )
+    for index in (2, 3, 4):
+        result.exclusions.append(
+            SourceRecordExclusion(
+                source_ref=f'row {index}',
+                reason='published random baseline is not a model evaluation',
+            )
+        )
+
+    assert summarise_drop_reasons(result) == [
+        ('published random baseline is not a model evaluation', 3),
+        ('score out of range', 1),
+    ]
