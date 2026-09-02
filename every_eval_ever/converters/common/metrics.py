@@ -100,6 +100,9 @@ CANONICAL_METRIC_IDS: dict[str, str] = {
     'exact_match': 'exact-match',
     'f1': 'f1',
     'f1_score': 'f1',
+    # lm-eval v0.3 reports perplexity under `ppl` (v0.4 renamed it), so both
+    # spellings reach the one registry metric rather than fragmenting by format.
+    'ppl': 'perplexity',
     'perplexity': 'perplexity',
     'precision': 'precision',
     'recall': 'recall',
