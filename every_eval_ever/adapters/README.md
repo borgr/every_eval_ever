@@ -34,8 +34,8 @@ An adapter that automation runs must therefore:
   `save_failure_report` + a non-zero exit, which is what lets a partial refresh be
   told apart from a crash.
 
-`bfcl`, `cocoabench` and `sciarena` are registered as `runnable=False`: they need a
-local input file and have no live fetch path.
+`bfcl`, `cocoabench`, `paperswithcode_drugbank`, and `sciarena` are registered as
+`runnable=False`: they need local inputs and have no live fetch path.
 
 ### Skipping a run whose source has not changed
 
@@ -80,7 +80,7 @@ re-hosting bytes that are already durably stored.
 | `global_mmlu_lite` | Kaggle API | Fetches Global MMLU Lite leaderboard results from Kaggle. |
 | `hfopenllm_v2` | HuggingFace Spaces API | Fetches the Open LLM Leaderboard v2 (4576+ models). The leaderboard is no longer maintained upstream, so this converts a frozen archive and is not scheduled. |
 | `helm` | HELM leaderboard | Converts HELM leaderboard data. Supports `--leaderboard_name` for Capabilities/Lite/Classic/Instruct/MMLU. |
-| `llm_stats` | LLM Stats API | Converts LLM Stats model, benchmark, and score API data into `data/llm-stats/`. |
+| `llm_stats` | LLM Stats API | Converts LLM Stats model, benchmark, and score API results into `data/llm-stats/`. |
 | `mercor_eval` | Mercor Evaluation Exports API | Fetches authenticated Mercor benchmark leaderboards and writes aggregate EEE records. |
 | `mt_bench` | LMSYS / FastChat | Converts MT-Bench GPT-4 single-answer judgments into `data/mt-bench/`. Emits overall, turn-1, and turn-2 means per model. |
 | `open_medical_llm` | HuggingFace (`openlifescienceai/results`) | Converts the Open Medical-LLM Leaderboard's lm-evaluation-harness results into `data/open-medical-llm/`. One record per model, one result per medical benchmark (9). See [`open_medical_llm/README.md`](open_medical_llm/README.md). |
@@ -90,12 +90,53 @@ re-hosting bytes that are already durably stored.
 | `terminal_bench_2` | tbench.ai | Fetches Terminal-Bench 2.0 agentic coding benchmark results. |
 | `hle` | Scale SEAL leaderboard | Converts the Scale SEAL Humanity's Last Exam leaderboard into `data/hle/`. Emits per-model accuracy (with 95% CI) and calibration error. |
 | `mmlu_pro` | TIGER-Lab leaderboard CSV | Converts the MMLU-Pro leaderboard (`TIGER-Lab/mmlu_pro_leaderboard_submission`) into `data/mmlu-pro/`. Emits per-model overall + 14 per-subject accuracies. |
+| `paperswithcode_drugbank` | Local Papers with Code PostgreSQL dump + reviewed YAML manifest | Manually converts DrugBank score cells with reviewed model, source-scale, split, and protocol semantics. The same source cell in `data/paperswithcode/` is matched by `(pwc_evaluation_id, metric_config.metric_name)`. |
 | `lexam` | LEXam project website | Converts the LEXam legal-reasoning leaderboard (open-question judge scores + 4-choice MCQ accuracy) into `data/lexam/`. |
 | `vectara_hallucination_leaderboard` | HuggingFace (`vectara/results`) | Converts the Vectara Hallucination Leaderboard result files, pinned to a source commit, into `data/vectara-hallucination-leaderboard/`. Emits 4 aggregate metrics plus per-category and per-text-complexity breakdowns (40 scores per model). |
 | `benchpress` | HuggingFace (`microsoft/benchpress-score-matrix`) | Converts the BenchPress score matrix into `data/benchpress/`. An aggregator: every cell keeps its own citation, and logs split by `evaluator_relationship`. See [`benchpress/README.md`](benchpress/README.md). |
 | `bountybench` | BountyBench run logs (local JSON tree) | Converts BountyBench cybersecurity agent logs into `data/bountybench/`. Emits one aggregate per (model, workflow, configuration) plus a per-bounty `*_samples.jsonl` sidecar with the full agent transcript. |
 | `paperswithcode` | Papers with Code PostgreSQL dumps | Converts PwC leaderboard entries into `data/paperswithcode/`. Metric bounds and direction are resolved against a vendored eval-card-registry snapshot; unknown metrics fail the run rather than getting invented bounds. Needs the `paperswithcode` extra. |
 | `wild` | HuggingFace (`kensho/WILD-raw`) | Converts the WILD-raw item-level eval responses (65 models × 27 benchmarks, run with Inspect AI) into `data/wild/`: aggregate accuracy per model×benchmark and per subtask, with optional per-item `_samples.jsonl` sidecars (`--include-instances`). See [`wild/README.md`](wild/README.md). |
+
+### Papers with Code DrugBank
+
+To run this manual adapter, provide a local custom-format PostgreSQL dump and a
+reviewed, non-empty YAML qualification manifest (schema version 2). It is not
+scheduled because neither input has a live fetch path, and the repository does
+not include a production manifest. The manifest supplies reviewed model and
+benchmark identities, exact source-cell selectors, source-scale decisions,
+protocol semantics, provenance, and the registry revision used for review.
+Canonical metric fields are checked against the same vendored
+`eval-card-registry` snapshot as the general Papers with Code adapter, and
+observed metric ranges are derived from the source values being converted.
+Conversion is atomic: an anchor, hash, registry, or schema mismatch aborts before
+any output is written.
+
+For split comparisons, each manifest entry must declare `transductive`,
+`inductive-s1`, or `inductive-s2`, with matching manifest-declared overlap
+labels. A canonical benchmark ID cannot be reused for conflicting protocols
+anywhere in the manifest, so the adapter cannot emit conflicting split scores
+under one benchmark key. Scores come from the pinned dump; the manifest supplies
+the source-cell selection and protocol evidence. The adapter does not
+independently verify cited source content or train/test membership from the
+aggregate dump, and it does not compute a performance delta between splits.
+
+The general Papers with Code adapter can emit the same PwC evaluation rows.
+`pwc_evaluation_id` identifies the shared row, while an exact metric-cell match
+uses `(pwc_evaluation_id, metric_config.metric_name)`.
+
+```bash
+uv run --extra paperswithcode python -m \
+  every_eval_ever.adapters.paperswithcode_drugbank.adapter \
+  --dump /path/to/paperswithcode.dump \
+  --overlay /path/to/reviewed-drugbank.yaml \
+  --output-dir /tmp/paperswithcode-drugbank/data/paperswithcode-drugbank
+```
+
+As of 2026-08-19, the archived Papers with Code DrugBank URL redirects away
+from its dataset record. Generated logs retain that URL as raw provenance,
+link `source_data` to DrugBank, and record the official Papers with Code archive
+in source metadata.
 
 ### Mercor Evaluation Exports
 
